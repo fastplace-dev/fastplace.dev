@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Documentation
+docs/
+# Git Commit message file
+commit-message.txt
+
+# Claude documentation
+CLAUDE.md
+
+# macOS
+.DS_Store
