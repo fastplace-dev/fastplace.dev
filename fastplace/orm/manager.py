@@ -61,8 +61,7 @@ def _connections_from_config() -> dict[str, dict[str, Any]]:
         for cname, spec in named.items():
             if not isinstance(spec, dict) or "url" not in spec:
                 raise ValueError(
-                    f"DATABASE_CONNECTIONS[{cname!r}] must be a dict with at "
-                    "least a 'url' entry"
+                    f"DATABASE_CONNECTIONS[{cname!r}] must be a dict with at least a 'url' entry"
                 )
             entry: dict[str, Any] = {
                 "driver": spec.get("driver") or driver_from_url(str(spec["url"])),
@@ -107,8 +106,7 @@ class DatabaseManager:
     def config_for(self, name: str = "default") -> dict[str, Any]:
         if name not in self.connections:
             raise KeyError(
-                f"Unknown database connection '{name}'. "
-                f"Configured: {sorted(self.connections)}"
+                f"Unknown database connection '{name}'. Configured: {sorted(self.connections)}"
             )
         return self.connections[name]
 

@@ -58,9 +58,7 @@ class MigrationsManager:
 
         cfg = Config()
         cfg.set_main_option("script_location", str(self.migrations_dir))
-        cfg.set_main_option(
-            "version_locations", str(self.versions_dir.relative_to(self.root))
-        )
+        cfg.set_main_option("version_locations", str(self.versions_dir.relative_to(self.root)))
         # env.py resolves the URL from DATABASE_URL (env/config modules).
         self._ensure_project_importable()
         return cfg
@@ -212,10 +210,7 @@ class MigrationsManager:
                             "INSERT INTO fastplace_migrations (revision, batch, applied_at) "
                             "VALUES (:r, :b, :t)"
                         ),
-                        [
-                            {"r": revision, "b": latest + 1, "t": stamp}
-                            for revision in sorted(new)
-                        ],
+                        [{"r": revision, "b": latest + 1, "t": stamp} for revision in sorted(new)],
                     )
         finally:
             engine.dispose()
@@ -244,9 +239,7 @@ class MigrationsManager:
                     1,
                     int(
                         conn.execute(
-                            text(
-                                "SELECT COUNT(*) FROM fastplace_migrations WHERE batch = :b"
-                            ),
+                            text("SELECT COUNT(*) FROM fastplace_migrations WHERE batch = :b"),
                             {"b": latest},
                         ).scalar()
                         or 0
@@ -311,7 +304,7 @@ def _to_sync_url(url: str) -> str:
     }
     for async_prefix, sync_prefix in replacements.items():
         if url.startswith(async_prefix):
-            return sync_prefix + url[len(async_prefix):]
+            return sync_prefix + url[len(async_prefix) :]
     return url
 
 

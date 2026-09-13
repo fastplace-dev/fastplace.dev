@@ -28,7 +28,9 @@ def validated_payload(handler: Any, result: Any) -> Any:
     except Exception:  # pragma: no cover - unresolvable forward refs
         return result
     annotation = hints.get("return")
-    if annotation is None or not (inspect.isclass(annotation) and issubclass(annotation, BaseModel)):
+    if annotation is None or not (
+        inspect.isclass(annotation) and issubclass(annotation, BaseModel)
+    ):
         return result
     if isinstance(result, annotation):
         return result

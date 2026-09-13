@@ -124,16 +124,25 @@ function withQueryString(url: string, data: unknown): string {
   return url + (url.includes("?") ? "&" : "?") + query;
 }
 
+/** The CSRF token render() embeds as <meta name="csrf-token">, if any. */
+function csrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const meta = document.querySelector<HTMLMetaElement>("meta[name='csrf-token']");
+  return meta?.content || null;
+}
+
 async function visit(url: string, options: VisitOptions = {}): Promise<void> {
   const method = options.method ?? "GET";
   const hasBody = options.data != null && method !== "GET";
   const requestUrl = method === "GET" ? withQueryString(url, options.data) : url;
+  const token = method === "GET" ? null : csrfToken();
 
   const response = await fetch(requestUrl, {
     method,
     headers: {
       [BRIDGE_HEADER]: "true",
       Accept: "application/json",
+      ...(token ? { "X-Fastplace-CSRF-Token": token } : {}),
       ...(hasBody ? { "Content-Type": "application/json" } : {}),
       ...(options.headers ?? {}),
     },

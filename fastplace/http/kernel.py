@@ -8,6 +8,7 @@ Application code imports ``fastplace.http`` and never ``fastapi`` directly.
 from __future__ import annotations
 
 import importlib
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException
 from starlette.staticfiles import StaticFiles
 
-from fastplace.errors import FastplaceError
+from fastplace.errors import ConfigurationError, FastplaceError
 from fastplace.http import lifecycle
 from fastplace.http.middleware import Middleware, wrap_middleware
 from fastplace.http.response import Json, Response
@@ -102,6 +103,7 @@ def get_app(
     _mount_routes(app, routes=routes, api_routes=api_routes, ai_routes=ai_routes)
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
+    _install_session_middleware(app, cfg, app_env=app_env)
     _install_error_handlers(app, debug=debug)
     return app
 
@@ -236,9 +238,35 @@ def _register_router(target: APIRouter, router: Router, prefix: str = "") -> Non
 
 
 def _install_middleware(app: FastAPI, middleware: list[Middleware]) -> None:
-    # First added = outermost; keep registration order stable for users.
-    for mw in middleware:
+    # Starlette's add_middleware inserts at index 0, so the LAST added ends
+    # up outermost — register in reverse so the documented contract
+    # ("first declared = outermost", e.g. ResolveUser before Csrf) holds.
+    for mw in reversed(middleware):
         app.add_middleware(wrap_middleware(mw), mw=mw)  # type: ignore[arg-type]
+
+
+def _install_session_middleware(app: FastAPI, cfg: _ConfigShim, *, app_env: str) -> None:
+    """Signed-cookie sessions on every Fastplace app (itsdangerous-backed)."""
+    from starlette.middleware.sessions import SessionMiddleware
+
+    secret = str(cfg.get("APP_KEY", default="") or "")
+    if not secret:
+        if app_env == "production":
+            # An ephemeral per-process key silently invalidates sessions
+            # across workers/restarts — production must fail fast.
+            raise ConfigurationError(
+                "APP_KEY is required in production — set it in .env "
+                "(generate: python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+            )
+        secret = secrets.token_urlsafe(48)  # per-process fallback (local dev)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=secret,
+        session_cookie=str(cfg.get("SESSION_COOKIE", default="fastplace_session")),
+        max_age=int(cfg.get("SESSION_LIFETIME", default=7200)),
+        same_site="lax",
+        https_only=app_env == "production",
+    )
 
 
 def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:

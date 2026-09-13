@@ -19,10 +19,11 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     // APP_ENV=production → the shell resolves hashed assets from the build
-    // manifest instead of the (absent here) Vite dev server.
+    // manifest instead of the (absent here) Vite dev server. APP_KEY is a
+    // throwaway fixture: production apps refuse to boot without one.
     command:
-      `APP_ENV=production .venv/bin/python -m uvicorn asgi:app ` +
-      `--host 127.0.0.1 --port ${PORT}`,
+      `APP_ENV=production APP_KEY=e2e-test-secret-key-0123456789abcdef ` +
+      `.venv/bin/python -m uvicorn asgi:app --host 127.0.0.1 --port ${PORT}`,
     url: `http://127.0.0.1:${PORT}/api/v1/health`,
     reuseExistingServer: !process.env.CI,
     // Surface boot failures in the test log instead of opaque timeouts.

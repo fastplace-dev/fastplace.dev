@@ -109,9 +109,7 @@ def has_one(
     back_populates: str | None = None,
     **kwargs: Any,
 ) -> RelationshipMarker:
-    return HasOne(
-        target, backref=backref, back_populates=back_populates, extra=kwargs
-    )
+    return HasOne(target, backref=backref, back_populates=back_populates, extra=kwargs)
 
 
 def belongs_to(
@@ -121,9 +119,7 @@ def belongs_to(
     back_populates: str | None = None,
     **kwargs: Any,
 ) -> RelationshipMarker:
-    return BelongsTo(
-        target, backref=backref, back_populates=back_populates, extra=kwargs
-    )
+    return BelongsTo(target, backref=backref, back_populates=back_populates, extra=kwargs)
 
 
 def many_to_many(

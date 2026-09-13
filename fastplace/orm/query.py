@@ -84,6 +84,7 @@ class QueryBuilder:
         # trigger the descriptor's __get__ and hand back a bound partial.
         raw = _find_class_attr(self.model, name)
         if raw is not None and is_scope(raw):
+
             def apply(*args: Any, **kwargs: Any) -> QueryBuilder:
                 result = raw.fn(self.model, self, *args, **kwargs)
                 return result if isinstance(result, QueryBuilder) else self
@@ -99,6 +100,7 @@ class QueryBuilder:
             except (TypeError, ValueError):  # pragma: no cover — exotic builtins
                 params = []
             if len(params) >= 2 and params[1] == "query":
+
                 def apply_plain(*args: Any, **kwargs: Any) -> QueryBuilder:
                     result = fn(self.model, self, *args, **kwargs)
                     return result if isinstance(result, QueryBuilder) else self
@@ -146,8 +148,7 @@ class QueryBuilder:
             for part in path.split("."):
                 if part not in current_mapper.relationships:
                     raise ValueError(
-                        f"{self.model.__name__} has no relationship '{part}' "
-                        f"(path: {path})"
+                        f"{self.model.__name__} has no relationship '{part}' (path: {path})"
                     )
                 rel = current_mapper.relationships[part]
                 attr = getattr(current_mapper.class_, part)

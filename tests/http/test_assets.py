@@ -40,9 +40,7 @@ def test_production_tags_read_classic_manifest_location(tmp_path):
 
 
 def test_dev_mode_uses_vite_server(tmp_path):
-    tags = asset_tags(
-        tmp_path, vite_dev_url="http://localhost:5173/", app_env="local"
-    )
+    tags = asset_tags(tmp_path, vite_dev_url="http://localhost:5173/", app_env="local")
     assert 'src="http://localhost:5173/@vite/client"' in tags
     assert 'src="http://localhost:5173/resources/js/main.jsx"' in tags
 

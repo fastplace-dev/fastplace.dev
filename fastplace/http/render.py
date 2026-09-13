@@ -54,22 +54,39 @@ def render(
 ) -> Response:
     """Return the bridge response for a hydrated React page."""
     payload = page_payload(request, component, props)
+    csrf_token = _session_csrf_token(request)
 
     if request.is_bridge:
-        return Json(payload, status_code=status, headers={
-            **(headers or {}),
-            "Vary": _BRIDGE_HEADER,
-        })
+        return Json(
+            payload,
+            status_code=status,
+            headers={
+                **(headers or {}),
+                "Vary": _BRIDGE_HEADER,
+            },
+        )
 
     document = _HTML_SHELL.format(
         title=_title_for(component),
         assets=_assets(request),
         page=html.escape(json.dumps(payload, ensure_ascii=False), quote=True),
     )
-    return Html(document, status_code=status, headers={
-        **(headers or {}),
-        "Vary": _BRIDGE_HEADER,
-    })
+    if csrf_token:
+        # The React bridge reads this tag and echoes the token back on
+        # unsafe-method visits (X-Fastplace-CSRF-Token).
+        document = document.replace(
+            "</head>",
+            f'    <meta name="csrf-token" content="{html.escape(csrf_token)}">\n</head>',
+            1,
+        )
+    return Html(
+        document,
+        status_code=status,
+        headers={
+            **(headers or {}),
+            "Vary": _BRIDGE_HEADER,
+        },
+    )
 
 
 def _title_for(component: str) -> str:
@@ -97,3 +114,15 @@ def _asset_version() -> str:
     from fastplace.config import config
 
     return str(config("ASSET_VERSION", default="") or "")
+
+
+def _session_csrf_token(request: Request) -> str | None:
+    """The CSRF token from the signed session, when one is active."""
+    try:
+        session = request.session
+    except Exception:
+        return None
+    if not isinstance(session, dict):
+        return None
+    token = session.get("_token")
+    return token if isinstance(token, str) and token else None

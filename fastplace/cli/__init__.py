@@ -46,6 +46,7 @@ def about() -> None:
 app.add_typer(run_app, name="run")
 app.add_typer(serve_app, name="")
 
+
 # Later phases register their command groups here (migrations, generators, …).
 def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     try:
@@ -64,6 +65,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
         from fastplace.cli.lint import lint_app
 
         app.add_typer(lint_app, name="")
+    except ImportError:
+        pass
+    try:
+        from fastplace.cli.queue import queue_app
+
+        app.add_typer(queue_app, name="")
     except ImportError:
         pass
 

@@ -27,9 +27,7 @@ class _ScopeState:
     owner: asyncio.Task[Any] | None = None
 
 
-_current_session: ContextVar[_ScopeState | None] = ContextVar(
-    "fastplace_session", default=None
-)
+_current_session: ContextVar[_ScopeState | None] = ContextVar("fastplace_session", default=None)
 
 
 def ambient() -> _ScopeState | None:
@@ -60,9 +58,7 @@ def current_session() -> AsyncSession | None:
 
 
 @contextmanager
-def bind_session(
-    session: AsyncSession, *, name: str = "default", owns_commit: bool = False
-):
+def bind_session(session: AsyncSession, *, name: str = "default", owns_commit: bool = False):
     """Bind a session as ambient for the current task."""
     state = _ScopeState(session=session, name=name, owns_commit=owns_commit)
     state.owner = asyncio.current_task()

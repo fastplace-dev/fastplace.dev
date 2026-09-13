@@ -11,14 +11,9 @@ from fastplace.config import Config, _coerce, load_env
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "app.py").write_text(
-        'APP_NAME = "Fastplace"\n'
-        'APP_DEBUG = False\n'
-        'APP_PORT = 8000\n'
-        'APP_RATE = 0.5\n'
+        'APP_NAME = "Fastplace"\nAPP_DEBUG = False\nAPP_PORT = 8000\nAPP_RATE = 0.5\n'
     )
-    (tmp_path / "config" / "database.py").write_text(
-        'DATABASE_DRIVER = "sqlite"\n'
-    )
+    (tmp_path / "config" / "database.py").write_text('DATABASE_DRIVER = "sqlite"\n')
     for var in ("APP_NAME", "APP_DEBUG", "APP_PORT", "APP_RATE", "DATABASE_DRIVER"):
         monkeypatch.delenv(var, raising=False)
     return tmp_path

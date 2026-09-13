@@ -65,6 +65,17 @@ class ServerError(FastplaceError):
     default_message = "Server error."
 
 
+class CacheSerializationError(FastplaceError):
+    """A cache value cannot be serialized by the configured driver.
+
+    Raised at ``put()`` time (redis stores JSON) — failing before the write
+    beats a value that silently never lands in the cache.
+    """
+
+    status_code = 500
+    default_message = "The cache value cannot be serialized."
+
+
 class SearchCapabilityMissing(FastplaceError):
     """No vector- or full-text-capable backend is available for this search."""
 

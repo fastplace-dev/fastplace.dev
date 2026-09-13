@@ -41,7 +41,11 @@ def _utcnow() -> datetime.datetime:
 def _snake(name: str) -> str:
     out = []
     for i, ch in enumerate(name):
-        if ch.isupper() and i > 0 and (not name[i - 1].isupper() or (i + 1 < len(name) and name[i + 1].islower())):
+        if (
+            ch.isupper()
+            and i > 0
+            and (not name[i - 1].isupper() or (i + 1 < len(name) and name[i + 1].islower()))
+        ):
             out.append("_")
         out.append(ch.lower())
     return "".join(out)
@@ -200,9 +204,7 @@ class Model(AsyncAttrs, DeclarativeBase):
             if fillable is not None and key not in fillable:
                 continue
             if key in blocked:
-                raise MassAssignmentError(
-                    f"{cls.__name__}.{key} is guarded from mass assignment"
-                )
+                raise MassAssignmentError(f"{cls.__name__}.{key} is guarded from mass assignment")
             filtered[key] = value
         return filtered
 
@@ -229,9 +231,12 @@ class Model(AsyncAttrs, DeclarativeBase):
                 "vector search requires a vector-capable backend (PostgreSQL + pgvector)"
             )
         column = cls._vector_column()
-        stmt = select(cls).where(cls._not_deleted()).order_by(
-            column.cosine_distance(embedding)
-        ).limit(limit)
+        stmt = (
+            select(cls)
+            .where(cls._not_deleted())
+            .order_by(column.cosine_distance(embedding))
+            .limit(limit)
+        )
         from fastplace.orm.session import run_read
 
         result = await run_read(stmt)
@@ -244,15 +249,12 @@ class Model(AsyncAttrs, DeclarativeBase):
 
         if not db.capabilities.supports_full_text:
             raise SearchCapabilityMissing(
-                "full-text search requires a full-text-capable backend "
-                "(PostgreSQL FTS by default)"
+                "full-text search requires a full-text-capable backend (PostgreSQL FTS by default)"
             )
         from sqlalchemy import String, Text
 
         text_columns = [
-            column
-            for column in cls.__table__.columns
-            if isinstance(column.type, (String, Text))
+            column for column in cls.__table__.columns if isinstance(column.type, (String, Text))
         ]
         if not text_columns:
             raise SearchCapabilityMissing(f"{cls.__name__} has no text columns to search")
@@ -283,9 +285,7 @@ class Model(AsyncAttrs, DeclarativeBase):
                 column.type, "cosine_distance"
             ):
                 return column
-        raise SearchCapabilityMissing(
-            f"{cls.__name__} has no VectorField column"
-        )
+        raise SearchCapabilityMissing(f"{cls.__name__} has no VectorField column")
 
     # ------------------------------------------------------------------
     # escape hatches (blueprint §8 — framework-coupled by design)
@@ -345,9 +345,7 @@ class Model(AsyncAttrs, DeclarativeBase):
         from sqlalchemy import delete
 
         async def action(session: Any) -> None:
-            await session.execute(
-                delete(type(self)).where(pk_attr == getattr(self, pk_name))
-            )
+            await session.execute(delete(type(self)).where(pk_attr == getattr(self, pk_name)))
 
         from fastplace.orm.session import run_write
 
@@ -536,7 +534,9 @@ def _transform_declarative_fields(cls: type) -> None:
             )
 
         field = value if isinstance(value, Field) else Field()
-        plain_default = value if not isinstance(value, Field) and value is not _MISSING else _MISSING
+        plain_default = (
+            value if not isinstance(value, Field) and value is not _MISSING else _MISSING
+        )
 
         column_type = python_type_to_sa(annotation, field, url)
 
@@ -566,14 +566,20 @@ def _transform_declarative_fields(cls: type) -> None:
         from typing import get_origin as _get_origin
 
         is_optional = (
-            _get_origin(annotation) is Union
-            and type(None) in _get_args(annotation)
-        ) or "| None" in str(raw_annotation) or "Optional[" in str(raw_annotation)
-        kwargs.setdefault("nullable", is_optional if is_optional else (False if field.nullable is None else field.nullable))
+            (_get_origin(annotation) is Union and type(None) in _get_args(annotation))
+            or "| None" in str(raw_annotation)
+            or "Optional[" in str(raw_annotation)
+        )
+        kwargs.setdefault(
+            "nullable",
+            is_optional if is_optional else (False if field.nullable is None else field.nullable),
+        )
 
         # ForeignKey is positional on Column/mapped_column — a `foreign_key=`
         # kwarg would be silently ignored (only a dialect warning).
-        args: tuple[Any, ...] = (column_type, ForeignKey(field.foreign_key)) if field.foreign_key else (column_type,)
+        args: tuple[Any, ...] = (
+            (column_type, ForeignKey(field.foreign_key)) if field.foreign_key else (column_type,)
+        )
         setattr(cls, name, mapped_column(*args, **kwargs))
 
         _mapped: Any = Mapped
@@ -628,9 +634,7 @@ def _transform_declarative_fields(cls: type) -> None:
         setattr(cls, name, marker.build(**extras))
         kind_many = marker.__class__.__name__ in ("HasMany", "ManyToMany")
         _mapped_rel: Any = Mapped
-        resolved_annotations[name] = (
-            _mapped_rel[list[Any]] if kind_many else _mapped_rel[Any]
-        )
+        resolved_annotations[name] = _mapped_rel[list[Any]] if kind_many else _mapped_rel[Any]
 
     cls.__annotations__ = resolved_annotations
     cls.__tablename__ = tablename  # type: ignore[attr-defined]
@@ -639,6 +643,4 @@ def _transform_declarative_fields(cls: type) -> None:
 def ConfigurationError_cls(cls: type, attr: str, detail: str) -> Exception:
     from fastplace.errors import ConfigurationError
 
-    return ConfigurationError(
-        f"{cls.__module__}.{cls.__name__}.{attr}: {detail}"
-    )
+    return ConfigurationError(f"{cls.__module__}.{cls.__name__}.{attr}: {detail}")

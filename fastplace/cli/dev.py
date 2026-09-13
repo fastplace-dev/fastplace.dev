@@ -50,9 +50,7 @@ def run_dev(
     children: list[subprocess.Popen] = []
     env = {**os.environ, "VITE_DEV_URL": vite_url}
 
-    backend = _uvicorn_command(
-        "asgi:app", "--reload", "--host", host, "--port", str(port)
-    )
+    backend = _uvicorn_command("asgi:app", "--reload", "--host", host, "--port", str(port))
     children.append(subprocess.Popen(backend, cwd=_project_root(), env=env))
 
     if not skip_vite and (Path.cwd() / "package.json").exists():
@@ -104,7 +102,9 @@ def serve(
     port = port or int(_cfg("APP_PORT", "8000"))
     workers = workers or int(_cfg("APP_WORKERS", str(max(1, (os.cpu_count() or 2) - 1))))
 
-    console.print(f"[fastplace]Fastplace[/fastplace] serving http://{host}:{port} ({workers} workers)")
+    console.print(
+        f"[fastplace]Fastplace[/fastplace] serving http://{host}:{port} ({workers} workers)"
+    )
     command = _uvicorn_command(
         "asgi:app", "--host", host, "--port", str(port), "--workers", str(workers)
     )

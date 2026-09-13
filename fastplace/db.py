@@ -48,9 +48,7 @@ class Database:
         async with self.manager.engine(name).begin() as conn:
             await conn.run_sync(Model.metadata.drop_all)
 
-    async def raw(
-        self, sql: str, params: dict | None = None, name: str = "default"
-    ) -> list[dict]:
+    async def raw(self, sql: str, params: dict | None = None, name: str = "default") -> list[dict]:
         """Execute raw SQL (dialect-coupled escape hatch); returns row dicts.
 
         SELECT returns one dict per row; DML/DDL return ``[]`` and persist —

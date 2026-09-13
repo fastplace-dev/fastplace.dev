@@ -118,3 +118,64 @@ def test_make_controller_stub_is_runnable_and_uses_convention_filename(tmp_path,
     namespace: dict = {}
     exec(compile(source, str(path), "exec"), namespace)  # noqa: S102 - stub sanity
     assert callable(namespace["HealthCheck"])
+
+
+def test_lint_modules_reports_clean_tree_with_exit_zero(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+    services = tmp_path / "app" / "modules" / "billing" / "services"
+    services.mkdir(parents=True)
+    (tmp_path / "app" / "modules" / "billing" / "__init__.py").write_text("")
+    (services / "s.py").write_text("from ..models import Invoice\n")
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["lint:modules"])
+    assert result.exit_code == 0, result.output
+    assert "billing" in result.output
+
+
+def test_lint_modules_exits_one_with_rich_report_on_violations(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app" / "http" / "controllers").mkdir(parents=True)
+    (tmp_path / "app" / "http" / "controllers" / "bad_controller.py").write_text(
+        "from app.modules.billing.repositories.invoice_repository import InvoiceRepository\n"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["lint:modules"])
+    assert result.exit_code == 1
+    assert "bad_controller.py" in result.output
+    assert "invoice_repository" in result.output
+
+
+def test_make_module_scaffolds_csr_layout(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["make:module", "Knowledge"])
+    assert result.exit_code == 0, result.output
+
+    base = tmp_path / "app" / "modules" / "knowledge"
+    for rel in (
+        "__init__.py",
+        "models/__init__.py",
+        "repositories/__init__.py",
+        "services/__init__.py",
+    ):
+        assert (base / rel).exists(), rel
+
+
+def test_make_module_rejects_invalid_names(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["make:module", "../evil"])
+    assert result.exit_code == 1
+    assert not (tmp_path / "app" / "modules" / "..").exists()

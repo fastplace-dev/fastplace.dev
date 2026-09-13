@@ -14,13 +14,17 @@ class Request:
 
     def __init__(self, starlette_request: Any) -> None:
         self._r = starlette_request
-        self._user: Any = None
 
     # -- underlying access (escape hatch) ---------------------------------
     @property
     def starlette(self) -> Any:
         """Escape hatch to the underlying Starlette request."""
         return self._r
+
+    @property
+    def scope(self) -> dict:
+        """The ASGI scope — shared per-request state across middleware layers."""
+        return self._r.scope
 
     # -- basics ------------------------------------------------------------
     @property
@@ -95,15 +99,20 @@ class Request:
     # -- authentication -------------------------------------------------------
     @property
     def user(self) -> Any:
-        """The authenticated user, resolved by the auth middleware."""
-        return self._user
+        """The authenticated user, resolved by the auth middleware.
+
+        Stored on the ASGI scope (shared for the whole request lifetime) so
+        every ``Request`` wrapper — middleware's and controller's — sees the
+        same identity even across BaseHTTP middleware boundaries.
+        """
+        return self._r.scope.get("fastplace_user")
 
     def set_user(self, user: Any) -> None:
-        self._user = user
+        self._r.scope["fastplace_user"] = user
 
     @property
     def is_authenticated(self) -> bool:
-        return self._user is not None
+        return self._r.scope.get("fastplace_user") is not None
 
     # -- bridge protocol --------------------------------------------------------
     @property

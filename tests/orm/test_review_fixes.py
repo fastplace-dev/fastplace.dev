@@ -188,9 +188,7 @@ async def test_raw_joins_ambient_named_connection(two_connections, User):
     async with db.transaction(name="analytics"):
         # Targets the analytics row — only visible if raw() joined the ambient
         # analytics session instead of quietly running on the default one.
-        await db.raw(
-            "UPDATE review_users SET name = 'moved' WHERE name = 'on-analytics'", {}
-        )
+        await db.raw("UPDATE review_users SET name = 'moved' WHERE name = 'on-analytics'", {})
 
     analytics_rows = await db.raw("SELECT name FROM review_users", name="analytics")
     default_rows = await db.raw("SELECT name FROM review_users")
@@ -204,9 +202,7 @@ async def test_named_connection_from_config_dict(db_url, tmp_path, monkeypatch):
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir()
     (cfg_dir / "database.py").write_text(
-        "DATABASE_CONNECTIONS = {\n"
-        "    'analytics': {'url': 'sqlite+aiosqlite:///:memory:'},\n"
-        "}\n"
+        "DATABASE_CONNECTIONS = {\n    'analytics': {'url': 'sqlite+aiosqlite:///:memory:'},\n}\n"
     )
     from fastplace.config import reset_config
 

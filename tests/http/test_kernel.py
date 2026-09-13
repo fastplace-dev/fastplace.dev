@@ -1,6 +1,5 @@
 """HTTP kernel, router, request/response, render, middleware, lifecycle tests."""
 
-
 import pytest
 from pydantic import BaseModel
 
@@ -174,9 +173,7 @@ async def test_render_initial_load_returns_html_with_payload(app):
     a = get_app(routes=r)
     import httpx
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=a), base_url="http://test"
-    ) as c:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=a), base_url="http://test") as c:
         resp = await c.get("/dashboard")
     assert resp.status_code == 200
     assert 'id="fastplace"' in resp.text
@@ -198,9 +195,7 @@ async def test_router_accepts_controller_class_and_action():
     a = get_app(routes=r)
     import httpx
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=a), base_url="http://test"
-    ) as c:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=a), base_url="http://test") as c:
         resp = await c.get("/ctl")
     assert resp.status_code == 200
     assert resp.json() == {"controller": "ping"}
@@ -217,12 +212,8 @@ async def test_render_bridge_request_returns_json_only(app):
     a = get_app(routes=r)
     import httpx
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=a), base_url="http://test"
-    ) as c:
-        resp = await c.get(
-            "/dashboard", headers={"X-Fastplace-Request": "true"}
-        )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=a), base_url="http://test") as c:
+        resp = await c.get("/dashboard", headers={"X-Fastplace-Request": "true"})
     assert resp.headers["content-type"].startswith("application/json")
     body = resp.json()
     assert body["component"] == "Dashboard/Index"
@@ -289,9 +280,7 @@ async def test_middleware_runs_and_can_mutate_response():
     a = get_app(routes=r, middleware=[TraceMiddleware(), HeaderMiddleware()])
     import httpx
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=a), base_url="http://test"
-    ) as c:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=a), base_url="http://test") as c:
         resp = await client_get(c)
     assert order == ["trace-before", "trace-after"]
     assert resp.headers["x-trace"] == "yes"
@@ -347,9 +336,7 @@ async def test_request_surface(app):
     a = get_app(routes=r)
     import httpx
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=a), base_url="http://test"
-    ) as c:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=a), base_url="http://test") as c:
         resp = await c.get(
             "/probe?a=1",
             headers={"x-custom": "cv", "cookie": "snack=biscuit"},
@@ -360,3 +347,69 @@ async def test_request_surface(app):
     assert data["query"] == {"a": "1"}
     assert data["header"] == "cv"
     assert data["cookie"] == "biscuit"
+
+
+class TestKernelHardening:
+    async def test_declared_first_middleware_is_outermost(self):
+        # Starlette's add_middleware inserts at index 0 — the kernel must
+        # register in reverse so the documented "first declared = outermost"
+        # contract actually holds (auth resolution must run before CSRF).
+        from fastplace.http import Router, get_app
+        from fastplace.http.middleware import Middleware
+
+        seen: list[str] = []
+
+        class Outer(Middleware):
+            async def handle(self, request, call_next):
+                seen.append("outer-before")
+                response = await call_next(request)
+                seen.append("outer-after")
+                return response
+
+        class Inner(Middleware):
+            async def handle(self, request, call_next):
+                seen.append("inner-before")
+                return await call_next(request)
+
+        async def ping(request):
+            return {"ok": True}
+
+        r = Router()
+        r.get("/ping", ping)
+        app = get_app(
+            routes=r,
+            middleware=[Outer(), Inner()],
+            config={"APP_ENV": "local", "APP_KEY": "test-app-key-not-for-production-use-only"},
+        )
+        import httpx
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+            await c.get("/ping")
+        assert seen == ["outer-before", "inner-before", "outer-after"]
+
+    async def test_production_requires_an_app_key(self):
+        # An ephemeral per-process key silently invalidates sessions across
+        # workers — production must fail fast instead.
+        import pytest
+
+        from fastplace.errors import ConfigurationError
+        from fastplace.http import Router, get_app
+
+        async def ping(request):
+            return {"ok": True}
+
+        r = Router()
+        r.get("/ping", ping)
+        with pytest.raises(ConfigurationError, match="APP_KEY"):
+            get_app(routes=r, config={"APP_ENV": "production", "APP_KEY": ""})
+
+    async def test_local_dev_allows_an_ephemeral_app_key(self):
+        from fastplace.http import Router, get_app
+
+        async def ping(request):
+            return {"ok": True}
+
+        r = Router()
+        r.get("/ping", ping)
+        app = get_app(routes=r, config={"APP_ENV": "local", "APP_KEY": ""})
+        assert app is not None

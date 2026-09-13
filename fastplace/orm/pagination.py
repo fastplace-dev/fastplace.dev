@@ -48,9 +48,7 @@ class Paginator:
         return self.items[index]
 
     def to_dict(self) -> dict:
-        items = [
-            item.to_dict() if hasattr(item, "to_dict") else item for item in self.items
-        ]
+        items = [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items]
         return {
             "items": items,
             "total": self.total,

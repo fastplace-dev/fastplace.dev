@@ -69,7 +69,18 @@ def blog(db_url):
         name: str
 
     pivot_table("article_tag", "articles", "tags")
-    return type("Blog", (), {"User": User, "Post": Post, "Profile": Profile, "Comment": Comment, "Article": Article, "Tag": Tag})
+    return type(
+        "Blog",
+        (),
+        {
+            "User": User,
+            "Post": Post,
+            "Profile": Profile,
+            "Comment": Comment,
+            "Article": Article,
+            "Tag": Tag,
+        },
+    )
 
 
 @pytest.fixture()

@@ -20,8 +20,10 @@ def _snake(name: str) -> str:
     """PascalCase → snake_case (``HealthCheck`` → ``health_check``)."""
     out: list[str] = []
     for i, ch in enumerate(name):
-        if ch.isupper() and i > 0 and (
-            not name[i - 1].isupper() or (i + 1 < len(name) and name[i + 1].islower())
+        if (
+            ch.isupper()
+            and i > 0
+            and (not name[i - 1].isupper() or (i + 1 < len(name) and name[i + 1].islower()))
         ):
             out.append("_")
         out.append(ch.lower())
@@ -187,6 +189,28 @@ export default function {function_name}() {{
 """
 
 
+@generators_app.command("make:module")
+def make_module(
+    name: str = typer.Argument(..., help="Bounded module name (snake_case)"),
+) -> None:
+    """Scaffold a bounded module with the CSR layout under app/modules/."""
+    root = _project_root()
+    # Accept PascalCase too ("Knowledge" → "knowledge") like the other makers.
+    clean = _snake(name.strip().strip("/"))
+    if not clean or not re.fullmatch(r"[a-z][a-z0-9_]*", clean):
+        console.print("[red]invalid module name[/] — use snake_case starting with a letter")
+        raise typer.Exit(code=1)
+
+    base = root / "app" / "modules" / clean
+    for rel in (
+        "__init__.py",
+        "models/__init__.py",
+        "repositories/__init__.py",
+        "services/__init__.py",
+    ):
+        _write(base / rel, "", root)
+
+
 @generators_app.command("make:page")
 def make_page(
     name: str = typer.Argument(
@@ -209,9 +233,7 @@ def make_page(
     # The bridge resolves components by file path; a trailing extension is the
     # only dot form we accept, everything else cannot map to a file.
     if "." in clean:
-        console.print(
-            "[red]invalid page name[/] — dots are not supported; nest with '/' instead"
-        )
+        console.print("[red]invalid page name[/] — dots are not supported; nest with '/' instead")
         raise typer.Exit(code=1)
     if not clean or not re.fullmatch(r"[A-Za-z0-9/_-]+", clean):
         console.print("[red]invalid page name[/] — use letters, digits, '-', '_' and '/'")

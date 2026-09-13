@@ -324,6 +324,70 @@ describe("visit payload validation", () => {
   });
 });
 
+describe("CSRF protection", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+    document.head.querySelectorAll("meta[name='csrf-token']").forEach((m) => m.remove());
+  });
+
+  it("sends the CSRF token header on unsafe-method visits", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    const meta = document.createElement("meta");
+    meta.name = "csrf-token";
+    meta.content = "session-csrf-token-value";
+    document.head.appendChild(meta);
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockBridgeResponse({
+        component: "Dashboard/Index",
+        props: {},
+        url: "/dashboard",
+        version: "v1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await router.visit("/logout", { method: "POST" });
+
+    expect(fetchMock.mock.calls[0][1].headers["X-Fastplace-CSRF-Token"]).toBe(
+      "session-csrf-token-value",
+    );
+  });
+
+  it("omits the CSRF header on GET visits and without a meta tag", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockBridgeResponse({
+        component: "Dashboard/Index",
+        props: {},
+        url: "/search",
+        version: "v1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await router.visit("/search"); // GET — no CSRF header
+    expect(fetchMock.mock.calls[0][1].headers["X-Fastplace-CSRF-Token"]).toBeUndefined();
+
+    await router.visit("/logout", { method: "POST" }); // no meta tag present
+    expect(fetchMock.mock.calls[1][1].headers["X-Fastplace-CSRF-Token"]).toBeUndefined();
+  });
+});
+
 describe("history semantics", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

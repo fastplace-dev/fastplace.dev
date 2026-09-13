@@ -68,7 +68,7 @@ async def test_debug_detail_suppressed_in_production_even_with_app_debug_true():
     r.get("/boom", boom)
     app = get_app(
         routes=r,
-        config={"APP_DEBUG": True, "APP_ENV": "production"},
+        config={"APP_DEBUG": True, "APP_ENV": "production", "APP_KEY": "test-secret-key-0123456789abcdef"},
     )
     async with _client(app, raise_app_exceptions=False) as c:
         resp = await c.get("/boom")
@@ -93,7 +93,11 @@ async def test_debug_detail_present_in_local_when_app_debug_true():
 
 
 async def test_openapi_disabled_in_production():
-    app = get_app(routes=Router(), config={"APP_ENV": "production"})
+    # APP_KEY supplied: production apps refuse to boot without it (kernel hardening)
+    app = get_app(
+        routes=Router(),
+        config={"APP_ENV": "production", "APP_KEY": "test-secret-key-0123456789abcdef"},
+    )
     async with _client(app) as c:
         docs = await c.get("/api/docs")
         schema = await c.get("/api/openapi.json")
@@ -349,7 +353,9 @@ def test_manifest_parsed_once_across_requests(tmp_path, monkeypatch):
         calls["n"] += 1
         return original(s)
 
-    monkeypatch.setattr(assets, "json", SimpleNamespace(loads=counting, JSONDecodeError=jsonlib.JSONDecodeError))
+    monkeypatch.setattr(
+        assets, "json", SimpleNamespace(loads=counting, JSONDecodeError=jsonlib.JSONDecodeError)
+    )
 
     first = assets.asset_tags(tmp_path, vite_dev_url=None, app_env="production")
     second = assets.asset_tags(tmp_path, vite_dev_url=None, app_env="production")
@@ -363,11 +369,15 @@ def test_manifest_cache_invalidated_on_mtime_change(tmp_path):
     import fastplace.http.assets as assets
 
     path = _write_manifest(tmp_path, {"resources/js/main.jsx": {"file": "assets/main-a.js"}})
-    assert "assets/main-a.js" in assets.asset_tags(tmp_path, vite_dev_url=None, app_env="production")
+    assert "assets/main-a.js" in assets.asset_tags(
+        tmp_path, vite_dev_url=None, app_env="production"
+    )
 
     _write_manifest(tmp_path, {"resources/js/main.jsx": {"file": "assets/main-b.js"}})
     os.utime(path, ns=(0, 0))  # force a different mtime_ns
-    assert "assets/main-b.js" in assets.asset_tags(tmp_path, vite_dev_url=None, app_env="production")
+    assert "assets/main-b.js" in assets.asset_tags(
+        tmp_path, vite_dev_url=None, app_env="production"
+    )
 
 
 def test_invalid_manifest_returns_comment(tmp_path):
