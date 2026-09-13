@@ -70,3 +70,16 @@ class SearchCapabilityMissing(FastplaceError):
 
     status_code = 500
     default_message = "No search-capable backend is configured."
+
+
+class MassAssignmentError(FastplaceError):
+    """A mass-assignment payload tried to set a guarded attribute.
+
+    Guarded by default: the primary key and the audit/tombstone columns
+    (``created_at`` / ``updated_at`` / ``deleted_at``). Models may narrow or
+    widen the surface with ``__fillable__`` / ``__guarded__`` (OWASP mass
+    assignment). Direct attribute assignment remains the escape hatch.
+    """
+
+    status_code = 422
+    default_message = "The attribute is not mass-assignable."
