@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from pydantic import BaseModel
 from starlette.responses import (
@@ -64,12 +65,24 @@ def to_response(result: Any) -> Response:
     return Json(_jsonable(result))
 
 
-def _jsonable(value: Any) -> Any:
-    """Best-effort conversion of common Python values to JSON-safe data."""
+def _jsonable(value: Any, _seen: set[int] | None = None) -> Any:
+    """Best-effort conversion of common Python values to JSON-safe data.
+
+    Cyclic structures raise ``ValueError`` instead of recursing until the
+    interpreter kills the stack.
+    """
+    seen = _seen if _seen is not None else set()
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, dict):
-        return {k: _jsonable(v) for k, v in value.items()}
+        if id(value) in seen:
+            raise ValueError("Circular reference detected in response payload")
+        seen = seen | {id(value)}
+        return {k: _jsonable(v, seen) for k, v in value.items()}
     if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
-        return [_jsonable(v) for v in value]
+        materialized = list(value)
+        if id(materialized) in seen:
+            raise ValueError("Circular reference detected in response payload")
+        seen = seen | {id(materialized)}
+        return [_jsonable(v, seen) for v in materialized]
     return value

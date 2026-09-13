@@ -8,8 +8,10 @@ return anything coercible to a response.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from starlette.requests import Request as StarletteRequest
 
@@ -41,25 +43,55 @@ class Router:
     routes: list[Route] = field(default_factory=list)
     websocket_routes: list[WebSocketRoute] = field(default_factory=list)
 
-    def add(self, method: str, path: str, handler: Callable, name: str | None = None) -> Route:
+    def add(
+        self,
+        method: str,
+        path: str,
+        handler: Callable,
+        action: str | None = None,
+        name: str | None = None,
+    ) -> Route:
+        # declarative registration: router.get(path, Controller, "action").
+        # Resolve the bound method once at registration time so the kernel's
+        # endpoint adapter receives a plain callable either way.
+        if action is not None:
+            if not inspect.isclass(handler):
+                raise TypeError(
+                    "router action= requires a Controller class — pass a plain "
+                    f"handler instead, got {handler!r}"
+                )
+            bound = getattr(handler(), action, None)
+            if bound is None:
+                raise AttributeError(f"{handler.__name__} has no action '{action}'")
+            handler = bound
         route = Route(method=method.upper(), path=self._join(path), handler=handler, name=name)
         self.routes.append(route)
         return route
 
-    def get(self, path: str, handler: Callable, name: str | None = None) -> Route:
-        return self.add("GET", path, handler, name)
+    def get(
+        self, path: str, handler: Callable, action: str | None = None, name: str | None = None
+    ) -> Route:
+        return self.add("GET", path, handler, action, name)
 
-    def post(self, path: str, handler: Callable, name: str | None = None) -> Route:
-        return self.add("POST", path, handler, name)
+    def post(
+        self, path: str, handler: Callable, action: str | None = None, name: str | None = None
+    ) -> Route:
+        return self.add("POST", path, handler, action, name)
 
-    def put(self, path: str, handler: Callable, name: str | None = None) -> Route:
-        return self.add("PUT", path, handler, name)
+    def put(
+        self, path: str, handler: Callable, action: str | None = None, name: str | None = None
+    ) -> Route:
+        return self.add("PUT", path, handler, action, name)
 
-    def patch(self, path: str, handler: Callable, name: str | None = None) -> Route:
-        return self.add("PATCH", path, handler, name)
+    def patch(
+        self, path: str, handler: Callable, action: str | None = None, name: str | None = None
+    ) -> Route:
+        return self.add("PATCH", path, handler, action, name)
 
-    def delete(self, path: str, handler: Callable, name: str | None = None) -> Route:
-        return self.add("DELETE", path, handler, name)
+    def delete(
+        self, path: str, handler: Callable, action: str | None = None, name: str | None = None
+    ) -> Route:
+        return self.add("DELETE", path, handler, action, name)
 
     def websocket(self, path: str, handler: Callable, name: str | None = None) -> WebSocketRoute:
         route = WebSocketRoute(path=self._join(path), handler=handler, name=name)
@@ -71,7 +103,7 @@ class Router:
             return path
         return self.prefix.rstrip("/") + "/" + path.lstrip("/")
 
-    def extend(self, other: "Router") -> None:
+    def extend(self, other: Router) -> None:
         """Append every route from another router."""
         self.routes.extend(other.routes)
         self.websocket_routes.extend(other.websocket_routes)

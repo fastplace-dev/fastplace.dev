@@ -1,6 +1,5 @@
 """HTTP kernel, router, request/response, render, middleware, lifecycle tests."""
 
-from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
@@ -16,7 +15,6 @@ from fastplace.http import (
     lifecycle,
     render,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: build an isolated Fastplace app per test module
@@ -150,7 +148,7 @@ async def test_validation_error_maps_to_422_with_errors(client):
 async def test_unhandled_exception_maps_to_500(routes):
     import httpx
 
-    from fastplace.http import Router, get_app
+    from fastplace.http import get_app
 
     app = get_app(routes=routes, config={"APP_DEBUG": False})
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
@@ -186,6 +184,28 @@ async def test_render_initial_load_returns_html_with_payload(app):
     assert resp.headers["content-type"].startswith("text/html")
 
 
+async def test_router_accepts_controller_class_and_action():
+    """declarative registration: router.get(path, Controller, "action")."""
+
+    class PingController(Controller):
+        async def index(self, request: Request):
+            return {"controller": "ping"}
+
+    from fastplace.http import Router, get_app
+
+    r = Router()
+    r.get("/ctl", PingController, "index", name="ping")
+    a = get_app(routes=r)
+    import httpx
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=a), base_url="http://test"
+    ) as c:
+        resp = await c.get("/ctl")
+    assert resp.status_code == 200
+    assert resp.json() == {"controller": "ping"}
+
+
 async def test_render_bridge_request_returns_json_only(app):
     async def page(request: Request):
         return render(request, component="Dashboard/Index", props={"ok": True})
@@ -214,9 +234,9 @@ async def test_render_accepts_pydantic_props():
     class Props(BaseModel):
         n: int
 
-    from fastplace.http import Router, get_app
-    from fastplace.http.request import Request as FpRequest
     from starlette.requests import Request as SRequest
+
+    from fastplace.http.request import Request as FpRequest
 
     scope = {
         "type": "http",
@@ -302,8 +322,11 @@ async def test_lifecycle_hooks_fire():
 # ---------------------------------------------------------------------------
 
 
-def test_controller_base_exists():
-    assert Controller is not None
+def test_controller_base_supports_subclassing():
+    class Sub(Controller):
+        pass
+
+    assert isinstance(Sub(), Controller)
 
 
 async def test_request_surface(app):

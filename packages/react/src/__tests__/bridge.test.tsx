@@ -1,0 +1,562 @@
+import "@testing-library/jest-dom/vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import React from "react";
+import {
+  FastplaceProvider,
+  Link,
+  createFastplaceApp,
+  createPageResolver,
+  router,
+  usePage,
+} from "../index";
+
+/* ------------------------------------------------------------------ *
+ * Helpers
+ * ------------------------------------------------------------------ */
+
+const DashboardPage = () => {
+  const { props } = usePage();
+  return <h1>Dashboard: {(props as any).user}</h1>;
+};
+
+const ProjectsPage = () => {
+  const { props, url } = usePage();
+  return (
+    <div>
+      <h2 data-testid="projects-url">{url}</h2>
+      <ul>
+        {(props as any).projects.map((p: string) => (
+          <li key={p}>{p}</li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const pages = {
+  "Dashboard/Index": DashboardPage,
+  "Projects/Index": ProjectsPage,
+};
+
+function renderApp(initialPage: any) {
+  const App = () => {
+    const { component } = usePage();
+    const Page = pages[component as keyof typeof pages];
+    return (
+      <div>
+        <Link href="/projects">Projects</Link>
+        {Page ? <Page /> : null}
+      </div>
+    );
+  };
+  return render(
+    <FastplaceProvider initialPage={initialPage}>
+      <App />
+    </FastplaceProvider>,
+  );
+}
+
+function mockBridgeResponse(payload: any) {
+  return {
+    ok: true,
+    headers: new Headers({ "content-type": "application/json" }),
+    redirected: false,
+    json: () => Promise.resolve(payload),
+  } as unknown as Response;
+}
+
+/* ------------------------------------------------------------------ *
+ * Tests
+ * ------------------------------------------------------------------ */
+
+beforeEach(() => {
+  cleanup();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+describe("FastplaceProvider + usePage", () => {
+  it("exposes the server payload (component, props, url, version)", () => {
+    renderApp({
+      component: "Dashboard/Index",
+      props: { user: "Firoz" },
+      url: "/dashboard",
+      version: "v1",
+    });
+    expect(screen.getByText("Dashboard: Firoz")).toBeInTheDocument();
+  });
+});
+
+describe("Link", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "Projects/Index",
+          props: { projects: ["Alpha", "Beta"] },
+          url: "/projects",
+          version: "v1",
+        }),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+  });
+
+  it("sends a bridge request and swaps the page without reload", async () => {
+    renderApp({
+      component: "Dashboard/Index",
+      props: { user: "Firoz" },
+      url: "/dashboard",
+      version: "v1",
+    });
+
+    await userEvent.click(screen.getByText("Projects"));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Dashboard: Firoz" })).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByTestId("projects-url")).toHaveTextContent("/projects");
+
+    const call = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toBe("/projects");
+    expect(call[1].headers["X-Fastplace-Request"]).toBe("true");
+    expect(call[1].headers["Accept"]).toBe("application/json");
+  });
+
+  it("does not bridge-navigate external URLs (browser handles them)", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/", version: "v1" }}
+      >
+        <Link href="https://example.com/x">External</Link>
+      </FastplaceProvider>,
+    );
+
+    await userEvent.click(screen.getByText("External"));
+    // External href → no bridge request issued.
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("router.visit", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+  });
+
+  it("pushes history state for GET visits", async () => {
+    let VisitUrl = "";
+    const Probe = () => {
+      const { url } = usePage();
+      VisitUrl = url;
+      return null;
+    };
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/", version: "v1" }}
+      >
+        <Probe />
+      </FastplaceProvider>,
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "Projects/Index",
+          props: { projects: [] },
+          url: "/projects",
+          version: "v1",
+        }),
+      ),
+    );
+
+    await router.visit("/projects");
+    await waitFor(() => expect(VisitUrl).toBe("/projects"));
+    expect(window.location.pathname).toBe("/projects");
+  });
+});
+
+describe("createPageResolver", () => {
+  it("resolves declared page components by name", () => {
+    const fakeModules: Record<string, any> = {
+      "/abs/path/resources/js/pages/Dashboard/Index.jsx": { default: DashboardPage },
+      "/abs/path/resources/js/pages/Projects/Index.jsx": { default: ProjectsPage },
+    };
+    const resolver = createPageResolver(fakeModules);
+    expect(resolver("Dashboard/Index")).toBe(DashboardPage);
+    expect(resolver("Projects/Index")).toBe(ProjectsPage);
+    expect(() => resolver("Missing/Page")).toThrow(/Missing\/Page/);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Phase 3 review fixes — payload validation, replace/preserveState,
+ * query serialization, hash links, lazy pages, error boundary.
+ * ------------------------------------------------------------------ */
+
+/** Replace window.location with a controllable stub; returns a restore fn. */
+function stubLocation() {
+  const assign = vi.fn();
+  const original = window.location;
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      href: "http://localhost/dashboard",
+      origin: "http://localhost",
+      host: "localhost",
+      protocol: "http:",
+      pathname: "/dashboard",
+      search: "",
+      hash: "",
+      assign,
+      replace: vi.fn(),
+    },
+  });
+  return {
+    assign,
+    restore: () =>
+      Object.defineProperty(window, "location", { configurable: true, value: original }),
+  };
+}
+
+function jsonResponse(payload: any, ok = true, status = 200) {
+  return {
+    ok,
+    status,
+    headers: new Headers({ "content-type": "application/json" }),
+    redirected: false,
+    json: () => Promise.resolve(payload),
+  } as unknown as Response;
+}
+
+describe("visit payload validation", () => {
+  let restore: () => void;
+  let assign: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    ({ assign, restore } = stubLocation());
+  });
+
+  afterEach(() => {
+    restore();
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+  });
+
+  it("falls back to a full page load for non-bridge JSON payloads", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{
+          component: "Dashboard/Index",
+          props: { user: "Firoz" },
+          url: "/dashboard",
+          version: "v1",
+        }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ status: "ok" })));
+
+    await router.visit("/api/v1/health");
+
+    // A plain API JSON body is not a bridge page — never swap it in.
+    expect(router.page?.component).toBe("Dashboard/Index");
+    expect(assign).toHaveBeenCalledWith("/api/v1/health");
+  });
+
+  it("falls back to a full page load for error JSON responses (404)", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ message: "Not Found" }, false, 404)),
+    );
+
+    await router.visit("/definitely-not-here");
+
+    expect(router.page?.component).toBe("Dashboard/Index");
+    expect(assign).toHaveBeenCalledWith("/definitely-not-here");
+  });
+
+  it("still swaps valid bridge payloads on ok responses", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          component: "Projects/Index",
+          props: { projects: ["Alpha"] },
+          url: "/projects",
+          version: "v1",
+        }),
+      ),
+    );
+
+    await router.visit("/projects");
+    expect(router.page?.component).toBe("Projects/Index");
+    expect(assign).not.toHaveBeenCalled();
+  });
+});
+
+describe("history semantics", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+  });
+
+  it("replace:true replaces the history entry and updates the URL", async () => {
+    const replaceSpy = vi.spyOn(window.history, "replaceState");
+    const pushSpy = vi.spyOn(window.history, "pushState");
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "Projects/Index",
+          props: { projects: [] },
+          url: "/projects",
+          version: "v1",
+        }),
+      ),
+    );
+
+    await router.visit("/projects", { replace: true });
+
+    expect(router.page?.url).toBe("/projects");
+    expect(window.location.pathname).toBe("/projects");
+    expect(replaceSpy).toHaveBeenCalled();
+    expect(pushSpy).not.toHaveBeenCalled();
+    replaceSpy.mockRestore();
+    pushSpy.mockRestore();
+  });
+
+  it("preserveState keeps the current component and props, updating only the url", async () => {
+    renderApp({
+      component: "Dashboard/Index",
+      props: { user: "Firoz" },
+      url: "/dashboard",
+      version: "v1",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "Projects/Index",
+          props: { projects: ["New"] },
+          url: "/projects",
+          version: "v1",
+        }),
+      ),
+    );
+
+    await router.visit("/projects", { preserveState: true });
+
+    await waitFor(() => expect(router.page?.url).toBe("/projects"));
+    // Same component + props as before the visit — only the URL moved.
+    expect(router.page?.component).toBe("Dashboard/Index");
+    expect(router.page?.props).toEqual({ user: "Firoz" });
+    expect(screen.getByText("Dashboard: Firoz")).toBeInTheDocument();
+  });
+
+  it("serializes GET visit data into the query string", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockBridgeResponse({
+        component: "Dashboard/Index",
+        props: {},
+        url: "/search?q=fastplace",
+        version: "v1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await router.visit("/search", { data: { q: "fastplace", page: 2 } });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/search?q=fastplace&page=2");
+  });
+});
+
+describe("hash links", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+  });
+
+  it("lets the browser handle fragment-only anchors natively", async () => {
+    // Sync location with the initial payload — as after a real initial load.
+    window.history.replaceState(null, "", "/dashboard");
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <Link href="#notes">Notes</Link>
+      </FastplaceProvider>,
+    );
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await userEvent.click(screen.getByText("Notes"));
+
+    // Native anchor jump — no bridge request, page state untouched.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("#notes");
+  });
+});
+
+describe("lazy page resolution", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+    document.body.innerHTML = "";
+  });
+
+  it("resolves lazy import() glob entries through React.lazy", async () => {
+    const LazyPage = () => {
+      const { props } = usePage();
+      return <h1>Lazy: {(props as any).tag}</h1>;
+    };
+    const lazyModules = {
+      "/x/resources/js/pages/Lazy/Index.jsx": () => Promise.resolve({ default: LazyPage }),
+    };
+    const resolver = createPageResolver(lazyModules as unknown as Record<string, any>);
+
+    const el = document.createElement("div");
+    el.id = "fastplace";
+    el.dataset.page = JSON.stringify({
+      component: "Lazy/Index",
+      props: { tag: "works" },
+      url: "/lazy",
+      version: "v1",
+    });
+    document.body.appendChild(el);
+
+    await createFastplaceApp({ resolve: resolver });
+    await waitFor(() => expect(screen.getByText("Lazy: works")).toBeInTheDocument());
+  });
+});
+
+describe("bootstrap error boundary", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+    document.body.innerHTML = "";
+  });
+
+  it("renders a fallback instead of unmounting when resolution fails", async () => {
+    const boom = () => {
+      throw new Error("page component missing");
+    };
+    const el = document.createElement("div");
+    el.id = "fastplace";
+    el.dataset.page = JSON.stringify({
+      component: "Missing/Index",
+      props: {},
+      url: "/missing",
+      version: "v1",
+    });
+    document.body.appendChild(el);
+
+    await createFastplaceApp({ resolve: boom as any });
+    await waitFor(() =>
+      expect(screen.getByText(/failed to render this page/i)).toBeInTheDocument(),
+    );
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * createFastplaceApp — the real bootstrap swaps components on visit
+ * ------------------------------------------------------------------ */
+
+describe("createFastplaceApp", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+    document.body.innerHTML = "";
+  });
+
+  it("remounts the resolved page component after a bridge navigation", async () => {
+    const AboutPage = () => {
+      const { props } = usePage();
+      return <h1>About: {(props as any).framework}</h1>;
+    };
+    const pages = { "Dashboard/Index": DashboardPage, "About/Index": AboutPage };
+    const resolve = createPageResolver({
+      "/x/resources/js/pages/Dashboard/Index.jsx": { default: DashboardPage },
+      "/x/resources/js/pages/About/Index.jsx": { default: AboutPage },
+    });
+    void pages;
+
+    // Server shell: container + embedded initial payload.
+    const el = document.createElement("div");
+    el.id = "fastplace";
+    el.dataset.page = JSON.stringify({
+      component: "Dashboard/Index",
+      props: { user: "Firoz" },
+      url: "/dashboard",
+      version: "v1",
+    });
+    document.body.appendChild(el);
+
+    await createFastplaceApp({ resolve });
+    await waitFor(() => expect(screen.getByText("Dashboard: Firoz")).toBeInTheDocument());
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "About/Index",
+          props: { framework: "fastplace" },
+          url: "/about",
+          version: "v1",
+        }),
+      ),
+    );
+
+    await router.visit("/about");
+    await waitFor(() => expect(screen.getByText("About: fastplace")).toBeInTheDocument());
+    expect(screen.queryByText("Dashboard: Firoz")).not.toBeInTheDocument();
+  });
+});

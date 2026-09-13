@@ -11,6 +11,11 @@ from pathlib import Path
 
 _DEV_ENVS = {"local", "dev", "development"}
 
+# Parsed manifests cached by (path → mtime, data) — the shell renders on every
+# initial-load request and must not re-read the manifest each time. A new
+# build bumps mtime and invalidates the entry.
+_manifest_cache: dict[Path, tuple[int, dict | None]] = {}
+
 
 def asset_tags(project_root: str | Path, *, vite_dev_url: str | None, app_env: str) -> str:
     """Return <script>/<link> tags for the app entry point."""
@@ -23,13 +28,38 @@ def asset_tags(project_root: str | Path, *, vite_dev_url: str | None, app_env: s
     return _production_tags(project_root)
 
 
-def _production_tags(project_root: str | Path) -> str:
-    manifest_path = Path(project_root) / "public" / "build" / "manifest.json"
-    if not manifest_path.exists():
-        return "<!-- fastplace: no build manifest; run `npm run build` or start Vite -->"
+def _manifest_path(project_root: str | Path) -> Path | None:
+    """Locate the build manifest — Vite 6 nests it under .vite/."""
+    build = Path(project_root) / "public" / "build"
+    for candidate in (build / "manifest.json", build / ".vite" / "manifest.json"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_manifest(path: Path) -> dict | None:
+    """Parse ``path`` once per mtime generation; ``None`` when unreadable."""
     try:
-        manifest = json.loads(manifest_path.read_text())
-    except json.JSONDecodeError:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    cached = _manifest_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        manifest: dict | None = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        manifest = None
+    _manifest_cache[path] = (mtime, manifest)
+    return manifest
+
+
+def _production_tags(project_root: str | Path) -> str:
+    manifest_path = _manifest_path(project_root)
+    if manifest_path is None:
+        return "<!-- fastplace: no build manifest; run `npm run build` or start Vite -->"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
         return "<!-- fastplace: invalid build manifest -->"
 
     tags: list[str] = []

@@ -1,0 +1,12 @@
+# Hand-maintained docs — not formatter territory
+CLAUDE.md
+README.md
+docs/
+
+# Generated / runtime output
+public/build/
+storage/
+database/
+.venv/
+node_modules/
+package-lock.json

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import Callable
+from collections.abc import Callable
 
 _startup_hooks: list[Callable] = []
 _shutdown_hooks: list[Callable] = []

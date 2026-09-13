@@ -20,13 +20,43 @@ from starlette.staticfiles import StaticFiles
 from fastplace.errors import FastplaceError
 from fastplace.http import lifecycle
 from fastplace.http.middleware import Middleware, wrap_middleware
-from fastplace.http.request import Request
 from fastplace.http.response import Json, Response
 from fastplace.http.router import Router, endpoint_adapter
 from fastplace.http.websocket import websocket_adapter
 
 API_PREFIX = "/api/v1"
 AI_PREFIX = "/ai"
+
+# Baseline hardening applied to every response unless the app overrides it.
+_SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"SAMEORIGIN"),
+    (b"referrer-policy", b"strict-origin-when-cross-origin"),
+)
+
+
+class _SecurityHeadersMiddleware:
+    """Pure-ASGI middleware appending baseline security headers."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                present = {name.lower() for name, _ in headers}
+                for name, value in _SECURITY_HEADERS:
+                    if name not in present:
+                        headers.append((name, value))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 
 def get_app(
@@ -43,10 +73,15 @@ def get_app(
     ``routes`` mount at the root (bridge pages), ``api_routes`` under
     ``/api/v1``, ``ai_routes`` under ``/ai``.
     """
-    from fastplace.config import Config
 
     cfg = _ConfigShim(config)
-    debug = bool(cfg.get("APP_DEBUG", default=False))
+    app_env = str(cfg.get("APP_ENV", default="local")).lower()
+    # Debug details never ship from a production environment, even when a
+    # stray APP_DEBUG=true survives in the environment. Note the FastAPI
+    # `debug` flag stays off: Starlette's ServerErrorMiddleware would otherwise
+    # bypass our JSON error handler with a plaintext traceback.
+    debug = bool(cfg.get("APP_DEBUG", default=False)) and app_env != "production"
+    enable_docs = app_env != "production"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -59,14 +94,14 @@ def get_app(
     app = FastAPI(
         title=str(cfg.get("APP_NAME", default="Fastplace")),
         lifespan=lifespan,
-        debug=debug,
-        docs_url="/api/docs",
-        openapi_url="/api/openapi.json",
+        docs_url="/api/docs" if enable_docs else None,
+        openapi_url="/api/openapi.json" if enable_docs else None,
         redoc_url=None,
     )
     app.state.fastplace_root = str(project_root or cfg.root)
     _mount_routes(app, routes=routes, api_routes=api_routes, ai_routes=ai_routes)
     _install_middleware(app, middleware or [])
+    app.add_middleware(_SecurityHeadersMiddleware)
     _install_error_handlers(app, debug=debug)
     return app
 
@@ -108,7 +143,7 @@ class _ConfigShim:
 
     def __init__(self, overrides: dict[str, Any] | None, root: str | Path | None = None) -> None:
         self.overrides = overrides or {}
-        self._config = None
+        self._config: Any = None
         self.root = root
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -132,7 +167,13 @@ def _ensure_import_root(root: Path) -> None:
 def _load_router_module(root: Path, dotted: str) -> Router | None:
     try:
         module = importlib.import_module(dotted)
-    except ModuleNotFoundError:
+    except ModuleNotFoundError as exc:
+        # Only the routes module itself may be absent (optional surface). A
+        # transitive import failure inside it is a real bug and must fail
+        # loudly instead of silently booting an empty app.
+        missing = exc.name or ""
+        if missing and missing != dotted and not dotted.startswith(f"{missing}."):
+            raise
         return None
     router = getattr(module, "router", None)
     if router is None and dotted == "routes.web":
@@ -184,20 +225,20 @@ def _register_router(target: APIRouter, router: Router, prefix: str = "") -> Non
             prefix + route.path,
             endpoint_adapter(route.handler),
             methods=[route.method],
-            name=route.name or route.handler.__name__,
+            name=route.name or getattr(route.handler, "__name__", None) or "endpoint",
         )
     for ws_route in router.websocket_routes:
         target.add_api_websocket_route(
             prefix + ws_route.path,
             websocket_adapter(ws_route.handler),
-            name=ws_route.name or ws_route.handler.__name__,
+            name=ws_route.name or getattr(ws_route.handler, "__name__", None) or "endpoint",
         )
 
 
 def _install_middleware(app: FastAPI, middleware: list[Middleware]) -> None:
     # First added = outermost; keep registration order stable for users.
     for mw in middleware:
-        app.add_middleware(wrap_middleware(mw), mw=mw)
+        app.add_middleware(wrap_middleware(mw), mw=mw)  # type: ignore[arg-type]
 
 
 def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:

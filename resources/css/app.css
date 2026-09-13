@@ -1,0 +1,52 @@
+/*
+ * Fastplace global styles — the single source of truth for the color theme
+ * (light + dark). Components use these tokens via Tailwind's theme function.
+ */
+@import "tailwindcss";
+
+@theme {
+  /* Brand */
+  --color-brand-50: oklch(0.97 0.02 250);
+  --color-brand-100: oklch(0.93 0.05 250);
+  --color-brand-300: oklch(0.8 0.1 250);
+  --color-brand-500: oklch(0.62 0.17 258);
+  --color-brand-600: oklch(0.55 0.19 260);
+  --color-brand-700: oklch(0.48 0.18 262);
+  --color-brand-900: oklch(0.3 0.12 262);
+
+  /* Semantic surface tokens — swapped per color scheme below */
+  --color-surface: oklch(0.985 0.005 250);
+  --color-surface-raised: white;
+  --color-ink: oklch(0.24 0.02 260);
+  --color-ink-muted: oklch(0.5 0.02 260);
+  --color-line: oklch(0.91 0.01 255);
+  --color-accent: var(--color-brand-500);
+  --color-success: oklch(0.6 0.13 155);
+  --color-warning: oklch(0.72 0.15 75);
+  --color-danger: oklch(0.58 0.2 25);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-surface: oklch(0.19 0.02 262);
+    --color-surface-raised: oklch(0.23 0.02 262);
+    --color-ink: oklch(0.94 0.01 255);
+    --color-ink-muted: oklch(0.68 0.02 258);
+    --color-line: oklch(0.32 0.02 262);
+    --color-accent: var(--color-brand-300);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-surface: oklch(0.19 0.02 262);
+  --color-surface-raised: oklch(0.23 0.02 262);
+  --color-ink: oklch(0.94 0.01 255);
+  --color-ink-muted: oklch(0.68 0.02 258);
+  --color-line: oklch(0.32 0.02 262);
+  --color-accent: var(--color-brand-300);
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+}

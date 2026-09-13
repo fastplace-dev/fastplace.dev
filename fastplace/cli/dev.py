@@ -43,9 +43,9 @@ def run_dev(
     vite_port = _cfg("VITE_PORT", "5173")
     vite_url = f"http://localhost:{vite_port}"
 
-    console.print(f"[fastplace]Fastplace[/fastplace] development server")
+    console.print("[fastplace]Fastplace[/fastplace] development server")
     console.print(f"  backend  → http://{host}:{port}")
-    console.print(f"  vite     → {vite_url}  [dim](assets proxied automatically)[/]")
+    console.print(f"  vite     → {vite_url}  [dim](serves bridge assets in dev)[/]")
 
     children: list[subprocess.Popen] = []
     env = {**os.environ, "VITE_DEV_URL": vite_url}

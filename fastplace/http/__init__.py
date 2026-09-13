@@ -5,8 +5,8 @@ lifecycle APIs. Application code imports ``fastplace.http`` and never
 ``fastapi``/``starlette`` directly (escape hatches excepted — ADR-006).
 """
 
-from fastplace.http.kernel import API_PREFIX, AI_PREFIX, create_app, get_app
 from fastplace.http import lifecycle  # noqa: F401  (module-level API)
+from fastplace.http.kernel import AI_PREFIX, API_PREFIX, create_app, get_app
 from fastplace.http.middleware import Middleware
 from fastplace.http.render import render
 from fastplace.http.request import Request

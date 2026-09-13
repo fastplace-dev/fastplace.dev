@@ -1,0 +1,30 @@
+{
+  "name": "@fastplace/react",
+  "version": "0.1.0",
+  "description": "React bridge for Fastplace — server-driven SPA over the X-Fastplace-Request protocol",
+  "type": "module",
+  "main": "./dist/fastplace-react.js",
+  "module": "./dist/fastplace-react.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/fastplace-react.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

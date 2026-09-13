@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import typer
@@ -13,6 +14,24 @@ generators_app = typer.Typer(help="Generate framework scaffolding.")
 
 def _project_root() -> Path:
     return Path.cwd()
+
+
+def _snake(name: str) -> str:
+    """PascalCase → snake_case (``HealthCheck`` → ``health_check``)."""
+    out: list[str] = []
+    for i, ch in enumerate(name):
+        if ch.isupper() and i > 0 and (
+            not name[i - 1].isupper() or (i + 1 < len(name) and name[i + 1].islower())
+        ):
+            out.append("_")
+        out.append(ch.lower())
+    return "".join(out)
+
+
+def _page_component_name(stem: str) -> str:
+    """Build a valid JS identifier from a page path (``my-settings`` → ``MySettings``)."""
+    parts = [seg[:1].upper() + seg[1:] for seg in re.split(r"[/_-]+", stem) if seg]
+    return "".join(parts)
 
 
 def _plural(word: str) -> str:
@@ -91,7 +110,7 @@ from fastplace.http import Controller, Json, Request
 
 class {name}(Controller):
     async def index(self, request: Request):
-        return Json(items=[])
+        return Json({{"items": []}})
 '''
 
 
@@ -101,7 +120,7 @@ def make_controller(
 ) -> None:
     """Create a controller stub in app/http/controllers/."""
     root = _project_root()
-    path = root / "app" / "http" / "controllers" / f"{name.lower()}.py"
+    path = root / "app" / "http" / "controllers" / f"{_snake(name)}_controller.py"
     _write(path, _CONTROLLER_TEMPLATE.format(doc_name=name, name=name), root)
 
 
@@ -120,7 +139,7 @@ def make_service(
 ) -> None:
     """Create a service stub in app/modules/<module>/services/."""
     root = _project_root()
-    path = root / "app" / "modules" / module / "services" / f"{name.lower()}_service.py"
+    path = root / "app" / "modules" / module / "services" / f"{_snake(name)}_service.py"
     _write(path, _SERVICE_TEMPLATE.format(doc_name=name, name=name), root)
 
 
@@ -145,5 +164,63 @@ def make_repository(
 ) -> None:
     """Create a repository stub in app/modules/<module>/repositories/."""
     root = _project_root()
-    path = root / "app" / "modules" / module / "repositories" / f"{name.lower()}_repository.py"
+    path = root / "app" / "modules" / module / "repositories" / f"{_snake(name)}_repository.py"
     _write(path, _REPOSITORY_TEMPLATE.format(doc_name=name, name=name), root)
+
+
+_PAGE_TEMPLATE = """import React from "react";
+import {{ usePage }} from "@fastplace/react";
+
+// Scaffolded by `fastplace make:page {component}` — props arrive from the
+// controller that renders this component via `render(request, component="{component}", props=...)`.
+export default function {function_name}() {{
+  const {{ props, url }} = usePage();
+
+  return (
+    <div className="p-8">
+      <h1 className="text-2xl font-semibold">{component}</h1>
+      <p className="mt-2 text-sm opacity-70">Served by {{url}} with bridge props:</p>
+      <pre className="mt-4 text-xs">{{JSON.stringify(props, null, 2)}}</pre>
+    </div>
+  );
+}}
+"""
+
+
+@generators_app.command("make:page")
+def make_page(
+    name: str = typer.Argument(
+        ...,
+        help='Page name as routed by the bridge, e.g. "Projects/Index" or "About"',
+    ),
+) -> None:
+    """Create a hydrated React page under resources/js/pages/."""
+    root = _project_root()
+
+    # "Projects/Index" → pages/Projects/Index.jsx; "About" → pages/About.jsx.
+    clean = name.strip("/").strip()
+    if not clean or clean.endswith("."):
+        console.print("[red]invalid page name[/] — use a form like Projects/Index")
+        raise typer.Exit(code=1)
+    suffix = ".jsx"
+    if clean.endswith((".jsx", ".tsx")):
+        clean, _, ext = clean.rpartition(".")
+        suffix = "." + ext
+    # The bridge resolves components by file path; a trailing extension is the
+    # only dot form we accept, everything else cannot map to a file.
+    if "." in clean:
+        console.print(
+            "[red]invalid page name[/] — dots are not supported; nest with '/' instead"
+        )
+        raise typer.Exit(code=1)
+    if not clean or not re.fullmatch(r"[A-Za-z0-9/_-]+", clean):
+        console.print("[red]invalid page name[/] — use letters, digits, '-', '_' and '/'")
+        raise typer.Exit(code=1)
+
+    path = root / "resources" / "js" / "pages" / (clean + suffix)
+    function_name = _page_component_name(clean)
+    _write(
+        path,
+        _PAGE_TEMPLATE.format(component=clean, function_name=function_name),
+        root,
+    )
