@@ -68,7 +68,11 @@ async def test_debug_detail_suppressed_in_production_even_with_app_debug_true():
     r.get("/boom", boom)
     app = get_app(
         routes=r,
-        config={"APP_DEBUG": True, "APP_ENV": "production", "APP_KEY": "test-secret-key-0123456789abcdef"},
+        config={
+            "APP_DEBUG": True,
+            "APP_ENV": "production",
+            "APP_KEY": "test-secret-key-0123456789abcdef",
+        },
     )
     async with _client(app, raise_app_exceptions=False) as c:
         resp = await c.get("/boom")

@@ -188,9 +188,7 @@ def test_relative_import_inside_package_init_resolves_correctly(tmp_path):
     # .models.invoice is billing's own models — same module, must NOT flag.
     files["app/modules/billing/__init__.py"] = "from .models.invoice import Invoice\n"
     # But accounts/__init__.py reaching into billing via ..billing IS cross-module.
-    files["app/modules/accounts/__init__.py"] = (
-        "from ..billing.models.invoice import Invoice\n"
-    )
+    files["app/modules/accounts/__init__.py"] = "from ..billing.models.invoice import Invoice\n"
     violations = lint_imports(make_project(tmp_path, files))
     assert len(violations) == 1
     assert violations[0].import_target == "app.modules.billing.models.invoice"
@@ -228,9 +226,7 @@ def test_dynamic_import_with_non_constant_argument_is_ignored(tmp_path):
 
 def test_star_import_of_a_module_root_is_flagged(tmp_path):
     files = dict(CLEAN_PROJECT)
-    files["app/modules/accounts/services/ledger_service.py"] = (
-        "from app.modules.billing import *\n"
-    )
+    files["app/modules/accounts/services/ledger_service.py"] = "from app.modules.billing import *\n"
     violations = lint_imports(make_project(tmp_path, files))
     assert len(violations) >= 1
     assert any(v.import_target.endswith("models") for v in violations)

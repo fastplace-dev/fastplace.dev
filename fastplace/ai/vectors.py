@@ -154,9 +154,7 @@ class PgVectorStore:
     silently degrading (blueprint §8).
     """
 
-    async def search(
-        self, model_cls: Any, embedding: list[float], limit: int = 10
-    ) -> list[Any]:
+    async def search(self, model_cls: Any, embedding: list[float], limit: int = 10) -> list[Any]:
         return await model_cls.vector_search(embedding, limit=limit)
 
 

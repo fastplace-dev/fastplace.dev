@@ -57,9 +57,10 @@ _structured_fn: CompletionFn = _default_structured_fn
 def debug_details_enabled() -> bool:
     """The kernel's error policy, mirrored here: exception detail only when
     APP_DEBUG is on *and* the environment is not production."""
-    return bool(config("APP_DEBUG", default=False)) and config(
-        "APP_ENV", default="local"
-    ) != "production"
+    return (
+        bool(config("APP_DEBUG", default=False))
+        and config("APP_ENV", default="local") != "production"
+    )
 
 
 def _jsonable(value: Any) -> Any:
@@ -150,9 +151,7 @@ class Agent:
             choice = response.choices[0]
             tool_calls = list(getattr(choice.message, "tool_calls", None) or [])
             if not tool_calls:
-                messages.append(
-                    {"role": "assistant", "content": choice.message.content or ""}
-                )
+                messages.append({"role": "assistant", "content": choice.message.content or ""})
                 if self.response_model is None:
                     return choice.message.content or ""
                 return await self._structured(messages)
@@ -191,9 +190,7 @@ class Agent:
             from fastplace.errors import ValidationError
 
             raise ValidationError("message is required")
-        conversation: list[dict[str, Any]] = [
-            {"role": "system", "content": self.system_prompt}
-        ]
+        conversation: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
         conversation.extend(history or [])
         conversation.append({"role": "user", "content": message})
         return conversation

@@ -27,6 +27,31 @@ _POOL_KEYS = ("POOL_SIZE", "MAX_OVERFLOW", "POOL_TIMEOUT", "POOL_RECYCLE", "ECHO
 
 _manager: DatabaseManager | None = None
 
+#: Bare scheme → async dialect of record (blueprint §8). Developers write
+#: ``mysql://`` / ``postgresql://``; the engine layer gets the driver bound.
+_ASYNC_DRIVER_BINDINGS = {
+    "mysql": "mysql+asyncmy",
+    "mariadb": "mysql+asyncmy",
+    "postgresql": "postgresql+asyncpg",
+    "postgres": "postgresql+asyncpg",
+    "sqlite": "sqlite+aiosqlite",
+}
+
+
+def normalize_database_url(url: str) -> str:
+    """Bind a bare scheme to the framework's async driver for it.
+
+    ``mysql://…`` becomes ``mysql+asyncmy://…`` and friends; URLs that
+    already name a driver pass through untouched, and schemes with no
+    relational binding (``mongodb://`` lives behind the document adapter)
+    are left exactly as written.
+    """
+    scheme, separator, rest = url.partition("://")
+    if not separator or "+" in scheme:
+        return url
+    bound = _ASYNC_DRIVER_BINDINGS.get(scheme)
+    return f"{bound}://{rest}" if bound else url
+
 
 def get_manager() -> DatabaseManager:
     """Process-wide manager, configured from ``config/database.py`` + ``.env``."""
@@ -100,6 +125,8 @@ class DatabaseManager:
 
     def __init__(self, connections: dict[str, dict[str, Any]]) -> None:
         self.connections = connections
+        for cfg in self.connections.values():
+            cfg["url"] = normalize_database_url(str(cfg["url"]))
         self._engines: dict[str, AsyncEngine] = {}
         self._session_factories: dict[str, async_sessionmaker[AsyncSession]] = {}
 
@@ -132,6 +159,10 @@ class DatabaseManager:
                 kwargs["pool_size"] = 1
                 kwargs["max_overflow"] = 0
         else:
+            # Server backends reap idle connections (MySQL's wait_timeout is
+            # the classic case) — verify liveness on checkout so a pooled
+            # socket is never handed out dead.
+            kwargs["pool_pre_ping"] = True
             for key in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle"):
                 if key in cfg:
                     kwargs[key] = int(cfg[key])

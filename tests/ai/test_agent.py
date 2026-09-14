@@ -37,9 +37,7 @@ class _Message:
 class _Choice:
     def __init__(self, message: _Message, finish_reason: str | None = None):
         self.message = message
-        self.finish_reason = finish_reason or (
-            "tool_calls" if message.tool_calls else "stop"
-        )
+        self.finish_reason = finish_reason or ("tool_calls" if message.tool_calls else "stop")
 
 
 class _Response:

@@ -157,9 +157,7 @@ def _docstring_summary(docstring: str) -> str:
     return ""
 
 
-def _parameters_schema(
-    fn: ToolFn, hints: dict[str, Any], docstring: str
-) -> dict[str, Any]:
+def _parameters_schema(fn: ToolFn, hints: dict[str, Any], docstring: str) -> dict[str, Any]:
     """Build the OpenAI ``parameters`` object from annotations + docstring."""
     sig = inspect.signature(fn)
     descriptions = _parse_args_section(docstring)

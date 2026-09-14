@@ -225,8 +225,7 @@ def cache() -> CacheStore:
         elif driver == "redis":
             if not _redis_available():
                 raise ConfigurationError(
-                    "CACHE_DRIVER=redis requires the redis library — "
-                    "pip install 'fastplace[queue]'"
+                    "CACHE_DRIVER=redis requires the redis library — pip install 'fastplace[queue]'"
                 )
             _default_cache = RedisCache()
         else:

@@ -58,12 +58,12 @@ class TestCsrfValidation:
     async def test_form_encoded_body_token_is_accepted(self, auth_client):
         page = await auth_client.get("/me")
         token = page.headers["X-Fastplace-CSRF-Token"]
-        response = await auth_client.post(
-            "/submit", data={"_token": token, "payload": 1}
-        )
+        response = await auth_client.post("/submit", data={"_token": token, "payload": 1})
         assert response.status_code == 200
 
-    async def test_valid_bearer_token_bypasses_csrf(self, auth_client, registered_user, monkeypatch):
+    async def test_valid_bearer_token_bypasses_csrf(
+        self, auth_client, registered_user, monkeypatch
+    ):
         # Only a genuinely token-authenticated request (stateless edge) is
         # exempt — mint a real token for the registered user.
         monkeypatch.setenv("APP_KEY", SECRET)
@@ -72,9 +72,7 @@ class TestCsrfValidation:
 
         guard = TokenGuard(dict_provider, secret=SECRET)
         token = guard.issue_for(registered_user)
-        response = await auth_client.post(
-            "/submit", headers={"Authorization": f"Bearer {token}"}
-        )
+        response = await auth_client.post("/submit", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200
 
     async def test_authorization_header_alone_does_not_bypass_csrf(self, auth_client):
@@ -92,9 +90,7 @@ class TestCsrfValidation:
         self, auth_client, monkeypatch
     ):
         monkeypatch.setenv("APP_KEY", SECRET)
-        response = await auth_client.post(
-            "/submit", headers={"Authorization": "Bearer not.a.jwt"}
-        )
+        response = await auth_client.post("/submit", headers={"Authorization": "Bearer not.a.jwt"})
         assert response.status_code == 401
 
     async def test_except_paths_are_exempted(self, auth_client, monkeypatch):

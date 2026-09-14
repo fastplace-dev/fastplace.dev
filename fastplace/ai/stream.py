@@ -70,9 +70,7 @@ async def _events(agent: Any, messages: list[dict[str, Any]]) -> Any:
     rounds = 0
     try:
         while True:
-            stream = await agent_module._completion_fn(
-                **agent._request(messages, stream=True)
-            )
+            stream = await agent_module._completion_fn(**agent._request(messages, stream=True))
             # Tool calls fragment across stream chunks — accumulate by the
             # provider's fragment index and assemble when the round ends.
             fragments: dict[int, dict[str, Any]] = {}

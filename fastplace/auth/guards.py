@@ -99,11 +99,9 @@ class TokenGuard:
     ) -> str:
         from time import time
 
-        for key in (claims or {}):
+        for key in claims or {}:
             if key in self._RESERVED_CLAIMS:
-                raise ValueError(
-                    f"claim '{key}' is managed by the guard — pass custom claims only"
-                )
+                raise ValueError(f"claim '{key}' is managed by the guard — pass custom claims only")
         lifetime = self.ttl if ttl is None else ttl
         now = int(time())
         payload: dict[str, Any] = {

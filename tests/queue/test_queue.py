@@ -75,6 +75,7 @@ def test_duplicate_job_names_are_rejected_at_registration():
         return None
 
     with pytest.raises(ValueError, match="duplicate"):
+
         @Job()  # noqa: F811 — same name on purpose
         async def duplicate():
             return None

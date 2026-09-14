@@ -383,7 +383,9 @@ class TestKernelHardening:
         )
         import httpx
 
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as c:
             await c.get("/ping")
         assert seen == ["outer-before", "inner-before", "outer-after"]
 

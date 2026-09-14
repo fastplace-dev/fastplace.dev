@@ -1,0 +1,143 @@
+"""Document adapter unit behavior — naming, filters, defaults, wiring (T6.3).
+
+Everything here runs without a MongoDB server: pure query-builder and
+convention logic. Server round trips live in the env-gated contract suite
+(``tests/orm/mongodb/``).
+"""
+
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_documents_singleton():
+    from fastplace.orm.documents import reset_documents
+
+    reset_documents()
+    yield
+    reset_documents()
+
+
+def test_collection_name_defaults_to_pluralized_snake_case():
+    from fastplace.orm.documents import Document
+
+    class Article(Document):
+        pass
+
+    class Category(Document):
+        pass
+
+    class Analytics(Document):
+        pass
+
+    assert Article.__collection__ == "articles"
+    assert Category.__collection__ == "categories"
+    assert Analytics.__collection__ == "analytics"
+
+
+def test_explicit_collection_name_wins():
+    from fastplace.orm.documents import Document
+
+    class Person(Document):
+        __collection__ = "people"
+
+    assert Person.__collection__ == "people"
+
+
+def test_where_merges_equality_kwargs_and_raw_filters():
+    from fastplace.orm.documents import Document, DocumentQuery
+
+    class Article(Document):
+        pass
+
+    query = Article.where(title="hello")
+    assert isinstance(query, DocumentQuery)
+    assert query._filter == {"title": "hello"}
+
+    merged = query.where({"views": {"$gte": 3}})
+    assert merged._filter == {"title": "hello", "views": {"$gte": 3}}
+    # immutable chain — the original query is untouched
+    assert query._filter == {"title": "hello"}
+
+    # a None equality matches stored nulls (Mongo semantics), not "ignore me"
+    assert Article.where(views=None)._filter == {"views": None}
+
+
+def test_query_builder_accumulates_sort_skip_limit_immutably():
+    from fastplace.orm.documents import Document
+
+    class Article(Document):
+        pass
+
+    base = Article.where(title="x")
+    paged = base.sort("views", -1).skip(10).limit(5)
+
+    assert paged._sort == [("views", -1)]
+    assert paged._skip == 10
+    assert paged._limit == 5
+    assert base._sort == [] and base._skip == 0 and base._limit is None
+
+    # chained sort keys compose into one ordering spec (major → minor)
+    multi = base.sort("views", -1).sort("title", 1)
+    assert multi._sort == [("views", -1), ("title", 1)]
+
+
+def test_annotation_defaults_fill_missing_keys_on_create_data():
+    from fastplace.orm.documents import Document, _document_payload
+
+    class Article(Document):
+        title: str = ""
+        views: int = 0
+        tags: list = list
+
+    payload = _document_payload(Article, {"title": "hi"})
+    assert payload == {"title": "hi", "views": 0, "tags": []}
+
+    # provided values are never clobbered by defaults
+    full = _document_payload(Article, {"title": "hi", "views": 9, "tags": ["a"]})
+    assert full == {"title": "hi", "views": 9, "tags": ["a"]}
+
+
+def test_client_url_and_database_resolution(monkeypatch):
+    from fastplace.orm.documents import (
+        _database_name_for,
+        get_documents_client,
+        reset_documents,
+    )
+
+    # database named in the URL path wins
+    assert _database_name_for("mongodb://localhost:27017/appdb", None) == "appdb"
+    # …falling back to config, then the framework default
+    assert _database_name_for("mongodb://localhost:27017", "configured") == "configured"
+    assert _database_name_for("mongodb://localhost:27017", None) == "fastplace"
+
+    monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017/appdb")
+    reset_documents()
+    client = get_documents_client()
+    try:
+        assert client is get_documents_client()  # singleton
+    finally:
+        reset_documents()
+    assert get_documents_client() is not client  # reset builds a fresh one
+
+
+def test_document_instances_expose_stored_fields_and_id_alias():
+    from fastplace.orm.documents import Document
+
+    class Article(Document):
+        pass
+
+    doc = Article._from_mongo({"_id": "abc", "title": "hello", "views": 3})
+    assert doc._id == "abc"
+    assert doc.id == "abc"
+    assert doc.title == "hello"
+    assert doc.views == 3
+    assert doc.to_dict() == {"_id": "abc", "title": "hello", "views": 3}
+
+
+def test_reset_documents_clears_the_singleton():
+    from fastplace.orm import documents
+
+    documents.reset_documents()
+    assert documents._client is None

@@ -298,7 +298,11 @@ def make_agent(
     agents_dir = root / "app" / "ai" / "agents"
     tools_dir = root / "app" / "ai" / "tools"
     vectors_dir = root / "app" / "ai" / "vectors"
-    for directory, marker in ((agents_dir, "__init__.py"), (tools_dir, "__init__.py"), (vectors_dir, "__init__.py")):
+    for directory, marker in (
+        (agents_dir, "__init__.py"),
+        (tools_dir, "__init__.py"),
+        (vectors_dir, "__init__.py"),
+    ):
         _write(directory / marker, "", root)
     _write(
         agents_dir / f"{clean}_agent.py",
