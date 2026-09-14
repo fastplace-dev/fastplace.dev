@@ -43,6 +43,11 @@ jobs:
           path: docs/site/.vitepress/dist
 
   deploy:
+    # GitHub Free offers Pages only for public repos — while this repo is
+    # private the API 404/422s here. Gate on visibility: the build job above
+    # still verifies the docs compile; deploy self-activates the day the
+    # repo goes public (or once Pages is enabled on a paid plan).
+    if: github.event.repository.private == false
     permissions:
       contents: read
       pages: write # required by actions/deploy-pages

@@ -366,10 +366,21 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
 
 
 def _install_static_mounts(app: FastAPI, root: Path) -> None:
-    build_dir = root / "public" / "build"
+    # A fresh clone ships no public/ at all (nothing under it is tracked),
+    # and the first `vite build` can land after the server has already
+    # booted — CI smoke runs do exactly that. Create the runtime dirs at
+    # startup (public/build is gitignored framework output, like storage/)
+    # so the mounts exist from boot and serve assets whenever they appear.
+    public_dir = root / "public"
+    build_dir = public_dir / "build"
+    try:
+        build_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Read-only project tree: keep the pre-existing behavior — mount
+        # only what already exists and let absent paths 404 cleanly.
+        pass
     if build_dir.is_dir():
         app.mount("/build", StaticFiles(directory=str(build_dir)), name="build")
-    public_dir = root / "public"
     if public_dir.is_dir():
         app.mount("/", StaticFiles(directory=str(public_dir), check_dir=False), name="public")
 
