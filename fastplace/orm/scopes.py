@@ -1,9 +1,39 @@
-"""Query scopes — reusable, chainable query fragments (blueprint §8)."""
+"""Query scopes — reusable, chainable query fragments (blueprint §8).
+
+Two flavors share this module: chainable scopes (explicit ``.query().…()``
+fragments) and **global scopes** — criteria applied to *every* query on a
+model unless explicitly removed. The core soft-delete filter is one global
+scope in the registry (blueprint Query Scopes table: "Global — automatic
+(core)"); the same extension point is where a package such as
+fastplace-tenancy contributes the ``company`` scope.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+
+
+class GlobalScope:
+    """One automatic filter for every query on a model.
+
+    ``criteria(model)`` returns SQL criteria (empty list = no-op). Register
+    with ``Model.add_global_scope(name, scope)``; escape per-query with
+    ``.without_global_scope(name)``. The name ``"soft_delete"`` is reserved
+    for the core scope behind ``with_deleted()`` / ``only_deleted()``.
+    """
+
+    def criteria(self, model: Any) -> list[Any]:
+        raise NotImplementedError
+
+
+class SoftDeleteScope(GlobalScope):
+    """The core global scope: default queries exclude soft-deleted rows."""
+
+    def criteria(self, model: Any) -> list[Any]:
+        if "deleted_at" not in model.__table__.columns:
+            return []
+        return [model.deleted_at.is_(None)]
 
 
 class scope:  # noqa: A001 — deliberate public decorator name

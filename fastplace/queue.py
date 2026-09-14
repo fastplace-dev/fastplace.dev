@@ -95,22 +95,34 @@ def import_jobs(project_root: str | Path | None = None) -> list[str]:
 
 
 def _evict_stale_app_modules(root: Path) -> None:
-    """Drop cached ``app``/``app.jobs`` packages bound to a different root.
+    """Drop cached ``app``/``app.*`` modules bound to a different root.
 
     Without this, a previously imported project's ``app`` package shadows
-    the one under ``root`` and its jobs silently win. Containment is
-    resolved-path based, not substring based, so a sibling root such as
+    the one under ``root`` and its jobs silently win — and evicting only the
+    two package markers leaves ``app.jobs.<module>`` submodules cached, which
+    re-register the *first* root's handlers on the second import. Every
+    ``app.*`` name is swept (mirroring ``fastplace.ai.vectors``). Containment
+    is resolved-path based, not substring based, so a sibling root such as
     ``/work/a-v2`` never counts as ``/work/a``.
     """
     import sys
 
-    for name in ("app", "app.jobs"):
+    evicted: set[str] = set()
+    for name in list(sys.modules):
+        if name != "app" and not name.startswith("app."):
+            continue
         module = sys.modules.get(name)
         if module is None:
             continue
         origin = getattr(module, "__file__", None) or ""
         if not origin or not _path_contains(root, origin):
             sys.modules.pop(name, None)
+            evicted.add(name)
+    # Their @Job registrations died with the modules — drop those too, or the
+    # fresh import collides on names the evicted handlers still "own".
+    for job_name in list(registry):
+        if registry[job_name].fn.__module__ in evicted:
+            del registry[job_name]
 
 
 def _path_contains(root: Path, origin: str) -> bool:
@@ -190,15 +202,19 @@ class MemoryQueue:
         self.pending.append(_Pending(name=name, kwargs=kwargs))
 
     async def run_pending(self) -> int:
-        """Execute every queued job; a failing handler is recorded, not raised.
+        """Execute the queued jobs; a failing handler is recorded, not raised.
 
-        The failure ledger is scoped to the batch — a long-lived process
-        draining repeatedly must not accumulate exception objects forever.
+        Only the batch present at entry is drained: a job whose side effect
+        enqueues more work (a domain event → another job) chains to the *next*
+        drain instead of looping this one forever. The failure ledger is
+        scoped to the batch — a long-lived process draining repeatedly must
+        not accumulate exception objects forever.
         """
         self.failures = []
+        batch = list(self.pending)
+        self.pending.clear()
         executed = 0
-        while self.pending:
-            item = self.pending.popleft()
+        for item in batch:
             try:
                 await registry[item.name].fn(**item.kwargs)
             except Exception as exc:  # noqa: BLE001 — isolation is the contract

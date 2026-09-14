@@ -41,6 +41,7 @@ class QueryBuilder:
         self._offset: int | None = None
         self._eager: list[str] = []
         self._soft_delete_mode = EXCLUDE_DELETED
+        self._without_scopes: set[str] = set()
 
     # -- chaining ---------------------------------------------------------------
     def where(self, *criteria: Any) -> QueryBuilder:
@@ -74,6 +75,16 @@ class QueryBuilder:
     def only_deleted(self) -> QueryBuilder:
         """Only soft-deleted rows."""
         self._soft_delete_mode = ONLY_DELETED
+        return self
+
+    def without_global_scope(self, name: str) -> QueryBuilder:
+        """Drop one global scope for this query (``soft_delete`` included)."""
+        self._without_scopes.add(name)
+        return self
+
+    def without_global_scopes(self) -> QueryBuilder:
+        """Drop every global scope for this query."""
+        self._without_scopes.update(self.model._resolved_global_scopes())
         return self
 
     def __getattr__(self, name: str):
@@ -112,17 +123,36 @@ class QueryBuilder:
         )
 
     # -- statement construction -------------------------------------------------
-    def _soft_delete_criterion(self) -> list[Any]:
+    def _global_scope_criteria(self) -> list[Any]:
+        """Every registered global scope's criteria, minus removed ones.
+
+        Soft delete rides the same registry; its two special modes
+        (``with_deleted()`` bypasses it, ``only_deleted()`` inverts it) are
+        the accessors the core scope is wired to.
+        """
+        criteria: list[Any] = []
         deleted_at = getattr(self.model, "deleted_at", None)
-        if deleted_at is None or self._soft_delete_mode == INCLUDE_DELETED:
-            return []
-        if self._soft_delete_mode == ONLY_DELETED:
-            return [deleted_at.is_not(None)]
-        return [deleted_at.is_(None)]
+        for name, scope_ in self.model._resolved_global_scopes().items():
+            if name == "soft_delete":
+                # only_deleted() is an explicit mode choice — it wins over the
+                # soft-delete escape hatch instead of widening to every row.
+                if self._soft_delete_mode == ONLY_DELETED:
+                    if deleted_at is not None:
+                        criteria.append(deleted_at.is_not(None))
+                    continue
+                if (
+                    self._soft_delete_mode == INCLUDE_DELETED
+                    or "soft_delete" in self._without_scopes
+                ):
+                    continue
+            if name in self._without_scopes:
+                continue
+            criteria.extend(scope_.criteria(self.model))
+        return criteria
 
     def _core(self) -> Select:
         stmt = select(self.model)
-        criteria = self._soft_delete_criterion() + list(self._wheres)
+        criteria = self._global_scope_criteria() + list(self._wheres)
         if criteria:
             stmt = stmt.where(*criteria)
         if self._orders:

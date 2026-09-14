@@ -8,9 +8,14 @@ from fastplace.orm.relationships import (
     has_many,
     has_one,
     many_to_many,
+    morph_many,
+    morph_map,
+    morph_one,
+    morph_to,
     pivot_table,
+    reset_morph_map,
 )
-from fastplace.orm.scopes import scope
+from fastplace.orm.scopes import GlobalScope, SoftDeleteScope, scope
 
 __all__ = [
     "Model",
@@ -18,9 +23,16 @@ __all__ = [
     "VectorField",
     "Paginator",
     "scope",
+    "GlobalScope",
+    "SoftDeleteScope",
     "has_many",
     "has_one",
     "belongs_to",
     "many_to_many",
+    "morph_many",
+    "morph_one",
+    "morph_to",
+    "morph_map",
+    "reset_morph_map",
     "pivot_table",
 ]

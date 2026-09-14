@@ -152,6 +152,13 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
 
     import_vector_stores(root)
 
+    # Same reasoning for app/jobs: @Job registrations must exist before the
+    # first domain event dispatches, or the event→queue bridge would find no
+    # consumer and silently stay in-process.
+    from fastplace.queue import import_jobs
+
+    import_jobs(root)
+
     web = _load_router_module(root, "routes.web")
     api = _load_router_module(root, "routes.api")
     ai = _load_router_module(root, "routes.ai")
@@ -376,6 +383,29 @@ def _register_db_lifecycle(root: Path) -> None:
 
     @lifecycle.on_shutdown
     async def _dispose_engines() -> None:
+        # Drain the in-memory queue first — under the default memory driver,
+        # domain events enqueued by web requests would otherwise never run
+        # (nothing else consumes them in this process).
+        await _drain_memory_queue_on_shutdown()
         from fastplace.db import db
 
         await db.dispose()
+
+
+async def _drain_memory_queue_on_shutdown() -> None:
+    """Run pending memory-queue jobs at graceful shutdown; log failures."""
+    import logging
+
+    from fastplace.queue import MemoryQueue, queue
+
+    memory = queue()
+    if not isinstance(memory, MemoryQueue) or not memory.pending:
+        return
+    executed = await memory.run_pending()
+    if memory.failures:
+        logging.getLogger("fastplace.queue").error(
+            "%d/%d shutdown-drained job(s) failed: %s",
+            len(memory.failures),
+            executed,
+            ", ".join(failure.name for failure in memory.failures),
+        )

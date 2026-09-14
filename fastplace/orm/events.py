@@ -44,3 +44,14 @@ async def fire(model: Any, event: str) -> None:
                 await handler(model)
             else:
                 handler(model)
+
+    # Domain-event bridge (blueprint §8): ``__dispatches__`` maps lifecycle
+    # names to domain event names — the Model Event → Domain Event → Queue
+    # path for cross-module side effects. The payload stays serializable.
+    dispatches = getattr(type(model), "__dispatches__", None)
+    if dispatches and event in dispatches:
+        from fastplace.events import DomainEvent, dispatch
+
+        pk_name = type(model)._pk_attr().key
+        payload = {"model": type(model).__name__, "id": getattr(model, pk_name, None)}
+        await dispatch(DomainEvent(dispatches[event], payload))

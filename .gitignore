@@ -30,4 +30,6 @@ database.sqlite3
 .vscode/
 
 # Package build output
+build/
+dist/
 packages/*/dist/

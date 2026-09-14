@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,11 @@ class _ScopeState:
     name: str = "default"
     owns_commit: bool = False
     owner: asyncio.Task[Any] | None = None
+    # Domain events buffered while the scope owns the commit — flushed only
+    # after the commit lands, discarded on rollback (fastplace.events).
+    deferred_domain_events: list[tuple[str, dict[str, Any], bool | None]] = field(
+        default_factory=list
+    )
 
 
 _current_session: ContextVar[_ScopeState | None] = ContextVar("fastplace_session", default=None)

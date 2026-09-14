@@ -314,3 +314,531 @@ def make_agent(
         _TOOLS_TEMPLATE.format(doc_name=doc_name, snake=clean),
         root,
     )
+
+
+# ---------------------------------------------------------------------------
+# fastplace new — the modular-monolith project scaffolder (blueprint §3)
+# ---------------------------------------------------------------------------
+
+_INIT_TEMPLATE = '"""{doc}."""\n'
+
+_HOME_CONTROLLER_TEMPLATE = '''"""Home controller — the welcome bridge page."""
+
+from __future__ import annotations
+
+from fastplace.http import Controller, Request, render
+
+
+class HomeController(Controller):
+    async def index(self, request: Request):
+        return render(request, component="Home/Index", props={{"appName": "{app_name}"}})
+'''
+
+_WEB_ROUTES_TEMPLATE = '''"""Web routes — bridge pages (controllers return render(...))."""
+
+from __future__ import annotations
+
+from app.http.controllers.home_controller import HomeController
+from fastplace.http import Router
+
+router = Router()
+
+router.get("/", HomeController, "index", name="home")
+'''
+
+_API_ROUTES_TEMPLATE = '''"""API routes — unified JSON API endpoints (mounted under /api/v1)."""
+
+from __future__ import annotations
+
+from fastplace.http import Router
+
+router = Router()
+'''
+
+_AI_ROUTES_TEMPLATE = '''"""AI routes — SSE/agent endpoints (mounted under /ai)."""
+
+from __future__ import annotations
+
+from fastplace.http import Router
+
+router = Router()
+'''
+
+_CONFIG_APP_TEMPLATE = '''"""Application configuration defaults (env vars always win)."""
+
+APP_NAME = "{app_name}"
+APP_ENV = "local"
+# Safe by default — flip to True in .env for local debugging. The kernel also
+# force-disables debug details whenever APP_ENV=production.
+APP_DEBUG = False
+APP_URL = "http://localhost:8000"
+
+# Bridge + assets (dev)
+VITE_DEV_URL = "http://localhost:5173"
+
+# Signing secret for sessions/CSRF/tokens. Empty here — set in .env.
+APP_KEY = ""
+'''
+
+_CONFIG_DATABASE_TEMPLATE = '''"""Database configuration defaults (env vars always win)."""
+
+# Zero-config SQLite default; swap for postgres/mysql in .env for production.
+DATABASE_URL = "sqlite+aiosqlite:///./database.sqlite3"
+DATABASE_DRIVER = "sqlite"
+'''
+
+_CONFIG_AI_TEMPLATE = '''"""AI configuration — model routing, embeddings, vector store selection.
+
+API keys are never stored here; LiteLLM reads OPENAI_API_KEY /
+ANTHROPIC_API_KEY & friends straight from the environment.
+"""
+
+AI_MODEL = "gpt-4o-mini"
+AI_EMBEDDING_MODEL = "text-embedding-3-small"
+AI_MAX_TOOL_ROUNDS = 8
+AI_VECTOR_STORE = "pgvector"
+'''
+
+_CONFIG_AUTH_TEMPLATE = '''"""Authentication guard + user-provider configuration (env vars always win)."""
+
+AUTH_DEFAULT_GUARD = "session"
+
+# Guard drivers: "session" (signed cookie) and "jwt" (stateless Bearer token).
+AUTH_GUARDS = {
+    "session": {"driver": "session"},
+    "token": {"driver": "jwt", "algorithm": "HS256", "ttl": 3600, "issuer": "fastplace"},
+}
+
+# How guards resolve an identifier back to a user. The default "dict" driver
+# is an in-memory registry (tests/seeders). Point "users" at your model for
+# real apps: {"driver": "orm", "model": "app.modules.accounts.models.User"}.
+AUTH_PROVIDERS = {
+    "users": {"driver": "dict"},
+}
+AUTH_USER_PROVIDER = "users"
+'''
+
+_ENV_TEMPLATE = """\
+# Fastplace environment — env vars always win over the defaults in config/*.py.
+
+APP_NAME={app_name}
+APP_ENV=local
+# Flip to true locally for verbose errors; the kernel force-disables debug
+# output whenever APP_ENV=production regardless of this flag.
+APP_DEBUG=true
+APP_URL=http://localhost:8000
+# 32+ byte secret: signs sessions, mints JWTs, signs CSRF tokens.
+# Generate: python -c 'import secrets; print(secrets.token_urlsafe(48))'
+APP_KEY={app_key}
+
+# Auth sessions (signed cookies via itsdangerous)
+SESSION_COOKIE=fastplace_session
+SESSION_LIFETIME=7200
+
+# Database — SQLite zero-config default. Production examples:
+#   DATABASE_URL=postgresql://user:pass@localhost:5432/{slug}
+#   DATABASE_URL=mysql://user:pass@localhost:3306/{slug}
+DATABASE_URL=sqlite+aiosqlite:///./database.sqlite3
+
+# Bridge + assets (dev)
+VITE_DEV_URL=http://localhost:5173
+"""
+
+_GITIGNORE_TEMPLATE = """\
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Test artifacts
+test-results/
+playwright-report/
+
+# Runtime output — never commit or hand-edit
+storage/
+public/build/
+*.sqlite3
+database.sqlite3
+
+# Environment
+.env
+.env.bak
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+"""
+
+_INDEX_HTML_TEMPLATE = """\
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{app_name}</title>
+    <!-- Dev-only source of truth; production HTML is rendered by the Python shell. -->
+    <script type="module" src="/resources/js/main.jsx"></script>
+  </head>
+  <body>
+    <div
+      id="fastplace"
+      data-page='{{"component":"Home/Index","props":{{}},"url":"/","version":"v1"}}'
+    ></div>
+  </body>
+</html>
+"""
+
+_ASGI_TEMPLATE = '''"""ASGI entry point — ``uvicorn asgi:app`` (used by run dev / serve)."""
+
+from fastplace.http import create_app
+
+app = create_app()
+'''
+
+_PYPROJECT_TEMPLATE = """\
+[project]
+name = "{slug}"
+version = "0.1.0"
+description = "A Fastplace application"
+requires-python = ">=3.12"
+dependencies = [
+    "{fastplace_dep}",
+]
+
+# The app itself is not a distribution — an explicit empty packages list keeps
+# setuptools' flat-layout auto-discovery ("Multiple top-level packages
+# discovered") from breaking `pip install -e .`.
+[tool.setuptools]
+packages = []
+"""
+
+_PACKAGE_JSON_TEMPLATE = """\
+{{
+  "name": "{slug}",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {{
+    "dev": "vite",
+    "build": "vite build"
+  }},
+  "dependencies": {{
+    "@fastplace/react": "{react_dep}",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }},
+  "devDependencies": {{
+    "@tailwindcss/vite": "^4.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "vite": "^6.0.3"
+  }}
+}}
+"""
+
+# NOTE: this template is written verbatim (no .format call) — braces stay single.
+_VITE_CONFIG_TEMPLATE = """\
+import path from "node:path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+
+// Fastplace Vite contract (blueprint §7):
+// - dev: HMR server — the bridge shell references these dev-server URLs
+//   directly (no proxy hop; CORS-open while developing)
+// - build: hashed assets + manifest.json into public/build/
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  root: ".",
+  publicDir: "public",
+  build: {
+    outDir: "public/build",
+    emptyOutDir: true,
+    manifest: true,
+    rollupOptions: {
+      input: "resources/js/main.jsx",
+    },
+  },
+  server: {
+    port: Number(process.env.VITE_PORT || 5173),
+    strictPort: true,
+    // The dev shell points straight at this server (see fastplace/http/assets.py);
+    // no reverse proxy is needed.
+    proxy: {},
+  },
+});
+"""
+
+_MAIN_JSX_TEMPLATE = """\
+import { createFastplaceApp, createPageResolver } from "@fastplace/react";
+import "../css/app.css";
+
+// Glob-declared pages: every resources/js/pages/**/*.{jsx,tsx} file is a
+// routable component, resolved by the payload's `component` name. The glob
+// is eager so pages can expose their persistent layout through a `layout`
+// static before first render.
+const resolvePage = createPageResolver(
+  import.meta.glob("./pages/**/*.{jsx,tsx,js,ts}", { eager: true }),
+);
+
+createFastplaceApp({ resolve: resolvePage }).catch((err) => {
+  console.error("[fastplace] bootstrap failed:", err);
+  const el = document.getElementById("fastplace");
+  if (el) {
+    el.textContent = "Failed to boot the Fastplace app — check the browser console.";
+  }
+});
+"""
+
+_APP_LAYOUT_TEMPLATE = """\
+import React from "react";
+import { Link, usePage } from "@fastplace/react";
+
+/**
+ * The persistent application chrome — header + content slot. Pages opt in
+ * via a `layout = AppLayout` static; the bridge keeps this component
+ * mounted across navigation, so its state survives page swaps.
+ */
+export default function AppLayout({ children }) {
+  const { props } = usePage();
+
+  return (
+    <div className="min-h-dvh bg-surface text-ink">
+      <header className="border-line bg-surface-raised border-b">
+        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
+          <Link href="/" className="text-lg font-semibold">
+            {props.appName ?? "Fastplace"}
+          </Link>
+        </div>
+      </header>
+      <main className="mx-auto max-w-4xl px-6 py-10">{children}</main>
+    </div>
+  );
+}
+"""
+
+_HOME_PAGE_TEMPLATE = """\
+import React from "react";
+import { usePage } from "@fastplace/react";
+import AppLayout from "../../layouts/AppLayout";
+
+export default function HomeIndex() {
+  const { props } = usePage();
+
+  return (
+    <section>
+      <h1 className="text-2xl font-semibold">{props.appName ?? "Fastplace"}</h1>
+      <p className="text-ink-muted mt-2">
+        Your Fastplace app is running. Edit{" "}
+        <code>resources/js/pages/Home/Index.jsx</code> to get started.
+      </p>
+    </section>
+  );
+}
+
+// Persistent-layout opt-in — the bridge reads this static on the component.
+HomeIndex.layout = AppLayout;
+"""
+
+_APP_CSS_TEMPLATE = """\
+/*
+ * Fastplace global styles — the single source of truth for the color theme.
+ * Components use these tokens via Tailwind utility classes (bg-surface,
+ * text-ink, border-line, …).
+ */
+@import "tailwindcss";
+
+@theme {
+  --color-surface: oklch(0.985 0.002 250);
+  --color-surface-raised: oklch(1 0 0);
+  --color-ink: oklch(0.2 0.02 258);
+  --color-ink-muted: oklch(0.5 0.02 258);
+  --color-line: oklch(0.9 0.01 258);
+  --color-brand-500: oklch(0.62 0.17 258);
+  --color-brand-600: oklch(0.55 0.18 258);
+}
+"""
+
+_README_TEMPLATE = """\
+# {app_name}
+
+A Fastplace application — async Python backend, React frontend, one
+deployable modular monolith.
+
+## Quick start
+
+    python -m venv .venv && source .venv/bin/activate
+    pip install -e .          # or: pip install fastplace once published
+    npm install               # @fastplace/react resolves once published;
+                              # until then: npm i <path-to-fastplace>/packages/react
+    fastplace migrate
+    fastplace run dev
+
+## Layout
+
+- `app/modules/<name>/` — bounded feature modules (models/, repositories/, services/)
+- `app/http/controllers` — thin controllers (Controllers → Services → Repositories → Models)
+- `app/jobs` — queue jobs; also the consumers of domain events
+- `routes/` — thin route entry points (web.py, api.py, ai.py)
+- `resources/js` — React pages, layouts, components
+- `config/*.py` — configuration defaults (`.env` always wins)
+"""
+
+
+def _slugify_project(name: str) -> str:
+    """``My Blog App`` → ``my-blog-app`` (also the target directory name)."""
+    return re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+
+
+def _framework_checkout() -> Path | None:
+    """The framework source checkout this CLI runs from, when it does.
+
+    Running from a checkout (``fastplace`` importable from the repo root that
+    also carries ``packages/react``), generated projects wire local ``file:``
+    dependencies so ``pip install -e .`` / ``npm install`` resolve before the
+    packages ever ship to PyPI/npm. From a published install, version specs.
+    """
+    import fastplace
+
+    root = Path(fastplace.__file__).resolve().parents[1]
+    if (root / "pyproject.toml").is_file() and (root / "packages" / "react").is_dir():
+        return root
+    return None
+
+
+@generators_app.command("new")
+def new_project(
+    name: str = typer.Argument(..., help="Project name (letters, digits, spaces, _ and -)"),
+) -> None:
+    """Create a new Fastplace application skeleton (blueprint §3).
+
+    Module-first layout, SQLite-by-default env, thin routes, bootable ASGI
+    entry — everything ``fastplace run dev`` expects, nothing more.
+    """
+    import secrets
+
+    clean = name.strip()
+    # Refuse path-shaped input up front — a silent slug rewrite would scaffold
+    # somewhere other than where the user pointed.
+    if not clean or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]*", clean):
+        console.print(
+            "[red]invalid project name[/] — use letters, digits, spaces, underscores "
+            "and hyphens, starting with a letter or digit"
+        )
+        raise typer.Exit(code=1)
+
+    slug = _slugify_project(clean)
+    app_name = slug.replace("-", " ").title()
+    if len(slug.encode()) > 200:
+        # Filesystem component limits (255 bytes on common APFS/ext4) minus
+        # headroom for extensions (e.g. ``.env.example``) — refuse up front
+        # instead of dying mid-scaffold with an OSError traceback.
+        console.print("[red]invalid project name[/] — too long (keep it under 200 characters)")
+        raise typer.Exit(code=1)
+    target = _project_root() / slug
+    if target.exists() and not target.is_dir():
+        console.print(f"[red]error[/] {slug} exists and is not a directory")
+        raise typer.Exit(code=1)
+    if target.exists() and any(target.iterdir()):
+        console.print(f"[red]error[/] {slug}/ already exists and is not empty")
+        raise typer.Exit(code=1)
+
+    env = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key=secrets.token_urlsafe(48))
+    env_example = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key="")
+
+    # Local-install wiring: when the CLI runs from the framework checkout,
+    # dependency specs point at it so installs resolve pre-publish.
+    checkout = _framework_checkout()
+    fastplace_dep = f"fastplace @ file://{checkout}" if checkout else "fastplace"
+    react_dep = f"file:{checkout / 'packages' / 'react'}" if checkout else "^0.1.0"
+
+    # (path, content) pairs — written through _write so a re-run never
+    # clobbers hand edits in existing files.
+    writes: list[tuple[Path, str]] = [
+        (Path("app/http/controllers/__init__.py"), _INIT_TEMPLATE.format(doc="HTTP controllers.")),
+        (
+            Path("app/http/controllers/home_controller.py"),
+            _HOME_CONTROLLER_TEMPLATE.format(app_name=app_name),
+        ),
+        (
+            Path("app/http/requests/__init__.py"),
+            _INIT_TEMPLATE.format(doc="Form requests (validated input)."),
+        ),
+        (Path("app/http/middleware/__init__.py"), _INIT_TEMPLATE.format(doc="HTTP middleware.")),
+        (
+            Path("app/modules/__init__.py"),
+            _INIT_TEMPLATE.format(doc="Bounded feature modules (module-first)."),
+        ),
+        (Path("app/ai/agents/__init__.py"), _INIT_TEMPLATE.format(doc="AI agents.")),
+        (
+            Path("app/ai/tools/__init__.py"),
+            _INIT_TEMPLATE.format(doc="AI tools (@Tool functions)."),
+        ),
+        (
+            Path("app/ai/vectors/__init__.py"),
+            _INIT_TEMPLATE.format(doc="Vector store registrations."),
+        ),
+        (
+            Path("app/jobs/__init__.py"),
+            _INIT_TEMPLATE.format(doc="Background jobs — domain-event consumers live here."),
+        ),
+        (Path("app/models/__init__.py"), _INIT_TEMPLATE.format(doc="Shared base model classes.")),
+        (Path("database/seeders/.gitkeep"), ""),
+        (Path("resources/js/main.jsx"), _MAIN_JSX_TEMPLATE),
+        (Path("resources/js/layouts/AppLayout.jsx"), _APP_LAYOUT_TEMPLATE),
+        (Path("resources/js/pages/Home/Index.jsx"), _HOME_PAGE_TEMPLATE),
+        (Path("resources/js/components/.gitkeep"), ""),
+        (Path("resources/js/hooks/.gitkeep"), ""),
+        (Path("resources/css/app.css"), _APP_CSS_TEMPLATE),
+        (Path("routes/__init__.py"), _INIT_TEMPLATE.format(doc="Thin route entry points.")),
+        (Path("routes/web.py"), _WEB_ROUTES_TEMPLATE),
+        (Path("routes/api.py"), _API_ROUTES_TEMPLATE),
+        (Path("routes/ai.py"), _AI_ROUTES_TEMPLATE),
+        (
+            Path("config/__init__.py"),
+            _INIT_TEMPLATE.format(doc="Configuration defaults (env vars always win)."),
+        ),
+        (Path("config/app.py"), _CONFIG_APP_TEMPLATE.format(app_name=app_name)),
+        (Path("config/database.py"), _CONFIG_DATABASE_TEMPLATE),
+        (Path("config/ai.py"), _CONFIG_AI_TEMPLATE),
+        (Path("config/auth.py"), _CONFIG_AUTH_TEMPLATE),
+        (Path("public/.gitkeep"), ""),
+        (Path("storage/.gitkeep"), ""),
+        (Path(".env"), env),
+        (Path(".env.example"), env_example),
+        (Path(".gitignore"), _GITIGNORE_TEMPLATE),
+        (Path("index.html"), _INDEX_HTML_TEMPLATE.format(app_name=app_name)),
+        (Path("asgi.py"), _ASGI_TEMPLATE),
+        (
+            Path("pyproject.toml"),
+            _PYPROJECT_TEMPLATE.format(slug=slug, fastplace_dep=fastplace_dep),
+        ),
+        (Path("package.json"), _PACKAGE_JSON_TEMPLATE.format(slug=slug, react_dep=react_dep)),
+        (Path("vite.config.js"), _VITE_CONFIG_TEMPLATE),
+        (Path("README.md"), _README_TEMPLATE.format(app_name=app_name)),
+    ]
+    for rel, content in writes:
+        _write(target / rel, content, _project_root())
+
+    # Pre-configure the Alembic environment (what ``db:configure`` scaffolds)
+    # so the printed ``fastplace migrate`` step works on a fresh project.
+    from fastplace.orm.migrations import MigrationsManager
+
+    for path in MigrationsManager(target).scaffold():
+        console.print(f"[green]created[/] {path.relative_to(_project_root())}")
+
+    console.print("\n[green]Fastplace app ready![/] Next steps:\n")
+    console.print(f"  cd {slug}")
+    console.print("  python -m venv .venv && source .venv/bin/activate")
+    console.print("  pip install -e .   # or: pip install fastplace once published")
+    console.print("  npm install")
+    console.print("  fastplace migrate")
+    console.print("  fastplace run dev\n")

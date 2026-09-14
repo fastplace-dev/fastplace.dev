@@ -28,8 +28,8 @@ from fastplace.orm.fields import (
     resolve_annotation,
 )
 from fastplace.orm.query import QueryBuilder
-from fastplace.orm.relationships import RelationshipMarker
-from fastplace.orm.scopes import scope
+from fastplace.orm.relationships import MorphMany, MorphOne, MorphTo, RelationshipMarker
+from fastplace.orm.scopes import SoftDeleteScope, scope
 from fastplace.orm.types import PortableDateTime
 
 _MISSING_ANNOTATION = object()
@@ -75,12 +75,75 @@ class _ClassProperty:
 class Model(AsyncAttrs, DeclarativeBase):
     """Base model: annotation-driven columns, timestamps, soft deletes, events."""
 
+    # The core global scope every model carries (blueprint §8 Query Scopes:
+    # "soft-delete — Global, automatic (core)"). Packages add their own via
+    # add_global_scope(); subclasses can narrow the set with __global_scopes__.
+    __global_scopes__: dict[str, Any] = {"soft_delete": SoftDeleteScope()}
+
     # Redefining registry-level dunders for clarity; SQLAlchemy fills the rest.
     def __init_subclass__(cls, **kwargs: Any) -> None:
         abstract = cls.__dict__.get("__abstract__", False)
         if not abstract:
+            _validate_dispatches(cls)
             _transform_declarative_fields(cls)
         super().__init_subclass__(**kwargs)
+
+    # ------------------------------------------------------------------
+    # global scopes (extensible; the tenancy scope plugs in here)
+    # ------------------------------------------------------------------
+    @classmethod
+    def _resolved_global_scopes(cls) -> dict[str, Any]:
+        """MRO-merged scope registry — nearest class in the chain wins a name.
+
+        Each class's ``__global_scopes__`` holds only its OWN entries (a
+        ``None`` value is a tombstone: "removed at this level"), so the merge
+        recomputes inheritance at read time and base-level add/remove/replace
+        always reaches subclasses.
+        """
+        merged: dict[str, Any] = {}
+        for klass in reversed(cls.__mro__):
+            own = klass.__dict__.get("__global_scopes__")
+            if own is None:
+                continue
+            for name, scope_ in own.items():
+                if scope_ is None:
+                    merged.pop(name, None)  # tombstone shadows any base entry
+                else:
+                    merged[name] = scope_
+        return merged
+
+    @classmethod
+    def add_global_scope(cls, name: str, scope: Any) -> None:
+        """Register an automatic filter for every query on this model.
+
+        Scoped to ``cls`` only — registering on a subclass never leaks to the
+        parent or to sibling models.
+        """
+        if name == "soft_delete":
+            raise ValueError(
+                "'soft_delete' is reserved for the core scope behind with_deleted()/only_deleted()"
+            )
+        # Write only the own entry — never snapshot inherited scopes into the
+        # subclass, which would freeze them against later base-level changes.
+        own = dict(cls.__dict__.get("__global_scopes__") or {})
+        own[name] = scope
+        cls.__global_scopes__ = own
+
+    @classmethod
+    def remove_global_scope(cls, name: str) -> None:
+        """Drop a scope for this class — including one inherited from a base.
+
+        Writes a tombstone in the class's own dict so the MRO merge cannot
+        resurrect the base's entry.
+        """
+        if name == "soft_delete":
+            raise ValueError(
+                "'soft_delete' is the core scope behind with_deleted()/only_deleted() — "
+                "escape it per query with without_global_scope('soft_delete') instead"
+            )
+        own = dict(cls.__dict__.get("__global_scopes__") or {})
+        own[name] = None
+        cls.__global_scopes__ = own
 
     # ------------------------------------------------------------------
     # declaration support
@@ -111,6 +174,14 @@ class Model(AsyncAttrs, DeclarativeBase):
     @classmethod
     def only_deleted(cls) -> QueryBuilder:
         return cls.query().only_deleted()
+
+    @classmethod
+    def without_global_scope(cls, name: str) -> QueryBuilder:
+        return cls.query().without_global_scope(name)
+
+    @classmethod
+    def without_global_scopes(cls) -> QueryBuilder:
+        return cls.query().without_global_scopes()
 
     @classmethod
     async def all(cls) -> list[Any]:
@@ -234,7 +305,7 @@ class Model(AsyncAttrs, DeclarativeBase):
         column = cls._vector_column()
         stmt = (
             select(cls)
-            .where(cls._not_deleted())
+            .where(*cls._search_scope_criteria())
             .order_by(column.cosine_distance(embedding))
             .limit(limit)
         )
@@ -262,7 +333,7 @@ class Model(AsyncAttrs, DeclarativeBase):
         vector = func.to_tsvector("english", func.concat_ws(" ", *text_columns))
         stmt = (
             select(cls)
-            .where(cls._not_deleted())
+            .where(*cls._search_scope_criteria())
             .where(vector.op("@@")(func.plainto_tsquery("english", query)))
             .limit(limit)
         )
@@ -273,9 +344,19 @@ class Model(AsyncAttrs, DeclarativeBase):
 
     @classmethod
     def _not_deleted(cls) -> Any:
-        """Soft-delete predicate shared by the capability-gated searches."""
+        """Soft-delete predicate (kept for callers outside the search paths)."""
         deleted_at = getattr(cls, "deleted_at", None)
         return deleted_at.is_(None) if deleted_at is not None else None
+
+    @classmethod
+    def _search_scope_criteria(cls) -> list[Any]:
+        """Global-scope criteria for the capability-gated searches.
+
+        vector_search()/full_text_search() must ride the same scope engine as
+        every other read — a scope a search bypasses (tenancy isolation, an
+        archived filter) is data leakage through a side door.
+        """
+        return cls.query()._global_scope_criteria()
 
     @classmethod
     def _vector_column(cls) -> Any:
@@ -365,7 +446,9 @@ class Model(AsyncAttrs, DeclarativeBase):
 
         Soft-deleted rows are still reachable (the tombstone is the row's
         state, not a reason to pretend it vanished); a row that no longer
-        exists raises instead of silently no-oping.
+        exists raises instead of silently no-oping. Global scopes are bypassed
+        entirely — the row is already in hand, and a scope that started hiding
+        it mid-request must not turn a reload into NotFoundError.
         """
         from sqlalchemy.orm.attributes import set_committed_value
 
@@ -375,7 +458,7 @@ class Model(AsyncAttrs, DeclarativeBase):
         pk_name = inspect(model).primary_key[0].name
         fresh = (
             await model.query()
-            .with_deleted()
+            .without_global_scopes()
             .where(model._pk_attr() == getattr(self, pk_name))
             .first()
         )
@@ -411,10 +494,43 @@ class Model(AsyncAttrs, DeclarativeBase):
             loaded = list(result.scalars().all())
         else:
             loaded = result.scalars().first()
-        # Populate the attribute as committed so follow-up access (including
-        # collection appends) works without a second query.
+        # Populate the attribute as committed so follow-up access works
+        # without a second query. NOTE: morph relations are viewonly —
+        # appending to the loaded collection is silently dropped by design;
+        # create the child with its type + id pair instead (see
+        # fastplace.orm.relationships).
         set_committed_value(self, name, loaded)
         return loaded
+
+    async def morph_to(self) -> Any | None:
+        """Resolve a polymorphic parent: ``await comment.morph_to()``.
+
+        The declaring class names the column pair through a ``morph_to()``
+        marker; the framework's morph map (``morph_map({type: Model})``)
+        resolves the stored type string to the parent model.
+        """
+        from fastplace.orm.relationships import morph_map
+
+        config = getattr(type(self), "_fastplace_morph", None)
+        if config is None:
+            raise AttributeError(
+                f"{type(self).__name__} declares no morph_to() marker — add "
+                "`parent = morph_to(<type_field>, <id_field>)` to the model"
+            )
+        type_field, id_field = config
+        morph_type = getattr(self, type_field, None)
+        morph_id = getattr(self, id_field, None)
+        if morph_type is None or morph_id is None:
+            # An unpaired row (saved before its parent, or genuinely parentless)
+            # points nowhere — resolve to None rather than a type-registry error.
+            return None
+        mapping = morph_map()
+        if morph_type not in mapping:
+            raise ValueError(
+                f"unknown morph type {morph_type!r} — register it: "
+                f"morph_map({{{morph_type!r}: <Model>}})"
+            )
+        return await mapping[morph_type].find(morph_id)
 
     # -- internals --------------------------------------------------------------
     async def _persist(self) -> None:
@@ -497,7 +613,7 @@ def _transform_declarative_fields(cls: type) -> None:
     resolved_annotations: dict[str, Any] = {}
     has_primary_key = False
     declared_pk_name: str | None = None
-    relationship_markers: list[tuple[str, RelationshipMarker]] = []
+    relationship_markers: list[tuple[str, RelationshipMarker | MorphTo]] = []
 
     def value_for(name: str) -> Any:
         if name in cls.__dict__:
@@ -522,7 +638,7 @@ def _transform_declarative_fields(cls: type) -> None:
             resolved_annotations[name] = annotation
             continue
 
-        if isinstance(value, RelationshipMarker):
+        if isinstance(value, (RelationshipMarker, MorphTo)):
             relationship_markers.append((name, value))
             continue
 
@@ -615,12 +731,27 @@ def _transform_declarative_fields(cls: type) -> None:
     for name, value in list(vars(cls).items()):
         if name.startswith("_") or name in collected or name in resolved_annotations:
             continue
-        if isinstance(value, RelationshipMarker):
+        if isinstance(value, (RelationshipMarker, MorphTo)):
             relationship_markers.append((name, value))
 
     tablename = cls.__dict__.get("__tablename__") or _plural(_snake(cls.__name__))
     for name, marker in relationship_markers:
+        # morph_to has no static target, so no relationship is built — record
+        # the column pair for the instance-level `await row.morph_to()`.
+        if isinstance(marker, MorphTo):
+            cls._fastplace_morph = (marker.type_field, marker.id_field)  # type: ignore[attr-defined]
+            if name in vars(cls):
+                delattr(cls, name)
+            continue
+
         extras: dict[str, Any] = dict(marker.extra or {})
+        if isinstance(marker, (MorphMany, MorphOne)):
+            # The join needs to know its owner side; the default type string
+            # is the owner's table name. The owner's pk column is passed too —
+            # owners are not guaranteed an ``id`` primary key.
+            extras.setdefault("_morph_owner", cls.__name__)
+            extras.setdefault("_morph_type_name", tablename)
+            extras.setdefault("_morph_pk", pk_name)
         if marker.target == cls.__name__:
             # Self-referential adjacency lists: remote_side lives on the
             # many-to-one side (the parent), pointing at the primary key.
@@ -633,7 +764,7 @@ def _transform_declarative_fields(cls: type) -> None:
                     marker.backref, remote_side=f"{cls.__name__}.{pk_name}"
                 )
         setattr(cls, name, marker.build(**extras))
-        kind_many = marker.__class__.__name__ in ("HasMany", "ManyToMany")
+        kind_many = marker.__class__.__name__ in ("HasMany", "ManyToMany", "MorphMany")
         _mapped_rel: Any = Mapped
         resolved_annotations[name] = _mapped_rel[list[Any]] if kind_many else _mapped_rel[Any]
 
@@ -645,3 +776,33 @@ def ConfigurationError_cls(cls: type, attr: str, detail: str) -> Exception:
     from fastplace.errors import ConfigurationError
 
     return ConfigurationError(f"{cls.__module__}.{cls.__name__}.{attr}: {detail}")
+
+
+def _validate_dispatches(cls: type) -> None:
+    """``__dispatches__`` maps lifecycle events to domain events for the queue.
+
+    Only post-flush lifecycle events can map to queue work — the payload
+    carries the primary key, which pre-flush events ("creating", …) cannot
+    supply. Unknown names (typos) fail here, at class definition, instead of
+    silently never firing.
+    """
+    dispatches = cls.__dict__.get("__dispatches__")
+    if not dispatches:
+        return
+    from fastplace.orm.events import EVENTS
+
+    queueable = {"created", "updated", "deleted", "restored"}
+    unknown = sorted(set(dispatches) - set(EVENTS))
+    if unknown:
+        raise ValueError(
+            f"{cls.__name__}.__dispatches__ names unknown lifecycle events: "
+            f"{', '.join(unknown)} — known events: {', '.join(sorted(EVENTS))}"
+        )
+    pre_flush = sorted(set(dispatches) - queueable)
+    if pre_flush:
+        raise ValueError(
+            f"{cls.__name__}.__dispatches__ maps pre-flush events ({', '.join(pre_flush)}) "
+            "whose payloads cannot carry the primary key yet — map post-flush "
+            "events (created/updated/deleted/restored) instead; in-process "
+            "listeners via Model.on() have no such restriction"
+        )
