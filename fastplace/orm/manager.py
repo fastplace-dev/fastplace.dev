@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 from typing import Any
 
@@ -24,6 +25,23 @@ _DEFAULT_CONNECTIONS: dict[str, dict[str, Any]] = {
 }
 
 _POOL_KEYS = ("POOL_SIZE", "MAX_OVERFLOW", "POOL_TIMEOUT", "POOL_RECYCLE", "ECHO")
+
+
+def _parse_replica_urls(raw: Any) -> list[str]:
+    """Replica URLs from config — a list, JSON array string, or CSV string."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(url) for url in raw]
+    text = str(raw).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        import json
+
+        return [str(url) for url in json.loads(text)]
+    return [part.strip() for part in text.split(",") if part.strip()]
+
 
 _manager: DatabaseManager | None = None
 
@@ -49,7 +67,7 @@ def normalize_database_url(url: str) -> str:
     scheme, separator, rest = url.partition("://")
     if not separator or "+" in scheme:
         return url
-    bound = _ASYNC_DRIVER_BINDINGS.get(scheme)
+    bound = _ASYNC_DRIVER_BINDINGS.get(scheme.lower())
     return f"{bound}://{rest}" if bound else url
 
 
@@ -105,6 +123,9 @@ def _connections_from_config() -> dict[str, dict[str, Any]]:
             "driver": driver or driver_from_url(url),
             "url": url,
         }
+        replicas = _parse_replica_urls(config("DATABASE_READ_REPLICAS", default=None))
+        if replicas:
+            default_conn["replicas"] = replicas
         for key in _POOL_KEYS:
             value = config(f"DATABASE_{key}", default=None)
             if value is not None:
@@ -127,8 +148,13 @@ class DatabaseManager:
         self.connections = connections
         for cfg in self.connections.values():
             cfg["url"] = normalize_database_url(str(cfg["url"]))
+            cfg["replicas"] = [
+                normalize_database_url(str(url)) for url in _parse_replica_urls(cfg.get("replicas"))
+            ]
         self._engines: dict[str, AsyncEngine] = {}
         self._session_factories: dict[str, async_sessionmaker[AsyncSession]] = {}
+        self._replica_engines: dict[str, list[AsyncEngine]] = {}
+        self._read_cycles: dict[str, Any] = {}
 
     def config_for(self, name: str = "default") -> dict[str, Any]:
         if name not in self.connections:
@@ -182,6 +208,34 @@ class DatabaseManager:
     def session(self, name: str = "default") -> AsyncSession:
         return self.session_factory(name)()
 
+    def replica_engines(self, name: str = "default") -> list[AsyncEngine]:
+        """Lazily built engines for the connection's read replicas."""
+        urls = self.config_for(name).get("replicas") or []
+        if urls and name not in self._replica_engines:
+            cfg = self.config_for(name)
+            self._replica_engines[name] = [self._create_engine({**cfg, "url": url}) for url in urls]
+        return self._replica_engines.get(name, [])
+
+    def read_engine(self, name: str = "default") -> AsyncEngine:
+        """Round-robin replica engine; the primary when none are configured."""
+        engines = self.replica_engines(name)
+        if not engines:
+            return self.engine(name)
+        cycle = self._read_cycles.get(name)
+        if cycle is None:
+            cycle = itertools.cycle(range(len(engines)))
+            self._read_cycles[name] = cycle
+        return engines[next(cycle)]
+
+    def read_session(self, name: str = "default") -> AsyncSession:
+        """A session on the next read engine (replica when configured)."""
+        return async_sessionmaker(
+            self.read_engine(name),
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False,
+        )()
+
     def capabilities(self, name: str = "default") -> Capabilities:
         cfg = self.config_for(name)
         driver = cfg.get("driver") or driver_from_url(cfg["url"])
@@ -192,6 +246,11 @@ class DatabaseManager:
             await engine.dispose()
         self._engines.clear()
         self._session_factories.clear()
+        for engines in self._replica_engines.values():
+            for engine in engines:
+                await engine.dispose()
+        self._replica_engines.clear()
+        self._read_cycles.clear()
 
     def _dispose_sync(self) -> None:
         """Best-effort engine disposal from sync contexts (test teardown).
@@ -218,3 +277,5 @@ class DatabaseManager:
         )
         self._engines.clear()
         self._session_factories.clear()
+        self._replica_engines.clear()
+        self._read_cycles.clear()

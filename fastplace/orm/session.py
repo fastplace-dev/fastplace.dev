@@ -29,6 +29,22 @@ class _ScopeState:
 
 _current_session: ContextVar[_ScopeState | None] = ContextVar("fastplace_session", default=None)
 
+#: Read-after-write consistency (blueprint §8): a standalone write pins the
+#: current context to the primary so later reads in the same request see it.
+#: Explicit scopes (``db.transaction()``/``db.connection()``) pick their own
+#: connection and are never re-routed.
+_read_pinned: ContextVar[bool] = ContextVar("fastplace_read_pinned", default=False)
+
+
+def reads_pinned_to_primary() -> bool:
+    """Whether this context has written and must keep reading the primary."""
+    return _read_pinned.get()
+
+
+def reset_primary_pin() -> None:
+    """Clear the pin (test isolation; fresh contexts start unpinned)."""
+    _read_pinned.set(False)
+
 
 def ambient() -> _ScopeState | None:
     """The ambient scope state, refusing cross-task session reuse.
@@ -90,16 +106,24 @@ def mark_owns_commit():
 
 
 @asynccontextmanager
-async def session_scope(name: str = "default"):
+async def session_scope(name: str = "default", *, read: bool = False):
     """Open a short-lived session; repositories join it implicitly.
 
     Unit-of-work semantics: a clean exit commits pending changes, an exception
     rolls them back. Per-operation writes inside the scope also commit —
     ``run_write`` commits whenever the ambient scope does not own the commit.
+
+    ``read=True`` opens the session on a round-robin read replica when the
+    connection declares any (and this context has not written — pinned
+    contexts stay on the primary for read-after-write consistency).
     """
     from fastplace.orm.manager import get_manager
 
-    session = get_manager().session(name)
+    manager = get_manager()
+    if read and not _read_pinned.get():
+        session = manager.read_session(name)
+    else:
+        session = manager.session(name)
     with bind_session(session, name=name, owns_commit=False):
         try:
             yield session
@@ -123,7 +147,7 @@ async def run_read(statement: Any, name: str = "default") -> Any:
     state = ambient()
     if state is not None:
         return await state.session.execute(statement)
-    async with session_scope(name) as session:
+    async with session_scope(name, read=True) as session:
         return await session.execute(statement)
 
 
@@ -141,6 +165,9 @@ async def run_write(action: Any, *args: Any, name: str = "default", **kwargs: An
             await state.session.commit()
         return result
 
+    # Read-after-write: everything after this write in the same request
+    # context reads the primary, never a possibly-lagging replica.
+    _read_pinned.set(True)
     async with session_scope(name) as session:
         result = await action(session, *args, **kwargs)
         await session.commit()

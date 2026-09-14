@@ -34,7 +34,10 @@ from pymongo.asynchronous.mongo_client import AsyncMongoClient
 _client: AsyncMongoClient | None = None
 _database = None  # AsyncDatabase, kept untyped to avoid a second import
 
-_CAMEL = re.compile(r"(?<!^)(?=[A-Z])")
+#: Acronym-aware camel→snake: split only at lower/digit→Upper transitions
+#: and Upper→UpperLower boundaries, so ``APIKey`` → ``api_key`` and
+#: ``HTTPRequest`` → ``http_request`` (not ``a_p_i_key``).
+_CAMEL = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])")
 _DEFAULT_DATABASE = "fastplace"
 
 
@@ -77,27 +80,44 @@ def documents_database():
     return _database
 
 
+#: Strong references to fire-and-forget close tasks — without them the
+#: running loop's only reference can be garbage-collected mid-close.
+_closing_tasks: set[asyncio.Task[None]] = set()
+
+
+async def aclose_documents() -> None:
+    """Awaitable reset for async teardown — completes the client close."""
+    global _client, _database
+    client, _client, _database = _client, None, None
+    if client is not None:
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001 — teardown must never raise
+            pass
+
+
 def reset_documents() -> None:
     """Drop the client singleton (tests, reconfiguration).
 
-    ``aclose()`` is a coroutine, but teardown is sync — complete it when no
-    loop is running, otherwise hand it to the running loop and move on.
+    Sync contexts cannot await a pymongo close (and blocking on topology
+    shutdown costs seconds), so this drops the reference and — when a loop
+    happens to be running — schedules the close as a strongly-referenced
+    background task. Async callers should prefer ``await aclose_documents()``.
     Never raises.
     """
     global _client, _database
-    if _client is not None:
+    client, _client, _database = _client, None, None
+    if client is not None:
         try:
-            closing = _client.aclose()
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                asyncio.run(closing)
-            else:
-                loop.create_task(closing)
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop: nothing sync can close a pymongo client
+        try:
+            task = loop.create_task(client.aclose())
         except Exception:  # noqa: BLE001 — teardown must never raise
-            pass
-    _client = None
-    _database = None
+            return
+        _closing_tasks.add(task)
+        task.add_done_callback(_closing_tasks.discard)
 
 
 _MISSING = object()
@@ -111,7 +131,10 @@ def _document_payload(doc_cls: type[Document], data: dict[str, Any]) -> dict[str
     fresh ``[]`` per insert instead of one shared mutable list).
     """
     payload = dict(data)
-    for klass in reversed(doc_cls.__mro__):
+    # Subclass-first MRO walk: the most-derived declaration of a field owns
+    # its default, matching normal attribute shadowing. Caller-provided
+    # data already sits in ``payload`` and wins over every default.
+    for klass in doc_cls.__mro__:
         if klass in (Document, object):
             continue
         annotations = klass.__dict__.get("__annotations__", {})
@@ -144,31 +167,46 @@ class DocumentQuery:
         self._limit = limit
 
     def where(self, filter: dict[str, Any] | None = None, /, **equality) -> DocumentQuery:
-        """Merge a raw Mongo filter and/or equality kwargs into the match."""
+        """AND a raw Mongo filter and/or equality kwargs into the match.
+
+        Constraints on the same field intersect through ``$and`` — a later
+        ``where()`` must never silently replace an earlier one (that would
+        drop security filters chained by callers).
+        """
         merged = {**(filter or {}), **equality}
-        return DocumentQuery(
-            self._doc_cls,
-            {**self._filter, **merged},
-            self._sort,
-            self._skip,
-            self._limit,
-        )
+        combined = dict(self._filter)
+        clauses = list(combined.pop("$and", []))
+        for key, value in merged.items():
+            if key == "$and":
+                clauses.extend(value)
+            elif key in combined and combined[key] != value:
+                clauses.append({key: combined.pop(key)})
+                clauses.append({key: value})
+            else:
+                combined[key] = value
+        if clauses:
+            combined["$and"] = clauses
+        return DocumentQuery(self._doc_cls, combined, self._sort, self._skip, self._limit)
 
     def sort(self, key_or_list: Any, direction: int = 1) -> DocumentQuery:
-        """Order by a field (``sort("views", -1)``) or a list of pairs."""
-        pairs = (
-            list(key_or_list)
-            if isinstance(key_or_list, (list, tuple))
-            and key_or_list
-            and isinstance(key_or_list[0], (list, tuple))
-            else [(key_or_list, direction)]
-        )
+        """Order by a field (``sort("views", -1)``) or a list of pairs.
+
+        Accepts the degenerate shapes callers reach for — a bare
+        ``(key, direction)`` tuple, a list of plain field names, an empty
+        list (no-op) — and normalizes them all to ``[(field, direction)]``.
+        """
+        if isinstance(key_or_list, (list, tuple)):
+            items = list(key_or_list)
+            if len(items) == 2 and isinstance(items[0], str) and isinstance(items[1], int):
+                pairs = [(items[0], items[1])]
+            else:
+                pairs = [(item, 1) if isinstance(item, str) else tuple(item) for item in items]
+        elif key_or_list is not None:
+            pairs = [(key_or_list, direction)]
+        else:
+            pairs = []
         return DocumentQuery(
-            self._doc_cls,
-            self._filter,
-            [*self._sort, *pairs],
-            self._skip,
-            self._limit,
+            self._doc_cls, self._filter, [*self._sort, *pairs], self._skip, self._limit
         )
 
     def skip(self, count: int) -> DocumentQuery:
@@ -203,12 +241,23 @@ class DocumentQuery:
     async def count(self) -> int:
         return await self._collection().count_documents(self._filter)
 
+    def _guard_writable(self) -> None:
+        # Mongo has no UPDATE ... LIMIT: update_many/delete_many would apply
+        # to EVERY match while the caller believes they scoped the write.
+        if self._skip or self._limit is not None:
+            raise ValueError(
+                "update()/delete() cannot apply skip/limit — fetch the matching "
+                "ids with .get() and act on {'_id': {'$in': [...]}} instead"
+            )
+
     async def update(self, update: dict[str, Any]) -> int:
         """Apply an update document (``{"$set": {...}}``); returns matched count."""
+        self._guard_writable()
         result = await self._collection().update_many(self._filter, update)
         return int(result.matched_count)
 
     async def delete(self) -> int:
+        self._guard_writable()
         result = await self._collection().delete_many(self._filter)
         return int(result.deleted_count)
 
@@ -218,6 +267,10 @@ class Document:
 
     #: Override for irregular names (``Person`` → ``__collection__ = "people"``).
     __collection__: ClassVar[str]
+    #: Mass-assignment allowlist (``__fillable__`` semantics).
+    __fillable__: ClassVar[tuple[str, ...] | None] = None
+    #: Extra denylist — assigning a guarded key raises MassAssignmentError.
+    __guarded__: ClassVar[tuple[str, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -226,6 +279,33 @@ class Document:
 
     def __init__(self, **fields: Any) -> None:
         self.__dict__.update(fields)
+
+    @classmethod
+    def _mass_assignable(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Filter a mass-assignment payload against the collection's guard rules.
+
+        Mirrors the relational Model: ``__fillable__`` (allowlist —
+        non-listed keys are ignored) and ``__guarded__`` (denylist — raises).
+        ``_id`` is the document primary key, guarded unless the collection
+        lists it in ``__fillable__`` (natural keys opt in explicitly);
+        direct instantiation stays the escape hatch.
+        """
+        from fastplace.errors import MassAssignmentError
+
+        fillable = getattr(cls, "__fillable__", None)
+        blocked = {"_id"} | set(getattr(cls, "__guarded__", ()))
+        if fillable and "_id" in fillable:
+            blocked.discard("_id")
+        filtered: dict[str, Any] = {}
+        for key, value in values.items():
+            if fillable is not None and key not in fillable:
+                continue
+            if key in blocked:
+                raise MassAssignmentError(
+                    f"{cls.__collection__}.{key} is guarded from mass assignment"
+                )
+            filtered[key] = value
+        return filtered
 
     @property
     def id(self) -> Any:
@@ -278,14 +358,17 @@ class Document:
 
     @classmethod
     async def create(cls, **data: Any) -> Document:
-        result = await cls._mongo_collection().insert_one(_document_payload(cls, data))
-        return cls(**{**data, "_id": result.inserted_id})
+        payload = _document_payload(cls, cls._mass_assignable(data))
+        result = await cls._mongo_collection().insert_one(payload)
+        # Build the instance from the payload — the stored document and the
+        # returned one must agree, defaults included.
+        return cls(**{**payload, "_id": result.inserted_id})
 
     @classmethod
     async def insert(cls, documents: list[dict[str, Any]]) -> list[Any]:
         """Insert many payload dicts; returns the generated ``_id`` list."""
         result = await cls._mongo_collection().insert_many(
-            [_document_payload(cls, doc) for doc in documents]
+            [_document_payload(cls, cls._mass_assignable(doc)) for doc in documents]
         )
         return list(result.inserted_ids)
 
@@ -293,17 +376,28 @@ class Document:
 
     async def update(self, **changes: Any) -> Document:
         """``$set`` the given fields and refresh the local copy."""
+        if self.id is None:
+            raise LookupError(
+                f"{self.__collection__} instance has no _id — create it before updating"
+            )
         result = await self._mongo_collection().find_one_and_update(
             {"_id": self.id},
-            {"$set": changes},
+            {"$set": type(self)._mass_assignable(changes)},
             return_document=ReturnDocument.AFTER,
         )
-        if result is not None:
-            self.__dict__.update(result)
+        if result is None:
+            raise LookupError(f"{self.__collection__} document {_id_repr(self.id)} vanished")
+        self.__dict__.update(result)
         return self
 
     async def delete(self) -> None:
-        await self._mongo_collection().delete_one({"_id": self.id})
+        if self.id is None:
+            raise LookupError(
+                f"{self.__collection__} instance has no _id — create it before deleting"
+            )
+        result = await self._mongo_collection().delete_one({"_id": self.id})
+        if result.deleted_count == 0:
+            raise LookupError(f"{self.__collection__} document {_id_repr(self.id)} vanished")
 
     async def reload(self) -> Document:
         fresh = await self._mongo_collection().find_one({"_id": self.id})

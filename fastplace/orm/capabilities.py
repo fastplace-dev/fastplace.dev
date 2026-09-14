@@ -83,8 +83,11 @@ _ALIASES = {"postgres": "postgresql", "sqlite3": "sqlite", "mariadb": "mysql"}
 
 
 def driver_from_url(url: str) -> str:
-    """Derive the driver name from a connection URL scheme."""
-    scheme = url.split(":", 1)[0].split("+", 1)[0]
+    """Derive the driver name from a connection URL scheme.
+
+    Case-insensitive — URLs pasted from dashboards arrive in any casing.
+    """
+    scheme = url.split(":", 1)[0].split("+", 1)[0].lower()
     return _ALIASES.get(scheme, scheme)
 
 

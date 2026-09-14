@@ -48,6 +48,29 @@ def test_unknown_schemes_pass_through_untouched():
     )
 
 
+@pytest.mark.parametrize(
+    ("mixed", "bound"),
+    [
+        ("MySQL://u:p@localhost/app", "mysql+asyncmy://u:p@localhost/app"),
+        ("PostgreSQL://u:p@localhost/app", "postgresql+asyncpg://u:p@localhost/app"),
+        ("SQLite:///./db.sqlite3", "sqlite+aiosqlite:///./db.sqlite3"),
+    ],
+)
+def test_mixed_case_schemes_still_bind(mixed: str, bound: str):
+    from fastplace.orm.manager import normalize_database_url
+
+    # developers paste URLs from dashboards — casing must not opt them out
+    # of driver binding
+    assert normalize_database_url(mixed) == bound
+
+
+def test_capabilities_resolve_mixed_case_schemes():
+    from fastplace.orm.capabilities import driver_from_url
+
+    assert driver_from_url("MySQL://u:p@localhost/app") == "mysql"
+    assert driver_from_url("Postgres://u:p@localhost/app") == "postgresql"
+
+
 def test_manager_config_normalizes_the_url_and_driver():
     from fastplace.orm.manager import DatabaseManager
 
@@ -60,6 +83,7 @@ def test_manager_config_normalizes_the_url_and_driver():
 def test_mysql_engine_is_created_with_connection_liveness_pings(monkeypatch):
     # MySQL kills idle connections after wait_timeout; the engine must ping
     # pooled connections on checkout instead of handing out dead sockets.
+    pytest.importorskip("asyncmy", reason="mysql driver lives in an optional extra")
     from fastplace.orm.manager import DatabaseManager
 
     manager = DatabaseManager(

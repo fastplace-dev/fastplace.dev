@@ -17,22 +17,31 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+#: Collections this suite touched — teardown drops exactly these, never
+#: whatever other Document subclasses happen to be alive in the process.
+_touched: set[str] = set()
+
+
 @pytest.fixture(autouse=True)
 async def mongo(monkeypatch):
     monkeypatch.setenv("MONGODB_URL", os.environ["TEST_MONGODB_URL"])
+    # An ambient MONGODB_DATABASE would silently redirect every drop() to a
+    # database this suite was never asked to touch.
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
 
     from fastplace.orm.documents import reset_documents
 
     reset_documents()
     yield
 
-    from fastplace.orm.documents import Document, reset_documents
+    from fastplace.orm.documents import aclose_documents, documents_database
 
-    # Server state persists — leave the scratch database as empty as we
-    # found it (collections this suite created, at least).
-    for doc_cls in Document.__subclasses__():
-        await doc_cls._mongo_collection().drop()
-    reset_documents()
+    try:
+        for name in sorted(_touched):
+            await documents_database()[name].drop()
+    finally:
+        _touched.clear()
+        await aclose_documents()
 
 
 @pytest.fixture()
@@ -44,6 +53,7 @@ def Article():
         views: int = 0
         tags: list = list
 
+    _touched.add(Article.__collection__)
     return Article
 
 

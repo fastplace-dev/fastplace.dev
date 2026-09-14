@@ -36,8 +36,7 @@ class SearchNotSupported(RuntimeError):
 class DatabaseSearchService:
     """Default service — PostgreSQL FTS via ``Model.full_text_search()``."""
 
-    def __init__(self, capabilities: Any | None = None, connection: str = "default") -> None:
-        self._connection = connection
+    def __init__(self, capabilities: Any | None = None) -> None:
         self._capabilities = capabilities
 
     def _caps(self) -> Any:

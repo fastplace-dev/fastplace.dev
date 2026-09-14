@@ -7,7 +7,51 @@ convention logic. Server round trips live in the env-gated contract suite
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+
+pytest.importorskip("pymongo", reason="document adapter lives behind the pymongo extra")
+
+
+class FakeCollection:
+    """Records writes — stands in for an AsyncCollection without a server."""
+
+    def __init__(self):
+        self.inserted: list[dict] = []
+        self.updated_filter: dict | None = None
+        self.update_result = None
+        self.deleted_filter: dict | None = None
+        self.deleted_count = 0
+
+    async def insert_one(self, payload):
+        self.inserted.append(payload)
+        return SimpleNamespace(inserted_id=f"oid{len(self.inserted)}")
+
+    async def find_one_and_update(self, filter, update, **kwargs):
+        self.updated_filter = dict(filter)
+        return self.update_result
+
+    async def delete_one(self, filter):
+        self.deleted_filter = dict(filter)
+        result = SimpleNamespace(deleted_count=self.deleted_count)
+        self.deleted_count = 0
+        return result
+
+
+@pytest.fixture()
+def fake_collection(monkeypatch):
+    from fastplace.orm.documents import Document
+
+    fake = FakeCollection()
+
+    class Article(Document):
+        title: str = ""
+        views: int = 0
+        tags: list = list
+
+    monkeypatch.setattr(Article, "_mongo_collection", classmethod(lambda cls: fake))
+    return Article, fake
 
 
 @pytest.fixture(autouse=True)
@@ -141,3 +185,153 @@ def test_reset_documents_clears_the_singleton():
 
     documents.reset_documents()
     assert documents._client is None
+
+
+async def test_aclose_documents_is_awaitable_and_clears_state():
+    from fastplace.orm import documents
+    from fastplace.orm.documents import aclose_documents
+
+    await aclose_documents()
+    assert documents._client is None
+
+
+def test_acronym_class_names_snake_case_cleanly():
+    from fastplace.orm.documents import Document
+
+    class APIKey(Document):
+        pass
+
+    class HTTPRequest(Document):
+        pass
+
+    class URL(Document):
+        pass
+
+    assert APIKey.__collection__ == "api_keys"
+    assert HTTPRequest.__collection__ == "http_requests"
+    assert URL.__collection__ == "urls"
+
+
+async def test_create_returns_instance_matching_the_persisted_document(fake_collection):
+    Article, fake = fake_collection
+
+    doc = await Article.create(title="hello")
+
+    # exactly one write, and it carries the annotation defaults…
+    assert fake.inserted == [{"title": "hello", "views": 0, "tags": []}]
+    # …and the returned instance mirrors what was persisted
+    assert doc.to_dict() == {"title": "hello", "views": 0, "tags": [], "_id": "oid1"}
+    assert doc.tags == []  # the factory resolved, not the `list` type itself
+
+
+def test_subclass_defaults_override_base_defaults():
+    from fastplace.orm.documents import Document, _document_payload
+
+    class Base(Document):
+        title: str = "base-default"
+        tags: list = list
+
+    class Sub(Base):
+        title: str = "sub-default"
+        tags: list = ["fixed"]
+
+    class AnnotatedOnly(Base):
+        views: int  # annotation without a default — no payload entry of its own
+
+    assert _document_payload(Sub, {}) == {"title": "sub-default", "tags": ["fixed"]}
+    # annotation-only subclass still falls back to the base default
+    assert _document_payload(AnnotatedOnly, {}) == {"title": "base-default", "tags": []}
+
+
+async def test_instance_update_and_delete_guard_unsaved_instances(fake_collection):
+    Article, _ = fake_collection
+
+    unsaved = Article(title="x")
+    with pytest.raises(LookupError, match="no _id"):
+        await unsaved.update(views=1)
+    with pytest.raises(LookupError, match="no _id"):
+        await unsaved.delete()
+
+
+async def test_instance_update_raises_when_document_vanished(fake_collection):
+    Article, fake = fake_collection
+
+    stale = Article(_id="ghost", title="old")
+    fake.update_result = None  # find_one_and_update matched nothing
+
+    with pytest.raises(LookupError, match="vanish"):
+        await stale.update(title="new")
+    assert fake.updated_filter == {"_id": "ghost"}
+
+
+async def test_instance_delete_raises_when_document_vanished(fake_collection):
+    Article, fake = fake_collection
+
+    stale = Article(_id="ghost", title="old")
+    fake.deleted_count = 0  # delete_one removed nothing
+
+    with pytest.raises(LookupError, match="vanish"):
+        await stale.delete()
+    assert fake.deleted_filter == {"_id": "ghost"}
+
+
+async def test_query_update_and_delete_reject_skip_limit():
+    from fastplace.orm.documents import Document
+
+    class Article(Document):
+        pass
+
+    with pytest.raises(ValueError, match="skip/limit"):
+        await Article.where({}).limit(5).update({"$set": {"views": 1}})
+    with pytest.raises(ValueError, match="skip/limit"):
+        await Article.where({}).skip(2).delete()
+
+
+def test_where_collisions_intersect_via_and():
+    from fastplace.orm.documents import Document
+
+    class Article(Document):
+        pass
+
+    ranged = Article.where(views={"$gte": 1}).where(views={"$lte": 9})
+    assert ranged._filter == {"$and": [{"views": {"$gte": 1}}, {"views": {"$lte": 9}}]}
+
+    # identical constraints stay flat instead of wrapping a redundant $and
+    same = Article.where(title="a").where(title="a")
+    assert same._filter == {"title": "a"}
+
+
+def test_mass_assignment_guard_mirrors_the_relational_model():
+    from fastplace.errors import MassAssignmentError
+    from fastplace.orm.documents import Document
+
+    class Comment(Document):
+        __fillable__ = ("title", "body")
+
+        title: str = ""
+        body: str = ""
+        author: str = ""
+
+    # non-fillable keys are ignored (allowlist semantics)
+    assert Comment._mass_assignable({"title": "t", "author": "a", "rogue": 1}) == {"title": "t"}
+
+    class Strict(Document):
+        __guarded__ = ("role",)
+
+        role: str = "user"
+
+    with pytest.raises(MassAssignmentError, match="role"):
+        Strict._mass_assignable({"role": "admin"})
+
+    # _id is the document primary key: silently ignored outside __fillable__
+    # (allowlist semantics), assignable only through an explicit opt-in
+    assert Comment._mass_assignable({"_id": "forged"}) == {}
+    Comment.__fillable__ = ("_id", "title")
+    assert Comment._mass_assignable({"_id": "natural-key"}) == {"_id": "natural-key"}
+
+
+async def test_create_routes_through_the_mass_assignment_guard(fake_collection):
+    Article, _ = fake_collection
+
+    with pytest.raises(Exception, match="_id"):
+        await Article.create(_id="forged", title="x")
