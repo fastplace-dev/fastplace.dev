@@ -482,6 +482,7 @@ class Model(AsyncAttrs, DeclarativeBase):
         from sqlalchemy.orm import with_parent
         from sqlalchemy.orm.attributes import set_committed_value
 
+        from fastplace.orm.query import QueryBuilder
         from fastplace.orm.session import run_read
 
         prop = inspect(type(self)).relationships[name]
@@ -489,6 +490,12 @@ class Model(AsyncAttrs, DeclarativeBase):
         # with_parent accepts a RelationshipProperty at runtime; the stubs
         # only declare the QueryableAttribute overload.
         stmt = select(target).where(with_parent(self, prop))  # type: ignore[arg-type]
+        # The target's global scopes ride along — a child hidden from every
+        # direct query (soft-deleted, archived, another tenant) must not come
+        # back through the relationship door.
+        criteria = QueryBuilder(target)._global_scope_criteria()
+        if criteria:
+            stmt = stmt.where(*criteria)
         result = await run_read(stmt)
         if prop.uselist:
             loaded = list(result.scalars().all())

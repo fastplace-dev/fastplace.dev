@@ -30,13 +30,28 @@ _MISSING = object()
 
 def _validate_ttl(ttl: int | float | None) -> None:
     """redis rejects ``ex <= 0`` server-side; a non-positive ttl is always a bug."""
-    if ttl is not None and ttl <= 0:
+    if ttl is None:
+        return
+    if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
+        # A text ttl would TypeError on the <= below — nobody can act on that.
+        raise ValueError(f"cache ttl must be a positive number of seconds, got {ttl!r}")
+    if ttl <= 0:
         raise ValueError(f"cache ttl must be a positive number of seconds, got {ttl}")
 
 
 def _default_ttl(ttl: int | float | None) -> int | float | None:
     """Resolve a remember() ttl against the configured CACHE_TTL default."""
-    return config("CACHE_TTL", default=3600) if ttl is None else ttl
+    if ttl is not None:
+        return ttl
+    raw = config("CACHE_TTL", default=3600)
+    if isinstance(raw, str):
+        # A bare env value stays text when no config-module default is loaded
+        # to coerce against — the cache contract is seconds, so coerce here.
+        try:
+            return int(raw)
+        except ValueError:
+            pass  # _validate_ttl rejects non-numeric text with a clear error
+    return raw
 
 
 @runtime_checkable

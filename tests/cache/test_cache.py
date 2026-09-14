@@ -301,6 +301,27 @@ async def test_redis_remember_caches_a_none_result():
     assert len(calls) == 1
 
 
+async def test_remember_coerces_a_textual_configured_ttl(monkeypatch):
+    """CACHE_TTL can arrive as text — a bare env value keeps its string form
+    when no config-module default is loaded (Config coerces against the
+    default's type, and there is none). remember() must not TypeError deep
+    in put() over it."""
+    monkeypatch.setattr("fastplace.cache.config", lambda key, default=None: "3600")
+    store = MemoryCache()
+    clock = {"now": 100.0}
+    monkeypatch.setattr("fastplace.cache.monotonic", lambda: clock["now"])
+
+    await store.remember("txt", factory=lambda: "v")
+    assert store._entries["txt"].deadline == 100.0 + 3600
+
+
+async def test_non_numeric_ttl_fails_with_a_clear_error():
+    # '<=' between str and int is a TypeError nobody can act on — the same
+    # "fail fast with a clear message" contract as non-positive ttls.
+    with pytest.raises(ValueError, match="cache ttl must be a positive number"):
+        await MemoryCache().put("k", "v", ttl="soon")
+
+
 async def test_put_rejects_non_positive_ttl():
     # redis rejects ex<=0 server-side with a cryptic error and a ttl of 0
     # seconds is always a bug — fail fast with a clear message instead.

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fastplace-tenancy"
+version = "0.1.0"
+description = "First-party, opt-in multi-tenancy for Fastplace — company-scoped models, defense-in-depth isolation."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Firoz Anam" }]
+dependencies = [
+    "fastplace>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://fastplace.dev"
+
+[tool.setuptools.packages.find]
+where = ["src"]

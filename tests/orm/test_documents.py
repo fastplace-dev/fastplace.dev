@@ -335,3 +335,36 @@ async def test_create_routes_through_the_mass_assignment_guard(fake_collection):
 
     with pytest.raises(Exception, match="_id"):
         await Article.create(_id="forged", title="x")
+
+
+# ---------------------------------------------------------------------------
+# __query_class__ hook + public payload builder
+# ---------------------------------------------------------------------------
+def test_query_class_hook_lets_subclasses_intercept_where():
+    """A subclass (fastplace-tenancy's CompanyDocument) needs its own query
+    type to guard update()/delete() — where() must build through the hook,
+    not a hard-coded DocumentQuery."""
+    from fastplace.orm.documents import Document, DocumentQuery
+
+    class Probe(Document):
+        title: str = ""
+
+    class SpyQuery(DocumentQuery):
+        pass
+
+    Probe.__query_class__ = SpyQuery  # type: ignore[assignment]
+    query = Probe.where(title="x")
+    assert type(query) is SpyQuery
+
+
+def test_build_payload_is_a_public_classmethod():
+    """Third-party Document bases need the defaults-filling payload builder
+    without reaching for the module-private _document_payload."""
+    from fastplace.orm.documents import Document
+
+    class Note(Document):
+        title: str = "untitled"
+        views: int = 0
+
+    payload = Note._build_payload({"views": 3})
+    assert payload == {"views": 3, "title": "untitled"}

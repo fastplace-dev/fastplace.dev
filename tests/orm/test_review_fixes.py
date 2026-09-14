@@ -11,6 +11,7 @@ and MySQL capability honesty.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from sqlalchemy.orm import Mapped, mapped_column
@@ -206,6 +207,10 @@ async def test_named_connection_from_config_dict(db_url, tmp_path, monkeypatch):
     )
     from fastplace.config import reset_config
 
+    # Capture the repo root BEFORE chdir: reset_config() defaults to cwd, and
+    # monkeypatch only restores cwd at teardown — a bare reset_config() here
+    # would rebind the process config to the tmp dir and leak it.
+    repo_root = Path.cwd()
     reset_config(tmp_path)
     monkeypatch.chdir(tmp_path)
     from fastplace.orm.manager import _connections_from_config
@@ -213,7 +218,7 @@ async def test_named_connection_from_config_dict(db_url, tmp_path, monkeypatch):
     connections = _connections_from_config()
     assert "analytics" in connections
     assert connections["analytics"]["driver"] == "sqlite"
-    reset_config()
+    reset_config(repo_root)
 
 
 # ---------------------------------------------------------------------------

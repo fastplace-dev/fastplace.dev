@@ -25,14 +25,35 @@ import asyncio
 import re
 from typing import Any, ClassVar
 
-from pymongo import ReturnDocument
-from pymongo.asynchronous.collection import AsyncCollection
-from pymongo.asynchronous.mongo_client import AsyncMongoClient
+try:  # The adapter degrades to a use-time error without the extra.
+    from pymongo import ReturnDocument
+    from pymongo.asynchronous.collection import AsyncCollection
+    from pymongo.asynchronous.mongo_client import AsyncMongoClient
+except ImportError:  # pragma: no cover — depends on extras installed
+    ReturnDocument = None  # type: ignore[assignment,misc]
+    AsyncCollection = Any  # type: ignore[assignment,misc]
+    AsyncMongoClient = None  # type: ignore[assignment,misc]
 
 #: Brought in lazily via ``fastplace.config`` so document users who never
 #: touch MongoDB pay no import-time config read.
-_client: AsyncMongoClient | None = None
+_client: Any | None = None
 _database = None  # AsyncDatabase, kept untyped to avoid a second import
+
+
+def _require_pymongo() -> None:
+    """Raise the actionable error instead of an ImportError at import time.
+
+    Sibling distributions (fastplace-tenancy) import this module from their
+    own users' environments, which may not have the mongodb extra.
+    """
+    if AsyncMongoClient is None:
+        from fastplace.errors import ConfigurationError
+
+        raise ConfigurationError(
+            "pymongo is not installed — the document adapter needs the "
+            "mongodb extra (pip install 'fastplace[mongodb]')"
+        )
+
 
 #: Acronym-aware camel→snake: split only at lower/digit→Upper transitions
 #: and Upper→UpperLower boundaries, so ``APIKey`` → ``api_key`` and
@@ -57,10 +78,11 @@ def _database_name_for(url: str, configured: str | None) -> str:
     return configured or _DEFAULT_DATABASE
 
 
-def get_documents_client() -> AsyncMongoClient:
+def get_documents_client() -> Any:
     """Process-wide async client, built from ``MONGODB_URL`` on first use."""
     global _client
     if _client is None:
+        _require_pymongo()
         from fastplace.config import config
 
         url = config("MONGODB_URL", default="mongodb://localhost:27017")
@@ -186,7 +208,7 @@ class DocumentQuery:
                 combined[key] = value
         if clauses:
             combined["$and"] = clauses
-        return DocumentQuery(self._doc_cls, combined, self._sort, self._skip, self._limit)
+        return type(self)(self._doc_cls, combined, self._sort, self._skip, self._limit)
 
     def sort(self, key_or_list: Any, direction: int = 1) -> DocumentQuery:
         """Order by a field (``sort("views", -1)``) or a list of pairs.
@@ -205,15 +227,15 @@ class DocumentQuery:
             pairs = [(key_or_list, direction)]
         else:
             pairs = []
-        return DocumentQuery(
+        return type(self)(
             self._doc_cls, self._filter, [*self._sort, *pairs], self._skip, self._limit
         )
 
     def skip(self, count: int) -> DocumentQuery:
-        return DocumentQuery(self._doc_cls, self._filter, self._sort, count, self._limit)
+        return type(self)(self._doc_cls, self._filter, self._sort, count, self._limit)
 
     def limit(self, count: int) -> DocumentQuery:
-        return DocumentQuery(self._doc_cls, self._filter, self._sort, self._skip, count)
+        return type(self)(self._doc_cls, self._filter, self._sort, self._skip, count)
 
     def _collection(self) -> AsyncCollection:
         return self._doc_cls._mongo_collection()
@@ -271,6 +293,9 @@ class Document:
     __fillable__: ClassVar[tuple[str, ...] | None] = None
     #: Extra denylist — assigning a guarded key raises MassAssignmentError.
     __guarded__: ClassVar[tuple[str, ...]] = ()
+    #: Query type ``where()`` builds — subclass bases intercept update()/
+    #: delete() through this hook (see fastplace-tenancy's CompanyDocument).
+    __query_class__: ClassVar[type[DocumentQuery]] = DocumentQuery
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -325,8 +350,17 @@ class Document:
     # -- class-level data access ------------------------------------------------
 
     @classmethod
+    def _build_payload(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Fill annotation defaults — the public face of the payload builder.
+
+        Subclass bases (fastplace-tenancy) stamp their own columns into the
+        payload; reaching for the module-private helper would be fragile.
+        """
+        return _document_payload(cls, data)
+
+    @classmethod
     def where(cls, filter: dict[str, Any] | None = None, /, **equality) -> DocumentQuery:
-        return DocumentQuery(cls).where(filter, **equality)
+        return cls.__query_class__(cls).where(filter, **equality)
 
     @classmethod
     async def find(

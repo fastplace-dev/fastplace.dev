@@ -240,3 +240,71 @@ def test_search_statements_apply_global_scope_criteria(notes):
     assert any("archived" in c for c in compiled)
     # Soft delete rides along too.
     assert any("deleted_at" in c for c in compiled)
+
+
+# ---------------------------------------------------------------------------
+# Relationship loading — the target model's global scopes must ride along.
+# A scope that filters every direct query but leaks through relation() or
+# .with_() is half a scope (this is exactly the seam fastplace-tenancy's
+# company scope plugs into).
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def family(db_url):
+    from fastplace.orm import belongs_to, has_many
+
+    class Parent_(Model):
+        __tablename__ = "scope_parents"
+
+        id: int = Field(primary_key=True)
+        name: str
+
+        children: list = has_many("Child", back_populates="parent")
+
+    class Child(Model):
+        __tablename__ = "scope_children"
+
+        id: int = Field(primary_key=True)
+        label: str
+        parent_id: int = Field(foreign_key="scope_parents.id")
+        archived: bool = False
+
+        parent: Parent_ = belongs_to("Parent_", back_populates="children")
+
+    return Parent_, Child
+
+
+async def test_relation_applies_the_targets_global_scopes(family):
+    """relation() builds a raw SELECT today — soft-deleted children must not
+    come back through it (they don't through any other entry point)."""
+    Parent_, Child = family
+    await db.create_all()
+    parent = await Parent_.create(name="p")
+    await Child.create(label="live", parent_id=parent.id)
+    dead = await Child.create(label="dead", parent_id=parent.id)
+    await dead.delete()
+
+    loaded = await parent.relation("children")
+    assert [c.label for c in loaded] == ["live"]
+
+    Child.add_global_scope("archived", ArchivedScope())
+    doomed = await Child.create(label="doomed", parent_id=parent.id)
+    await doomed.update(archived=True)
+    loaded = await parent.relation("children")
+    assert [c.label for c in loaded] == ["live"]
+
+
+async def test_eager_loading_applies_the_targets_global_scopes(family):
+    """with_() selectin/joined loads must filter by the target's scopes too."""
+    Parent_, Child = family
+    await db.create_all()
+    parent = await Parent_.create(name="p")
+    await Child.create(label="live", parent_id=parent.id)
+    dead = await Child.create(label="dead", parent_id=parent.id)
+    await dead.delete()
+    Child.add_global_scope("archived", ArchivedScope())
+    gone = await Child.create(label="gone", parent_id=parent.id)
+    await gone.update(archived=True)
+
+    rows = await Parent_.query().with_("children").get()
+    assert len(rows) == 1
+    assert [c.label for c in rows[0].children] == ["live"]

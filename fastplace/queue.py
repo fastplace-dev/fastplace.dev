@@ -290,3 +290,14 @@ def reset_queue() -> None:
     """Drop the singleton — tests and config reloads."""
     global _default_queue
     _default_queue = None
+
+
+def set_queue(driver: QueueDriver) -> None:
+    """Install a custom driver as the process-wide queue.
+
+    The hook wrapper packages (fastplace-tenancy's ``TenantQueue``) need:
+    everything that dispatches through :func:`queue` — application code and
+    the domain-event bridge alike — then flows through the wrapper.
+    """
+    global _default_queue
+    _default_queue = driver

@@ -66,7 +66,15 @@ def test_quality_job_runs_ruff_and_mypy(ci):
     script = _run_steps(ci, "quality")
     assert "ruff check ." in script
     assert "ruff format --check ." in script
-    assert "mypy fastplace" in script
+    assert "mypy fastplace packages/tenancy/src" in script
+
+
+def test_tenancy_package_is_installed_by_backend_and_quality(ci):
+    """The sibling distribution must be installed wherever its suite or its
+    types run — otherwise the tenancy tests collect nothing silently."""
+    for job in ("backend", "quality"):
+        script = _run_steps(ci, job)
+        assert "pip install -e ./packages/tenancy" in script, f"{job} misses tenancy"
 
 
 def test_frontend_job_runs_the_full_gate_set(ci):

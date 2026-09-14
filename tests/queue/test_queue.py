@@ -416,3 +416,18 @@ def test_queue_work_once_with_empty_queue(tmp_path, monkeypatch):
     result = CliRunner().invoke(root_cli, ["queue:work", "--once"])
     assert result.exit_code == 0, result.output
     assert "no pending" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# set_queue — installing a custom driver as the process default
+# ---------------------------------------------------------------------------
+async def test_set_queue_installs_a_custom_driver():
+    """Wrappers (e.g. fastplace-tenancy's TenantQueue) must be installable
+    as the process default so every dispatch — including the domain-event
+    bridge — flows through them."""
+    from fastplace.queue import set_queue
+
+    custom = MemoryQueue()
+    set_queue(custom)
+    assert queue() is custom
+    # reset_queue() (the autouse fixture here) clears it back to config.

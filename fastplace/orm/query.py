@@ -10,7 +10,7 @@ import inspect
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, selectinload, with_loader_criteria
 from sqlalchemy.sql import Select
 
 from fastplace.orm.pagination import Paginator
@@ -189,7 +189,47 @@ class QueryBuilder:
                 current_mapper = rel.mapper
             if chain is not None:
                 loaders.append(chain)
+            # The path's terminal model carries its own global scopes — the
+            # eager load must filter by them, exactly like relation() does.
+            criteria = self._loader_criteria(current_mapper.class_)
+            if criteria is not None:
+                loaders.append(with_loader_criteria(current_mapper.class_, criteria))
         return loaders
+
+    def _loader_criteria(self, target: type) -> Any | None:
+        """Criteria for a relationship target's eager loads, or None.
+
+        Evaluated at statement-build time (the context a contextvar-backed
+        scope reads — a request's company, say — is bound by then, and the
+        statement executes within the same await). The builder's own
+        soft-delete mode and scope escapes propagate to the loaded
+        relationship, mirroring :meth:`_global_scope_criteria`.
+        """
+        scopes = target._resolved_global_scopes()  # type: ignore[attr-defined]
+        clauses: list[Any] = []
+        deleted_at = getattr(target, "deleted_at", None)
+        for name, scope_ in scopes.items():
+            if name == "soft_delete":
+                if deleted_at is None:
+                    continue
+                if self._soft_delete_mode == ONLY_DELETED:
+                    clauses.append(deleted_at.is_not(None))
+                elif (
+                    self._soft_delete_mode == INCLUDE_DELETED
+                    or "soft_delete" in self._without_scopes
+                ):
+                    continue
+                else:
+                    clauses.append(deleted_at.is_(None))
+                continue
+            if name in self._without_scopes:
+                continue
+            clauses.extend(scope_.criteria(target))
+        if not clauses:
+            return None
+        from sqlalchemy import and_
+
+        return and_(*clauses)
 
     # -- execution ---------------------------------------------------------------
     async def get(self) -> list[Any]:
