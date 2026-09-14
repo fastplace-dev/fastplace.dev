@@ -246,3 +246,67 @@ def make_page(
         _PAGE_TEMPLATE.format(component=clean, function_name=function_name),
         root,
     )
+
+
+_AGENT_TEMPLATE = '''"""{doc_name} agent — assemble and return the Agent instance."""
+
+from fastplace.ai import Agent
+
+from app.ai.tools.{snake}_tools import {snake}_helper
+
+
+def {snake}_agent() -> Agent:
+    """Build the {doc_name} agent; call from routes/ai.py and stream."""
+    return Agent(
+        system_prompt="You are {doc_name}, a Fastplace AI agent.",
+        tools=[{snake}_helper],
+    )
+'''
+
+_TOOLS_TEMPLATE = '''"""{doc_name} tool suite — @Tool handlers the agent may call.
+
+Tools obey the CSR rule: module services only, never repositories or models.
+"""
+
+from fastplace.ai import Tool
+
+
+@Tool(description="Describe what the {doc_name} tool does")
+async def {snake}_helper(query: str) -> str:
+    """Answer a {doc_name} query.
+
+    Args:
+        query: The question or lookup text.
+    """
+    # TODO: call the relevant module service and return its result.
+    return f"{doc_name} received: {{query}}"
+'''
+
+
+@generators_app.command("make:agent")
+def make_agent(
+    name: str = typer.Argument(..., help="Agent name (PascalCase or snake_case)"),
+) -> None:
+    """Scaffold an AI agent + tool suite under app/ai/ (blueprint §9)."""
+    root = _project_root()
+    clean = _snake(name.strip().strip("/"))
+    if not clean or not re.fullmatch(r"[a-z][a-z0-9_]*", clean):
+        console.print("[red]invalid agent name[/] — use letters/digits starting with a letter")
+        raise typer.Exit(code=1)
+    doc_name = clean.replace("_", " ").title()
+
+    agents_dir = root / "app" / "ai" / "agents"
+    tools_dir = root / "app" / "ai" / "tools"
+    vectors_dir = root / "app" / "ai" / "vectors"
+    for directory, marker in ((agents_dir, "__init__.py"), (tools_dir, "__init__.py"), (vectors_dir, "__init__.py")):
+        _write(directory / marker, "", root)
+    _write(
+        agents_dir / f"{clean}_agent.py",
+        _AGENT_TEMPLATE.format(doc_name=doc_name, snake=clean),
+        root,
+    )
+    _write(
+        tools_dir / f"{clean}_tools.py",
+        _TOOLS_TEMPLATE.format(doc_name=doc_name, snake=clean),
+        root,
+    )

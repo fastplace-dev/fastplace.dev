@@ -14,6 +14,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@fastplace/react": path.resolve(__dirname, "packages/react/src/index.tsx"),
+      "@fastplace/ai-react": path.resolve(__dirname, "packages/ai-react/src/index.ts"),
     },
   },
   root: ".",

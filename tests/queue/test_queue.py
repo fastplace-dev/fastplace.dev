@@ -182,6 +182,43 @@ def test_import_jobs_uses_the_given_root_over_stale_modules(tmp_path, monkeypatc
         sys.modules.pop(name, None)
 
 
+def test_import_jobs_handles_sibling_prefixed_roots(tmp_path):
+    # Substring containment ("/…/a" in "/…/a-v2/…") lets a sibling project's
+    # cached `app` survive the stale sweep and silently shadow this root's
+    # jobs — real path containment must evict it.
+    proj_a = tmp_path / "a"
+    proj_a_v2 = tmp_path / "a-v2"
+    for proj, _job in ((proj_a, "alpha"), (proj_a_v2, None)):
+        (proj / "app" / "jobs").mkdir(parents=True)
+        (proj / "app" / "__init__.py").write_text("")
+        (proj / "app" / "jobs" / "__init__.py").write_text("")
+    (proj_a / "app" / "jobs" / "alpha_job.py").write_text(
+        "from fastplace.queue import Job\n\n\n@Job()\nasync def alpha():\n    return None\n"
+    )
+
+    saved = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "app" or name.startswith("app.")
+    }
+    for name in saved:
+        sys.modules.pop(name)
+    sys.path.insert(0, str(proj_a_v2))
+    try:
+        import app as sibling_app  # noqa: F401 — cached on purpose
+    finally:
+        sys.path.remove(str(proj_a_v2))
+
+    try:
+        found = import_jobs(proj_a)
+        assert found == ["alpha"]  # a's own jobs discovered despite the sibling
+        assert sys.modules.get("app") is not sibling_app
+    finally:
+        for name in [n for n in sys.modules if n == "app" or n.startswith("app.")]:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+
+
 # ---------------------------------------------------------------------------
 # MemoryQueue driver
 # ---------------------------------------------------------------------------

@@ -179,3 +179,65 @@ def test_make_module_rejects_invalid_names(tmp_path, monkeypatch):
     result = runner.invoke(cli_app, ["make:module", "../evil"])
     assert result.exit_code == 1
     assert not (tmp_path / "app" / "modules" / "..").exists()
+
+
+def test_make_agent_scaffolds_agent_and_tool_suite(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["make:agent", "ResearchAssistant"])
+    assert result.exit_code == 0, result.output
+
+    agent_path = tmp_path / "app" / "ai" / "agents" / "research_assistant_agent.py"
+    tool_path = tmp_path / "app" / "ai" / "tools" / "research_assistant_tools.py"
+    assert agent_path.exists(), "expected app/ai/agents/<snake>_agent.py"
+    assert tool_path.exists(), "expected app/ai/tools/<snake>_tools.py"
+    assert (tmp_path / "app" / "ai" / "vectors" / "__init__.py").exists()
+
+    # The agent stub assembles a real Agent from fastplace.ai.
+    agent_src = agent_path.read_text()
+    assert "from fastplace.ai import Agent" in agent_src
+    assert "def research_assistant_agent()" in agent_src
+
+    # The tool stub is @Tool-decorated and registers through a real
+    # package-path import — the same route app boot takes — not a detached
+    # exec that would miss relative-import or package-context breakage.
+    tool_src = tool_path.read_text()
+    assert "@Tool(" in tool_src
+    import importlib
+    import sys
+
+    from fastplace.ai import reset_tool_registry, tool_registry
+
+    # complete the regular-package chain so the repo's own dogfood `app`
+    # cannot shadow this namespace portion during the import
+    (tmp_path / "app" / "__init__.py").write_text("")
+    (tmp_path / "app" / "ai" / "__init__.py").write_text("")
+
+    reset_tool_registry()
+    saved = {n: m for n, m in sys.modules.items() if n == "app" or n.startswith("app.")}
+    for name in saved:
+        sys.modules.pop(name)
+    sys.path.insert(0, str(tmp_path))
+    try:
+        importlib.import_module("app.ai.tools.research_assistant_tools")
+        assert "research_assistant_helper" in tool_registry
+    finally:
+        sys.path.remove(str(tmp_path))
+        for name in [n for n in sys.modules if n == "app" or n.startswith("app.")]:
+            sys.modules.pop(name)
+        sys.modules.update(saved)
+        reset_tool_registry()
+
+
+def test_make_agent_rejects_invalid_names(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["make:agent", "../evil"])
+    assert result.exit_code == 1
+    assert not (tmp_path / "app" / "ai" / "agents" / "..").exists()

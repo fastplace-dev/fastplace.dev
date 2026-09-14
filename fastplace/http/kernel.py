@@ -116,6 +116,12 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     load_env(root / ".env")
     reset_config(root)
     _ensure_import_root(root)
+    # app/ai/vectors registrations must exist before anything resolves
+    # active_vector_store() — boot is the one place a project's stores are
+    # guaranteed to be importable.
+    from fastplace.ai.vectors import import_vector_stores
+
+    import_vector_stores(root)
 
     web = _load_router_module(root, "routes.web")
     api = _load_router_module(root, "routes.api")

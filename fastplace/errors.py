@@ -65,6 +65,13 @@ class ServerError(FastplaceError):
     default_message = "Server error."
 
 
+class AiError(FastplaceError):
+    """The AI engine failed — round limits, provider misuse, bad assembly."""
+
+    status_code = 500
+    default_message = "AI engine error."
+
+
 class CacheSerializationError(FastplaceError):
     """A cache value cannot be serialized by the configured driver.
 

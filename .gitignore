@@ -27,3 +27,6 @@ database.sqlite3
 .DS_Store
 .idea/
 .vscode/
+
+# Package build output
+packages/*/dist/

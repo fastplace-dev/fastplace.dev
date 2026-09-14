@@ -73,19 +73,24 @@ def import_jobs(project_root: str | Path | None = None) -> list[str]:
     if not jobs_dir.is_dir():
         return []
     root_str = str(root)
-    if root_str not in sys.path:
+    # Scope the path entry to this call: leaving it behind would hijack the
+    # next `import app` elsewhere in the process.
+    inserted = root_str not in sys.path
+    if inserted:
         sys.path.insert(0, root_str)
     _evict_stale_app_modules(root)
     try:
         package = importlib.import_module("app.jobs")
+        for module_info in pkgutil.iter_modules(package.__path__):
+            if module_info.name.startswith("_"):
+                continue
+            importlib.import_module(f"app.jobs.{module_info.name}")
     except ModuleNotFoundError as exc:
-        if exc.name in ("app", "app.jobs"):
-            return []
-        raise
-    for module_info in pkgutil.iter_modules(package.__path__):
-        if module_info.name.startswith("_"):
-            continue
-        importlib.import_module(f"app.jobs.{module_info.name}")
+        if exc.name not in ("app", "app.jobs"):
+            raise
+    finally:
+        if inserted:
+            sys.path.remove(root_str)
     return registered_jobs()
 
 
@@ -93,7 +98,9 @@ def _evict_stale_app_modules(root: Path) -> None:
     """Drop cached ``app``/``app.jobs`` packages bound to a different root.
 
     Without this, a previously imported project's ``app`` package shadows
-    the one under ``root`` and its jobs silently win.
+    the one under ``root`` and its jobs silently win. Containment is
+    resolved-path based, not substring based, so a sibling root such as
+    ``/work/a-v2`` never counts as ``/work/a``.
     """
     import sys
 
@@ -102,8 +109,16 @@ def _evict_stale_app_modules(root: Path) -> None:
         if module is None:
             continue
         origin = getattr(module, "__file__", None) or ""
-        if root.as_posix() not in Path(origin).as_posix():
+        if not origin or not _path_contains(root, origin):
             sys.modules.pop(name, None)
+
+
+def _path_contains(root: Path, origin: str) -> bool:
+    """True when ``origin`` really lives under ``root`` (path containment)."""
+    try:
+        return Path(origin).resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 class Job:

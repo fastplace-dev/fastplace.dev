@@ -10,3 +10,6 @@ database/
 .venv/
 node_modules/
 package-lock.json
+
+# Package build output
+packages/*/dist/
