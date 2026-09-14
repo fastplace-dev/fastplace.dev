@@ -15,7 +15,7 @@ You are taking over the Fastplace framework build. A previous agent completed al
 
 ## Where things stand
 
-- Branch `master` at `353408b`, clean tree. Seven phases delivered (see the checklist's phase table).
+- Branch `master` at `5cfbe65`, clean tree. Seven phases delivered (see the checklist's phase table).
 - Baseline gates at head: pytest **480 passed / 19 skipped** · `mypy fastplace` clean · `ruff check .` + format clean · `npm run types` + `npm run test:run` **39 passed** · `npx playwright test` **4 passed**. Nothing is merged or broken — your first run must reproduce these numbers.
 - ~9,700 LOC framework (`fastplace/`), ~1,800 LOC frontend packages (`packages/react`, `packages/ai-react`), sample app at repo root (`app/`, `routes/`, `config/`, `database/`, `resources/js/`).
 

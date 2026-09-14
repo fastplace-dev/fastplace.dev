@@ -61,3 +61,6 @@ docs/site/.vitepress/cache/
 
 # Temporary working files
 commit-message.txt
+
+# Local agent instructions (never published)
+CLAUDE.md

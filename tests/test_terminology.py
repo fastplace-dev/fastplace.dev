@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 #: subjects. Both directions are pinned: a dogfood line must be one of
 #: these, and each of these must still exist (stale quotes fail too).
 ALLOWED_QUOTE_LINES = {
-    "| 7 — Production polish & dogfood | `353408b` | observability, error pages, sample-app modules, 35 adversarial-review fixes |",
-    "| Batch 2 — Dogfood depth | `67e333c` | typed DTO contracts on `/api/v1` (services own Pydantic result models, controllers annotate returns, frozen wire-shape tests), `app/ai/tools/search_docs` (labeled, bounded excerpts) wired into the assistant agent, Knowledge bridge page + Assistant chat page (`useAIStream`), persistent layouts (`applyLayouts`, `X.layout` static, `resources/js/layouts/AppLayout`), app-level middleware (`app/http/middleware/request_timing.py` in `config/app.py MIDDLEWARE`), hermetic E2E scratch DB; 5 adversarial-review findings fixed |",
+    "| 7 — Production polish & dogfood | `5cfbe65` | observability, error pages, sample-app modules, 35 adversarial-review fixes |",
+    "| Batch 2 — Dogfood depth | `44a709a` | typed DTO contracts on `/api/v1` (services own Pydantic result models, controllers annotate returns, frozen wire-shape tests), `app/ai/tools/search_docs` (labeled, bounded excerpts) wired into the assistant agent, Knowledge bridge page + Assistant chat page (`useAIStream`), persistent layouts (`applyLayouts`, `X.layout` static, `resources/js/layouts/AppLayout`), app-level middleware (`app/http/middleware/request_timing.py` in `config/app.py MIDDLEWARE`), hermetic E2E scratch DB; 5 adversarial-review findings fixed |",
     "2. ~~**Dogfood depth** (1–2 days)~~ — ✅ delivered (Batch 2): Assistant chat page · Knowledge bridge page · typed DTO contracts on `/api/v1` · `app/ai/tools/` example · layouts directory · app-level middleware",
 }
 QUOTE_FILE = "docs/status_checklist.md"
