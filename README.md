@@ -359,6 +359,10 @@ Phase ordering is deliberate: the ORM precedes both presentation edges and the m
 
 - **[Fastplace Architectural Blueprint](docs/framework_architectural_blueprint.md)** — the complete, authoritative design guide and implementation roadmap. This README summarizes it; the blueprint remains the single source of truth.
 
+## Acknowledgements
+
+Fastplace's developer-experience goals are informed by many excellent frameworks — most notably [Laravel](https://laravel.com) (MIT) for its ergonomics-first API design, and [Inertia.js](https://inertiajs.com) (MIT) for the server-driven SPA pattern the React bridge follows. Fastplace is an independent Python + React implementation with no shared code.
+
 ## License
 
 Fastplace is open-sourced under the [MIT License](LICENSE).
