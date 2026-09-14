@@ -1,7 +1,16 @@
 {
   "name": "@fastplace/react",
   "version": "0.1.0",
-  "description": "React bridge for Fastplace — server-driven SPA over the X-Fastplace-Request protocol",
+  "description": "React bridge for Fastplace \u2014 server-driven SPA over the X-Fastplace-Request protocol",
+  "homepage": "https://fastplace.dev",
+  "bugs": {
+    "url": "https://github.com/firozanam/fastplace.dev/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/firozanam/fastplace.dev.git",
+    "directory": "packages/react"
+  },
   "type": "module",
   "main": "./dist/fastplace-react.js",
   "module": "./dist/fastplace-react.js",

@@ -10,6 +10,8 @@ export default tseslint.config(
       "node_modules/**",
       "public/build/**",
       "packages/*/dist/**",
+      "docs/site/.vitepress/dist/**",
+      "docs/site/.vitepress/cache/**",
       "playwright-report/**",
       "test-results/**",
       "storage/**",

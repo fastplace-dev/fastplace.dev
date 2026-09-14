@@ -1,0 +1,55 @@
+# Docs site — build docs/site (VitePress) and hand the artifact to GitHub
+# Pages. Repo-side config only: activation (Pages source = GitHub Actions,
+# custom domain fastplace.dev) is a one-time user step — see
+# docs/deployment-runbook.md. Never a push-to-any-branch fan-out.
+name: docs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "docs/site/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs.yml"
+
+env:
+  NODE_VERSION: "20"
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Least privilege: this job runs npm ci over repo-controlled manifests —
+    # it needs checkout only. The Pages/id-token scopes live on deploy.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site/.vitepress/dist
+
+  deploy:
+    permissions:
+      contents: read
+      pages: write # required by actions/deploy-pages
+      id-token: write # required by actions/deploy-pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -79,7 +79,13 @@ def test_tenancy_package_is_installed_by_backend_and_quality(ci):
 
 def test_frontend_job_runs_the_full_gate_set(ci):
     script = _run_steps(ci, "frontend")
-    for gate in ("npm run types", "npm run lint:check", "npm run format:check", "npm run test:run"):
+    for gate in (
+        "npm run types",
+        "npm run lint:check",
+        "npm run format:check",
+        "npm run test:run",
+        "npm run docs:build",  # the docs site builds in CI — rot is a red build
+    ):
         assert gate in script
 
 
