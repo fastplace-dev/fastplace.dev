@@ -436,7 +436,7 @@ async def test_validated_payload_passes_responses_through_untouched():
 
 
 async def test_annotated_controller_can_wrap_its_payload_in_json():
-    """The dogfood pattern: `-> ProjectResource` + Json(dto.model_dump(), 201)
+    """The sample-app pattern: `-> ProjectResource` + Json(dto.model_dump(), 201)
     must not explode in outbound validation."""
     r = Router()
 

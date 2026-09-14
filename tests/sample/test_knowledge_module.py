@@ -14,7 +14,7 @@ def service():
     return KnowledgeService()
 
 
-async def test_ingest_embeds_content_and_stores_it(service, dogfood_db, embedding_seam):
+async def test_ingest_embeds_content_and_stores_it(service, sample_db, embedding_seam):
     item = await service.ingest(title="ORM design", content="Repositories own query construction.")
 
     assert item.title == "ORM design"
@@ -22,19 +22,19 @@ async def test_ingest_embeds_content_and_stores_it(service, dogfood_db, embeddin
     assert embedding_seam and "Repositories" in embedding_seam[0]["input"][0]
 
 
-async def test_ingest_can_skip_embedding_when_no_provider(service, dogfood_db):
+async def test_ingest_can_skip_embedding_when_no_provider(service, sample_db):
     # Seeding without an API key must still work — the vector can be
     # backfilled later by a job.
     item = await service.ingest(title="Notes", content="plain text", embed_vector=False)
     assert item.embedding is None
 
 
-async def test_ingest_rejects_empty_content(service, dogfood_db):
+async def test_ingest_rejects_empty_content(service, sample_db):
     with pytest.raises(ValidationError):
         await service.ingest(title="", content="   ")
 
 
-async def test_search_filters_in_the_database_like_fallback(service, dogfood_db):
+async def test_search_filters_in_the_database_like_fallback(service, sample_db):
     # sqlite has no vector index — the service falls back to a DB-side
     # LIKE filter over title/content instead of loading every row.
     await service.ingest(
@@ -46,7 +46,7 @@ async def test_search_filters_in_the_database_like_fallback(service, dogfood_db)
     assert [h.title for h in hits] == ["pgvector intro"]
 
 
-async def test_search_accepts_a_limit(service, dogfood_db):
+async def test_search_accepts_a_limit(service, sample_db):
     for n in range(4):
         await service.ingest(title=f"note {n}", content="quantum", embed_vector=False)
     hits = await service.search("quantum", limit=2)
@@ -54,7 +54,7 @@ async def test_search_accepts_a_limit(service, dogfood_db):
 
 
 async def test_ingest_degrades_gracefully_without_an_embedding_provider(
-    service, dogfood_db, monkeypatch
+    service, sample_db, monkeypatch
 ):
     """A missing provider key must degrade to an unvectored item, not a 500."""
     import fastplace.ai.embeddings as embeddings
@@ -69,7 +69,7 @@ async def test_ingest_degrades_gracefully_without_an_embedding_provider(
     assert item.embedding is None  # stored unvectored; search falls back to LIKE
 
 
-async def test_ingest_rejects_mismatched_embedding_dimensions(service, dogfood_db, monkeypatch):
+async def test_ingest_rejects_mismatched_embedding_dimensions(service, sample_db, monkeypatch):
     """A model/column width mismatch is a config error — fail loudly instead
     of persisting a vector the backend will refuse."""
     import fastplace.ai.embeddings as embeddings

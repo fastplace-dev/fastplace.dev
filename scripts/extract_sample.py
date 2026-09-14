@@ -1,6 +1,6 @@
-"""Extract the dogfood app into a self-contained sample scaffold.
+"""Extract the sample app into a self-contained sample scaffold.
 
-The in-repo dogfood application (app/, routes/, config/, database/,
+The in-repo sample application (app/, routes/, config/, database/,
 resources/) doubles as the framework's sample app — this script copies it
 out of the monorepo so it can be moved, edited, and run anywhere:
 
@@ -125,7 +125,7 @@ export default defineConfig({
 
 README_TEMPLATE = """# {name} — a Fastplace sample application
 
-Extracted from the Fastplace monorepo's dogfood app: a complete modular
+Extracted from the Fastplace monorepo's sample app: a complete modular
 monolith (Controllers → Services → Repositories → Models) with the React
 bridge, a unified `/api/v1` surface, background jobs, and an AI assistant.
 

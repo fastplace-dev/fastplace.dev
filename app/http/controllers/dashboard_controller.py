@@ -1,4 +1,4 @@
-"""Dashboard controller — the dogfood bridge page (blueprint §12)."""
+"""Dashboard controller — the sample-app bridge page (blueprint §12)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""About controller — second dogfood bridge page for E2E navigation."""
+"""About controller — second sample-app bridge page for E2E navigation."""
 
 from __future__ import annotations
 

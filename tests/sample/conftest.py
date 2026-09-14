@@ -1,6 +1,6 @@
-"""Dogfood app test fixtures — fresh registry, fresh database, per test.
+"""Sample app test fixtures — fresh registry, fresh database, per test.
 
-The dogfood modules under ``app/`` register real ORM models on the shared
+The sample-app modules under ``app/`` register real ORM models on the shared
 ``Model.metadata``; other suites (``tests/orm``) clear that registry after
 their own tests. Purging ``app.*`` from ``sys.modules`` before and after
 every test keeps imports here fresh regardless of suite ordering.
@@ -48,13 +48,13 @@ def _fresh_app_modules():
 
 
 @pytest.fixture()
-async def dogfood_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """The full dogfood app (all three routers) over a fresh database.
+async def sample_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """The full sample app (all three routers) over a fresh database.
 
     Async on purpose: tables are created on the same event loop the test
     and its HTTP client run on (aiosqlite connections are loop-bound).
     """
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/dogfood.db")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/sample.db")
     monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
 
     from app.modules.knowledge.models.knowledge_item import KnowledgeItem  # noqa: F401
@@ -81,10 +81,10 @@ async def dogfood_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 @pytest.fixture()
-async def dogfood_client(dogfood_app):
+async def sample_client(sample_app):
     import httpx
 
-    transport = httpx.ASGITransport(app=dogfood_app, raise_app_exceptions=False)
+    transport = httpx.ASGITransport(app=sample_app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         # The app stack now includes CSRF (config/app.py MIDDLEWARE). Play
         # the browser's part: first page load mints the session token, and
@@ -102,9 +102,9 @@ async def dogfood_client(dogfood_app):
 
 
 @pytest.fixture()
-async def dogfood_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """A fresh sqlite database with every dogfood table created."""
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/dogfood.db")
+async def sample_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """A fresh sqlite database with every sample-app table created."""
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/sample.db")
     monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
     # Import after the env is set so models register on the live registry.
     from app.modules.knowledge.models.knowledge_item import KnowledgeItem  # noqa: F401

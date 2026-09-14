@@ -1,4 +1,4 @@
-"""Shared fixtures for the auth test-suite: a dogfood-style guarded app."""
+"""Shared fixtures for the auth test-suite: a sample-app-style guarded app."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ TEST_USER = SimpleNamespace(id=7, name="Firoz", email="firoz@example.test")
 
 def build_auth_app() -> object:
     """App with session login/logout, a guarded ``/me`` echo, and a POST
-    endpoint behind CSRF — mirrors the dogfood middleware stack."""
+    endpoint behind CSRF — mirrors the sample app's middleware stack."""
     from fastplace.auth.guards import SessionGuard
     from fastplace.auth.middleware import CsrfMiddleware, ResolveUserMiddleware
     from fastplace.auth.providers import dict_provider

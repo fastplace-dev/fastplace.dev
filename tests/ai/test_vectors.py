@@ -95,7 +95,7 @@ def test_active_store_follows_config(monkeypatch):
 
 def test_import_vector_stores_registers_app_registrations(tmp_path):
     # a real project's app/ is a regular package chain — the repo's own
-    # dogfood `app` would otherwise shadow a bare namespace portion
+    # sample-app `app` would otherwise shadow a bare namespace portion
     _write_store_project(tmp_path)
 
     names = import_vector_stores(tmp_path)

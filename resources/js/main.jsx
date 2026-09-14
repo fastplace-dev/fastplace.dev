@@ -5,7 +5,7 @@ import "../css/app.css";
 // routable component, resolved by the payload's `component` name. The glob
 // is eager on purpose: pages declare their persistent layout through a
 // `layout` component static, and a lazy wrapper could not expose it before
-// first render. At dogfood scale the up-front cost is negligible; an app
+// first render. At sample-app scale the up-front cost is negligible; an app
 // that outgrows this can go lazy and give layout pages a eager glob of
 // their own.
 const resolvePage = createPageResolver(

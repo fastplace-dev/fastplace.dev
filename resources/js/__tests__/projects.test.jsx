@@ -115,7 +115,7 @@ describe("Projects/Show", () => {
       project: {
         id: 3,
         name: "Framework build",
-        description: "dogfood",
+        description: "sample",
         tasks: [
           { id: 11, title: "Write the ORM contract", completed: false },
           { id: 12, title: "Ship the React bridge", completed: true },

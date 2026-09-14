@@ -4,7 +4,7 @@
 
 Fastplace is a **modular monolith by default** — one deployable unit composed of strictly bounded internal modules — that serves every client through two presentation edges: a **Server-Driven SPA** (Inertia pattern) for the web and a **Unified API** for mobile and desktop applications, all backed by a single **Controller-Service-Repository (CSR)** core. AI is native infrastructure, not an integration: LLM tool calling, vector search, and SSE streaming are part of the framework fabric.
 
-> **Status:** The framework is implemented (Phases 1–7) and dogfooded by the application in this repo. The [Architectural Blueprint](docs/framework_architectural_blueprint.md) remains the single source of truth — read it before any feature work, and update it whenever the architecture changes.
+> **Status:** The framework is implemented (Phases 1–7) and exercised end-to-end by the sample application in this repo. The [Architectural Blueprint](docs/framework_architectural_blueprint.md) remains the single source of truth — read it before any feature work, and update it whenever the architecture changes.
 
 ---
 
@@ -19,7 +19,7 @@ npm install
 # 2. Environment (never commit .env) — defaults to zero-config SQLite
 cp .env.example .env
 
-# 3. Database schema + dogfood data
+# 3. Database schema + sample data
 fastplace migrate          # Alembic migrations (db.create_all() also works locally)
 fastplace db:seed          # projects, tasks, knowledge items
 

@@ -21,7 +21,7 @@ async def test_projects_index(client):
 Async tests run natively (no `asyncio.run` boilerplate). The fixtures
 that matter:
 
-- **`dogfood_app`** — the real app, migrated + seeded on the same event
+- **`sample_app`** — the real app, migrated + seeded on the same event
   loop the test runs on (aiosqlite connections are loop-bound — create
   tables where you run them).
 - **`backend`** — the portable matrix: SQLite always, PostgreSQL / MySQL

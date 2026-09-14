@@ -33,9 +33,17 @@ def reset_model_registry():
     dispose mappers after each test so re-declared test models never clash.
     Cached project modules (app.*, seeder/config loaders from tmp projects)
     are dropped too — each test imports from its own project tree.
+
+    sys.path is restored as well: the CLI's model discovery inserts the
+    (tmp) project root at import time and never removes it — fine for a
+    real process that exits, a leak in this long-lived pytest process.
+    Left on, a later suite's fresh ``import app`` (the entries above were
+    dropped) resolves the LAST tmp project instead of the repo and fails
+    with ``ModuleNotFoundError: No module named 'app.modules.knowledge'``.
     """
     import sys
 
+    saved_path = list(sys.path)
     yield
     Model.metadata.clear()
     from sqlalchemy.orm import clear_mappers
@@ -47,3 +55,4 @@ def reset_model_registry():
         if m == "app" or m.startswith(("app.", "_fastplace_seeder_", "_fastplace_config_"))
     ]:
         del sys.modules[name]
+    sys.path[:] = saved_path

@@ -1,4 +1,4 @@
-"""create_dogfood_tables
+"""create_sample_tables
 
 Revision ID: 00d1a37b303e
 Revises: 

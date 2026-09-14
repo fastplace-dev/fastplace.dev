@@ -1,4 +1,4 @@
-"""Dogfood agent tools — auto-imported surface for make:agent scaffolds."""
+"""Sample-app agent tools — auto-imported surface for make:agent scaffolds."""
 
 from __future__ import annotations
 

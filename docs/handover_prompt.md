@@ -17,7 +17,7 @@ You are taking over the Fastplace framework build. A previous agent completed al
 
 - Branch `master` at `353408b`, clean tree. Seven phases delivered (see the checklist's phase table).
 - Baseline gates at head: pytest **480 passed / 19 skipped** · `mypy fastplace` clean · `ruff check .` + format clean · `npm run types` + `npm run test:run` **39 passed** · `npx playwright test` **4 passed**. Nothing is merged or broken — your first run must reproduce these numbers.
-- ~9,700 LOC framework (`fastplace/`), ~1,800 LOC frontend packages (`packages/react`, `packages/ai-react`), dogfood app at repo root (`app/`, `routes/`, `config/`, `database/`, `resources/js/`).
+- ~9,700 LOC framework (`fastplace/`), ~1,800 LOC frontend packages (`packages/react`, `packages/ai-react`), sample app at repo root (`app/`, `routes/`, `config/`, `database/`, `resources/js/`).
 
 ## Working method (per batch)
 
@@ -50,15 +50,15 @@ Follow the checklist's six suggested-order batches. For each batch:
 - **Generated migrations are excluded from mypy/ruff** (machine-written) — check `pyproject.toml` config before adding lint exceptions.
 - **VectorField bakes per backend** (JSON on sqlite, `VECTOR(dim)` on postgres) — generate migrations with the target `DATABASE_URL` set. This is a documented accepted risk; don't try to make autogenerate backend-agnostic.
 - **CLI tests** use `CliRunner().invoke(app, [...])` from Typer's testing module — `python -m fastplace` does not exist.
-- **Async tests + sqlite**: aiosqlite connections are loop-bound — create tables on the same event loop the test runs on (see the `dogfood_app` fixture pattern in `tests/dogfood/conftest.py`; it is async on purpose).
-- **Embedding seam**: dogfood tests monkeypatch `fastplace.ai.embeddings._embedding_fn` to return `[[0.001] * 1536]` — `KnowledgeItem.EMBEDDING_DIMENSIONS` must match (1536).
+- **Async tests + sqlite**: aiosqlite connections are loop-bound — create tables on the same event loop the test runs on (see the `sample_app` fixture pattern in `tests/sample/conftest.py`; it is async on purpose).
+- **Embedding seam**: sample-app tests monkeypatch `fastplace.ai.embeddings._embedding_fn` to return `[[0.001] * 1536]` — `KnowledgeItem.EMBEDDING_DIMENSIONS` must match (1536).
 - **Env-gated suites**: PostgreSQL/MySQL/MongoDB suites skip unless `TEST_POSTGRES_URL` / `TEST_MYSQL_URL` / `TEST_MONGODB_URL` are set. Skips are by design locally; the CI batch exists precisely to run them.
 - **Playwright E2E** expects the dev server per `playwright.config.mjs` (it starts its own server) — check that config before running.
 
 ## Batch-specific pointers
 
 - **Batch 1 (quick wins)**: `.env.example` sync is purely additive — grep the config surface (`fastplace/config`, `fastplace/orm/manager.py`, `fastplace/orm/instrumentation.py`, `fastplace/http/render.py` for `ASSET_VERSION`) so nothing is missed. The `lazy='raise'` test belongs near `tests/orm/test_relationships.py`. Kernel debug surfacing of query stats goes through the request tracker middleware (`fastplace.orm.instrumentation.activate_tracker`) into the kernel's debug payload (`fastplace/http/kernel.py` error handler) — keep production suppression intact.
-- **Batch 2 (dogfood depth)**: follow existing CSR patterns exactly (see the projects module). The Assistant page consumes `useAIStream({endpoint: '/ai/assistant'})` from `@fastplace/ai-react`. Typed DTOs: define Pydantic result models in the module services, annotate `/api/v1` controller returns, `model_dump(mode='json')` for bridge props — the framework machinery (`fastplace/http/serialization.py`) already exists and is tested.
+- **Batch 2 (sample-app depth)**: follow existing CSR patterns exactly (see the projects module). The Assistant page consumes `useAIStream({endpoint: '/ai/assistant'})` from `@fastplace/ai-react`. Typed DTOs: define Pydantic result models in the module services, annotate `/api/v1` controller returns, `model_dump(mode='json')` for bridge props — the framework machinery (`fastplace/http/serialization.py`) already exists and is tested.
 - **Batch 3 (CI + matrix)**: no `.github/` exists yet. Use GitHub Actions with service containers (postgres + mysql + mongo) feeding the `TEST_*_URL` env vars to the existing suites. `tests/orm/sqlite/` is a new dialect directory per blueprint line ~1396.
 - **Batch 4 (ORM completeness)**: polymorphic relationships (§8 line 1076) should follow the existing marker style in `fastplace/orm/relationships.py`. The global-scope engine must keep soft-delete as scope #1 (default, core) and stay extensible for packages — this unblocks tenancy, design it accordingly. `fastplace new` scaffolds the modular-monolith layout from CLAUDE.md's repository-layout section.
 - **Batch 5 (tenancy)**: read blueprint §8 "Multi-Tenancy" (lines ~1246-1317) first — it is the spec: `CompanyScopedModel`, company global scope, context middleware, membership checks, cache key prefixes, job metadata, storage/search/vector/MongoDB isolation, `INDEX(company_id, …)`/`UNIQUE(company_id, …)` conventions, tenant-isolation contract suite. Opt-in package: the core stays tenant-agnostic (that part is already done and tested). This batch is 1–2 weeks of human-scale work — take your time, adversarial-review each sub-area.

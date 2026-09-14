@@ -16,10 +16,10 @@ def service():
 
 @pytest.fixture()
 async def project(service):
-    return await service.create_project(name="Framework", description="dogfood")
+    return await service.create_project(name="Framework", description="sample")
 
 
-async def test_create_project_persists_and_lists(service, dogfood_db):
+async def test_create_project_persists_and_lists(service, sample_db):
     await service.create_project(name="Alpha", description="first")
     await service.create_project(name="Beta")
 
@@ -29,12 +29,12 @@ async def test_create_project_persists_and_lists(service, dogfood_db):
     assert all(p.task_count == 0 for p in projects)
 
 
-async def test_create_project_rejects_blank_name(service, dogfood_db):
+async def test_create_project_rejects_blank_name(service, sample_db):
     with pytest.raises(ValidationError):
         await service.create_project(name="   ")
 
 
-async def test_task_counts_come_from_the_database(service, dogfood_db):
+async def test_task_counts_come_from_the_database(service, sample_db):
     project = await service.create_project(name="With tasks")
     await service.add_task(project_id=project.id, title="write tests")
     await service.add_task(project_id=project.id, title="ship it")
@@ -45,7 +45,7 @@ async def test_task_counts_come_from_the_database(service, dogfood_db):
     assert listed["With tasks"].open_task_count == 1
 
 
-async def test_add_task_and_toggle_round_trip(service, dogfood_db, project):
+async def test_add_task_and_toggle_round_trip(service, sample_db, project):
     task = await service.add_task(project_id=project.id, title="draft ADR")
     assert task.completed is False
 
@@ -53,12 +53,12 @@ async def test_add_task_and_toggle_round_trip(service, dogfood_db, project):
     assert done.completed is True
 
 
-async def test_toggle_missing_task_raises_not_found(service, dogfood_db):
+async def test_toggle_missing_task_raises_not_found(service, sample_db):
     with pytest.raises(NotFoundError):
         await service.toggle_task(9999)
 
 
-async def test_open_task_limit_enforced_in_transaction(service, dogfood_db, monkeypatch):
+async def test_open_task_limit_enforced_in_transaction(service, sample_db, monkeypatch):
     # Blueprint invariant: a project holds at most 50 open tasks.
     monkeypatch.setattr(service, "max_open_tasks", 2)
     project = await service.create_project(name="Capped")
@@ -69,7 +69,7 @@ async def test_open_task_limit_enforced_in_transaction(service, dogfood_db, monk
         await service.add_task(project_id=pid, title="three")
 
 
-async def test_project_detail_includes_tasks(service, dogfood_db, project):
+async def test_project_detail_includes_tasks(service, sample_db, project):
     await service.add_task(project_id=project.id, title="a")
     await service.add_task(project_id=project.id, title="b")
 
@@ -78,12 +78,12 @@ async def test_project_detail_includes_tasks(service, dogfood_db, project):
     assert [t.title for t in detail.tasks] == ["a", "b"]
 
 
-async def test_project_detail_missing_raises_not_found(service, dogfood_db):
+async def test_project_detail_missing_raises_not_found(service, sample_db):
     with pytest.raises(NotFoundError):
         await service.project_detail(4242)
 
 
-async def test_list_projects_two_queries_no_n_plus_one(service, dogfood_db):
+async def test_list_projects_two_queries_no_n_plus_one(service, sample_db):
     # Ten projects with tasks each — the listing must stay at a constant
     # query count (counts aggregated in the database, not per-project).
     from fastplace.orm.instrumentation import activate_tracker, current_stats
@@ -99,7 +99,7 @@ async def test_list_projects_two_queries_no_n_plus_one(service, dogfood_db):
     assert stats.statements <= 3, f"expected constant queries, ran {stats.statements}"
 
 
-async def test_concurrent_add_task_never_exceeds_the_open_limit(service, dogfood_db, monkeypatch):
+async def test_concurrent_add_task_never_exceeds_the_open_limit(service, sample_db, monkeypatch):
     """The open-task invariant must survive concurrent writers.
 
     Every gathered coroutine runs as its own asyncio task and opens its own
@@ -122,7 +122,7 @@ async def test_concurrent_add_task_never_exceeds_the_open_limit(service, dogfood
     assert len((await service.project_detail(pid)).tasks) == 5
 
 
-async def test_open_tasks_filtering_happens_in_the_database(service, dogfood_db, project):
+async def test_open_tasks_filtering_happens_in_the_database(service, sample_db, project):
     from app.modules.projects.repositories.task_repository import TaskRepository
 
     await service.add_task(project_id=project.id, title="open a")
@@ -138,7 +138,7 @@ async def test_open_tasks_filtering_happens_in_the_database(service, dogfood_db,
     assert [t.title for t in await service.open_tasks(project.id)] == ["open a"]
 
 
-async def test_count_projects_counts_beyond_the_page(service, dogfood_db):
+async def test_count_projects_counts_beyond_the_page(service, sample_db):
     await service.create_project(name="one")
     await service.create_project(name="two")
 
@@ -154,7 +154,7 @@ def test_task_project_id_is_indexed():
     assert "project_id" in indexed
 
 
-async def test_soft_deleted_tasks_leave_the_aggregates(service, dogfood_db, project):
+async def test_soft_deleted_tasks_leave_the_aggregates(service, sample_db, project):
     """Every model carries a soft-delete ``deleted_at``; the raw-select
     aggregates must respect it as strictly as the query builder does."""
     from app.modules.projects.models.task import Task

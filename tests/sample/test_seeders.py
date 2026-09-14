@@ -1,4 +1,4 @@
-"""Seeders — `fastplace db:seed` populates the dogfood modules idempotently."""
+"""Seeders — `fastplace db:seed` populates the sample-app modules idempotently."""
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ def test_seeder_completes_partial_state_without_duplicating(monkeypatch, tmp_pat
         # Simulate the crash window: the first project landed, its tasks did not.
         await ProjectsService().create_project(
             name="Framework build",
-            description="Dogfood the Fastplace framework itself.",
+            description="Sample app for the Fastplace framework itself.",
         )
 
     reset_db()

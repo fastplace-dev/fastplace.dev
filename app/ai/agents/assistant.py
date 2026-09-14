@@ -1,4 +1,4 @@
-"""The dogfood assistant agent — the app's /ai/assistant backend."""
+"""The sample app's assistant agent — the app's /ai/assistant backend."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from fastplace.config import config
 
 SYSTEM_PROMPT = (
     "You are the Fastplace assistant, a concise pair-programmer for the "
-    "dogfood application. Answer in short, practical steps and prefer "
+    "sample application. Answer in short, practical steps and prefer "
     "pointing at the relevant module (app/modules/*) over inventing code. "
     "Use the search_docs tool before answering questions about the project's "
     "knowledge base."

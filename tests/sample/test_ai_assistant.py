@@ -33,8 +33,8 @@ def fake_agent(monkeypatch):
     return seen
 
 
-async def test_assistant_streams_sse_events(dogfood_client, fake_agent):
-    resp = await dogfood_client.post("/ai/assistant", json={"message": "hi there"})
+async def test_assistant_streams_sse_events(sample_client, fake_agent):
+    resp = await sample_client.post("/ai/assistant", json={"message": "hi there"})
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
@@ -47,14 +47,14 @@ async def test_assistant_streams_sse_events(dogfood_client, fake_agent):
     assert fake_agent["message"] == "hi there"
 
 
-async def test_assistant_forwards_history(dogfood_client, fake_agent):
+async def test_assistant_forwards_history(sample_client, fake_agent):
     history = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "reply"}]
-    await dogfood_client.post("/ai/assistant", json={"message": "next", "history": history})
+    await sample_client.post("/ai/assistant", json={"message": "next", "history": history})
     assert fake_agent["history"] == history
 
 
-async def test_assistant_requires_a_message(dogfood_client):
-    resp = await dogfood_client.post("/ai/assistant", json={})
+async def test_assistant_requires_a_message(sample_client):
+    resp = await sample_client.post("/ai/assistant", json={})
     assert resp.status_code == 422
     assert "message" in resp.json()["errors"]
 
@@ -83,8 +83,8 @@ def test_assistant_history_is_bounded_and_role_checked():
     assert len(ok.history) == 2
 
 
-async def test_assistant_rejects_oversized_history_at_the_edge(dogfood_client, fake_agent):
-    resp = await dogfood_client.post(
+async def test_assistant_rejects_oversized_history_at_the_edge(sample_client, fake_agent):
+    resp = await sample_client.post(
         "/ai/assistant",
         json={
             "message": "hi",

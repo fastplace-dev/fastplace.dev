@@ -1,6 +1,6 @@
-"""The sample extractor — dogfood app out, runnable scaffold back.
+"""The sample extractor — sample app out, runnable scaffold back.
 
-The dogfood app (app/, routes/, config/, database/, resources/) IS the
+The sample app (app/, routes/, config/, database/, resources/) IS the
 sample application the blueprint asks for; the extractor copies it out of
 the monorepo into a self-contained directory with run instructions, without
 ever touching runtime output (storage/, public/build/) or secrets (.env).

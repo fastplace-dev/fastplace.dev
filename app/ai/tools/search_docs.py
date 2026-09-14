@@ -1,4 +1,4 @@
-"""Search the dogfood knowledge base from the assistant agent."""
+"""Search the sample app's knowledge base from the assistant agent."""
 
 from __future__ import annotations
 

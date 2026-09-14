@@ -167,3 +167,18 @@ def test_migration_status_marks_applied_revisions(project):
     applied = runner.invoke(cli_app, ["migration:status"])
     assert applied.exit_code == 0, applied.output
     assert "[applied]" in applied.output
+
+
+def test_project_fixture_restores_the_repo_app_package(project):
+    """The project fixture imports a tmp ``app`` package (model discovery
+    for make:migration walks it). Afterwards the repo's own ``app`` must be
+    importable again: suites that sort after this one (tests/sample) import
+    ``app.modules.knowledge`` and used to get the tmp blog project instead —
+    ``ModuleNotFoundError: No module named 'app.modules.knowledge'``."""
+    import sys
+    from pathlib import Path
+
+    import app.modules.knowledge.models.knowledge_item  # noqa: F401
+
+    repo_app = Path(__file__).resolve().parent.parent.parent.parent / "app" / "__init__.py"
+    assert Path(sys.modules["app"].__file__).resolve() == repo_app.resolve()

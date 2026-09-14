@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 
 @pytest.fixture()
-async def db_and_service(dogfood_db):
+async def db_and_service(sample_db):
     from app.modules.projects.services.projects_service import ProjectsService
 
     return ProjectsService()
@@ -77,7 +77,7 @@ async def test_api_controllers_annotate_response_schemas():
         )
 
 
-async def test_dashboard_service_composes_a_typed_overview(dogfood_db, embedding_seam):
+async def test_dashboard_service_composes_a_typed_overview(sample_db, embedding_seam):
     from app.modules.dashboard.services.dashboard_service import (
         DashboardOverview,
         DashboardService,
@@ -95,7 +95,7 @@ async def test_dashboard_service_composes_a_typed_overview(dogfood_db, embedding
     assert dumped["knowledge_items"] == 0
 
 
-async def test_knowledge_service_returns_typed_items(dogfood_db, embedding_seam):
+async def test_knowledge_service_returns_typed_items(sample_db, embedding_seam):
     from app.modules.knowledge.services.knowledge_service import (
         KnowledgeItemResource,
         KnowledgeService,
@@ -109,19 +109,19 @@ async def test_knowledge_service_returns_typed_items(dogfood_db, embedding_seam)
     assert all(isinstance(hit, KnowledgeItemResource) for hit in hits)
 
 
-async def test_api_and_bridge_payloads_keep_the_documented_shape(dogfood_client):
+async def test_api_and_bridge_payloads_keep_the_documented_shape(sample_client):
     """Typing must not move keys — the wire contract is frozen."""
-    created = await dogfood_client.post("/api/v1/projects", json={"name": "Shape"})
+    created = await sample_client.post("/api/v1/projects", json={"name": "Shape"})
     assert created.status_code == 201
 
-    api_resp = await dogfood_client.get("/api/v1/projects")
+    api_resp = await sample_client.get("/api/v1/projects")
     assert api_resp.status_code == 200
     body = api_resp.json()
     assert set(body) == {"data", "total"}
     assert body["total"] == 1
     assert set(body["data"][0]) == {"id", "name", "description", "task_count", "open_task_count"}
 
-    bridge_resp = await dogfood_client.get("/projects", headers={"X-Fastplace-Request": "true"})
+    bridge_resp = await sample_client.get("/projects", headers={"X-Fastplace-Request": "true"})
     props = bridge_resp.json()["props"]
     assert set(props["projects"][0]) == {
         "id",
@@ -132,24 +132,24 @@ async def test_api_and_bridge_payloads_keep_the_documented_shape(dogfood_client)
     }
 
 
-async def test_store_and_show_payloads_carry_real_counts_not_nulls(dogfood_client):
+async def test_store_and_show_payloads_carry_real_counts_not_nulls(sample_client):
     """Every project payload carries integer counts — list, store, and show
     agree on the same keys with the same types (no null-when-unknown drift)."""
-    created = (await dogfood_client.post("/api/v1/projects", json={"name": "Counted"})).json()
+    created = (await sample_client.post("/api/v1/projects", json={"name": "Counted"})).json()
     assert created["task_count"] == 0
     assert created["open_task_count"] == 0
 
-    await dogfood_client.post(f"/api/v1/projects/{created['id']}/tasks", json={"title": "a"})
+    await sample_client.post(f"/api/v1/projects/{created['id']}/tasks", json={"title": "a"})
     second = (
-        await dogfood_client.post(f"/api/v1/projects/{created['id']}/tasks", json={"title": "b"})
+        await sample_client.post(f"/api/v1/projects/{created['id']}/tasks", json={"title": "b"})
     ).json()
-    await dogfood_client.patch(f"/api/v1/tasks/{second['id']}/toggle")
+    await sample_client.patch(f"/api/v1/tasks/{second['id']}/toggle")
 
-    shown = (await dogfood_client.get(f"/api/v1/projects/{created['id']}")).json()
+    shown = (await sample_client.get(f"/api/v1/projects/{created['id']}")).json()
     assert shown["task_count"] == 2
     assert shown["open_task_count"] == 1
 
-    bridge_shown = await dogfood_client.get(
+    bridge_shown = await sample_client.get(
         f"/projects/{created['id']}", headers={"X-Fastplace-Request": "true"}
     )
     project = bridge_shown.json()["props"]["project"]

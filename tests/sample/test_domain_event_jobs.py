@@ -1,4 +1,4 @@
-"""Dogfood domain events — Project lifecycle → knowledge ingestion job.
+"""Sample-app domain events — Project lifecycle → knowledge ingestion job.
 
 The blueprint's cross-module rule (§3 boundary rule 4): creating a project
 must not call the knowledge module. The projects model dispatches
@@ -37,7 +37,7 @@ def test_app_jobs_register_the_ingestion_handler():
     assert "project_created" in registered_jobs()
 
 
-async def test_project_create_dispatches_and_the_job_ingests(dogfood_db, embedding_seam):
+async def test_project_create_dispatches_and_the_job_ingests(sample_db, embedding_seam):
     from fastplace.queue import MemoryQueue, import_jobs, queue
 
     import_jobs(_PROJECT_ROOT)
@@ -64,7 +64,7 @@ async def test_project_create_dispatches_and_the_job_ingests(dogfood_db, embeddi
     assert any("Event Bridge" in item.title for item in hits)
 
 
-async def test_knowledge_side_effect_needs_no_listener(dogfood_db):
+async def test_knowledge_side_effect_needs_no_listener(sample_db):
     """The in-process listener registry stays empty — the only consumer is
     the queued job, exactly the fire-and-forget shape rule 4 asks for."""
     from fastplace.events import _listeners

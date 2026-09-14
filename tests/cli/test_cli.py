@@ -211,7 +211,7 @@ def test_make_agent_scaffolds_agent_and_tool_suite(tmp_path, monkeypatch):
 
     from fastplace.ai import reset_tool_registry, tool_registry
 
-    # complete the regular-package chain so the repo's own dogfood `app`
+    # complete the regular-package chain so the repo's own sample-app `app`
     # cannot shadow this namespace portion during the import
     (tmp_path / "app" / "__init__.py").write_text("")
     (tmp_path / "app" / "ai" / "__init__.py").write_text("")

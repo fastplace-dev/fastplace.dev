@@ -1,4 +1,4 @@
-"""Dogfood AI tools — app/ai/tools surfaces real agent tools (blueprint §9)."""
+"""Sample-app AI tools — app/ai/tools surfaces real agent tools (blueprint §9)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def registry():
     tool_registry.clear()
 
 
-async def test_search_docs_tool_registered_from_app_package(registry, dogfood_db):
+async def test_search_docs_tool_registered_from_app_package(registry, sample_db):
     # Importing the module registers the tool — the registry auto-import
     # from app/ai/tools/ mirrors what make:agent scaffolds.
     import app.ai.tools  # noqa: F401 — side-effectful import
@@ -25,7 +25,7 @@ async def test_search_docs_tool_registered_from_app_package(registry, dogfood_db
     assert registry["search_docs"].fn is search_docs
 
 
-async def test_search_docs_formats_hits_via_knowledge_service(dogfood_db):
+async def test_search_docs_formats_hits_via_knowledge_service(sample_db):
     from app.ai.tools.search_docs import search_docs
     from app.modules.knowledge.services.knowledge_service import KnowledgeService
 
@@ -46,7 +46,7 @@ async def test_search_docs_formats_hits_via_knowledge_service(dogfood_db):
     assert "embeddings in postgres" in hits[0]
 
 
-async def test_search_docs_caps_results_at_three(dogfood_db):
+async def test_search_docs_caps_results_at_three(sample_db):
     from app.ai.tools.search_docs import search_docs
     from app.modules.knowledge.services.knowledge_service import KnowledgeService
 
@@ -59,7 +59,7 @@ async def test_search_docs_caps_results_at_three(dogfood_db):
     assert len(hits) == 3
 
 
-async def test_search_docs_truncates_huge_content_to_a_bounded_excerpt(dogfood_db):
+async def test_search_docs_truncates_huge_content_to_a_bounded_excerpt(sample_db):
     # Ingested content can be 50k chars; the tool must not flood the
     # model's context with it.
     from app.ai.tools.search_docs import EXCERPT_CHARS, search_docs

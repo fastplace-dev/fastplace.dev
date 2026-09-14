@@ -1,4 +1,4 @@
-"""Dogfood app integration — the shipped routes/controllers/services stack."""
+"""Sample app integration — the shipped routes/controllers/services stack."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
-def _dogfood_app(**config):
+def _sample_app(**config):
     from routes.api import router as api_router
     from routes.web import router as web_router
 
@@ -22,7 +22,7 @@ def _dogfood_app(**config):
 
 
 async def test_health_endpoint_via_routes_module():
-    app = _dogfood_app(APP_ENV="local")
+    app = _sample_app(APP_ENV="local")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/api/v1/health")
@@ -34,7 +34,7 @@ async def test_dashboard_props_come_from_the_service_layer(monkeypatch, tmp_path
     # Env vars always win in fastplace.config — this is the path the service
     # actually reads (get_app's config dict only wires the kernel itself).
     monkeypatch.setenv("APP_NAME", "Configured Name")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/dogfood_app.db")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/sample_app.db")
     monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
 
     from app.modules.knowledge.models.knowledge_item import KnowledgeItem  # noqa: F401
@@ -45,7 +45,7 @@ async def test_dashboard_props_come_from_the_service_layer(monkeypatch, tmp_path
     reset_db()
     await db.create_all()
 
-    app = _dogfood_app(APP_ENV="local")
+    app = _sample_app(APP_ENV="local")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/", headers={"X-Fastplace-Request": "true"})
@@ -59,7 +59,7 @@ async def test_dashboard_props_come_from_the_service_layer(monkeypatch, tmp_path
 
 
 async def test_about_page_props_come_from_the_service_layer():
-    app = _dogfood_app(APP_ENV="local")
+    app = _sample_app(APP_ENV="local")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/about", headers={"X-Fastplace-Request": "true"})

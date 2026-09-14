@@ -5,7 +5,7 @@ from __future__ import annotations
 _PROJECTS: list[tuple[str, str, list[str]]] = [
     (
         "Framework build",
-        "Dogfood the Fastplace framework itself.",
+        "Sample app for the Fastplace framework itself.",
         ["Write the ORM contract", "Ship the React bridge", "Wire the AI assistant"],
     ),
     (
