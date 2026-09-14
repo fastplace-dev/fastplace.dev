@@ -96,6 +96,45 @@ class Request:
     async def form(self) -> Any:
         return await self._r.form()
 
+    async def validate(self, schema: type[Any]) -> Any:
+        """Validate the request body against a Pydantic schema at the HTTP edge.
+
+        JSON bodies and native (no-JS) form posts both flow through the same
+        schema. Invalid input raises the framework's 422 contract (``message``
+        + per-field ``errors``) instead of leaking a raw Pydantic error; an
+        unparseable body is reported under the ``body`` key so a client fault
+        never surfaces as a server 500.
+        """
+        import json as json_module
+
+        from pydantic import ValidationError as PydanticValidationError
+
+        from fastplace.errors import ValidationError
+
+        content_type = (self.header("Content-Type") or "").lower()
+        if "form-urlencoded" in content_type or "multipart/form-data" in content_type:
+            form = await self.form()
+            payload: Any = {key: form.get(key) for key in form.keys()}
+        else:
+            raw = await self.body()
+            try:
+                payload = json_module.loads(raw) if raw else {}
+            except (json_module.JSONDecodeError, UnicodeDecodeError) as exc:
+                # Undecodable/truncated bodies are client faults — a parse
+                # error, not misleading per-field validation noise.
+                raise ValidationError(
+                    "The given data was invalid.",
+                    errors={"body": ["Invalid JSON body."]},
+                ) from exc
+        try:
+            return schema.model_validate(payload)
+        except PydanticValidationError as exc:
+            errors: dict[str, list[str]] = {}
+            for item in exc.errors():
+                loc = ".".join(str(part) for part in item.get("loc", ()) or ("body",))
+                errors.setdefault(loc or "body", []).append(str(item.get("msg", "invalid")))
+            raise ValidationError("The given data was invalid.", errors=errors) from exc
+
     # -- authentication -------------------------------------------------------
     @property
     def user(self) -> Any:

@@ -36,9 +36,16 @@ def page_payload(request: Request, component: str, props: Any) -> dict:
     """Build the JSON page payload shared by both render modes."""
     if isinstance(props, BaseModel):
         props = props.model_dump(mode="json")
+    props = props or {}
+    if isinstance(props, dict):
+        # No-JS form posts cannot read the <meta> tag — every page's props
+        # carry the session CSRF token so hidden ``_token`` inputs can use it.
+        token = _session_csrf_token(request)
+        if token:
+            props.setdefault("csrf_token", token)
     return {
         "component": component,
-        "props": props or {},
+        "props": props,
         "url": request.full_path,
         "version": _asset_version(),
     }

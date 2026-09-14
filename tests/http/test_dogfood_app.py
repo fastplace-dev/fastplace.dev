@@ -30,10 +30,21 @@ async def test_health_endpoint_via_routes_module():
     assert resp.json() == {"status": "ok", "framework": "fastplace"}
 
 
-async def test_dashboard_props_come_from_the_service_layer(monkeypatch):
+async def test_dashboard_props_come_from_the_service_layer(monkeypatch, tmp_path):
     # Env vars always win in fastplace.config — this is the path the service
     # actually reads (get_app's config dict only wires the kernel itself).
     monkeypatch.setenv("APP_NAME", "Configured Name")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/dogfood_app.db")
+    monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
+
+    from app.modules.knowledge.models.knowledge_item import KnowledgeItem  # noqa: F401
+    from app.modules.projects.models.project import Project  # noqa: F401
+    from app.modules.projects.models.task import Task  # noqa: F401
+    from fastplace.db import db, reset_db
+
+    reset_db()
+    await db.create_all()
+
     app = _dogfood_app(APP_ENV="local")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -42,7 +53,9 @@ async def test_dashboard_props_come_from_the_service_layer(monkeypatch):
     assert body["component"] == "Dashboard/Index"
     # appName flows from config through DashboardService — never hardcoded.
     assert body["props"]["appName"] == "Configured Name"
-    assert body["props"]["projects"] == []
+    assert body["props"]["recent_projects"] == []
+    assert body["props"]["stats"] == {"projects": 0, "open_tasks": 0, "completed_tasks": 0}
+    assert body["props"]["knowledge_items"] == 0
 
 
 async def test_about_page_props_come_from_the_service_layer():

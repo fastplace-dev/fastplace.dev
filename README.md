@@ -4,7 +4,46 @@
 
 Fastplace is a **modular monolith by default** — one deployable unit composed of strictly bounded internal modules — that serves every client through two presentation edges: a **Server-Driven SPA** (Inertia pattern) for the web and a **Unified API** for mobile and desktop applications, all backed by a single **Controller-Service-Repository (CSR)** core. AI is native infrastructure, not an integration: LLM tool calling, vector search, and SSE streaming are part of the framework fabric.
 
-> **Status:** Greenfield. This repository currently hosts the design guide and implementation roadmap. The [Architectural Blueprint](docs/framework_architectural_blueprint.md) is the single source of truth — read it before any feature work, and update it whenever the architecture changes.
+> **Status:** The framework is implemented (Phases 1–7) and dogfooded by the application in this repo. The [Architectural Blueprint](docs/framework_architectural_blueprint.md) remains the single source of truth — read it before any feature work, and update it whenever the architecture changes.
+
+---
+
+## Quickstart
+
+```bash
+# 1. Backend + frontend dependencies
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+npm install
+
+# 2. Environment (never commit .env) — defaults to zero-config SQLite
+cp .env.example .env
+
+# 3. Database schema + dogfood data
+fastplace migrate          # Alembic migrations (db.create_all() also works locally)
+fastplace db:seed          # projects, tasks, knowledge items
+
+# 4. Full-stack dev — Uvicorn (reload) + Vite (HMR) together
+fastplace run dev          # → http://127.0.0.1:8000
+```
+
+What you get on first boot:
+
+- `/` — dashboard bridge page (project stats, recent projects) rendered through the Inertia-style React bridge
+- `/projects` — the projects module's SPA pages (create projects, add/toggle tasks)
+- `/api/v1/*` — the same services as a unified JSON API (`/api/v1/health`, `/api/v1/dashboard`, `/api/v1/projects`, `/api/v1/knowledge/search?q=…`)
+- `/ai/assistant` — SSE-streamed agent responses (set `AI_API_KEY` in `.env` for a real provider)
+
+Running the checks:
+
+```bash
+pytest                      # backend suite
+mypy fastplace && ruff check .   # static analysis
+npm run types && npm run test:run  # frontend types + vitest
+npx playwright test         # E2E through the real dev server
+```
+
+Swap the database by setting `DATABASE_URL` (`postgresql://…` recommended in production — pgvector powers vector search; `mysql://` and MongoDB via `MONGODB_URL` are supported too). See `.env.example` for every switch.
 
 ---
 
@@ -180,7 +219,7 @@ Key behaviors:
 - **Model lifecycle events** — `creating → created → updating → updated → deleting → deleted → restored`, feeding the broader event system (domain events → queue / WebSocket / notification / AI).
 - **Query scopes & soft deletes** — reusable, chainable query fragments; global soft-delete scope by default; the tenant scope is contributed by the opt-in `fastplace-tenancy` package.
 - **Capability registry, no silent emulation** — drivers declare capabilities (`supports_vector`, `supports_json`, `supports_full_text`, `supports_transactions`, `supports_returning`, `supports_rls`); portability follows a strict three-layer policy: portable API first, capability checks before optional features, explicit escape hatches (`User.sa_model`, `User.sa_query()`, `db.raw`) for dialect-specific work.
-- **Alembic behind the CLI** — developers never invoke Alembic directly; migrations live in `database/migrations/`, seeders in `database/seeders/`.
+- **Alembic behind the CLI** — developers never invoke Alembic directly; migrations live in `database/migrations/`, seeders in `database/seeders/`. **Generate migrations on the backend you deploy to**: `VectorField` bakes to `JSON` on SQLite and `VECTOR(dim)` on PostgreSQL, so a revision generated against one backend does not transplant to the other — run `make:migration` with the target `DATABASE_URL` set.
 - **Search architecture** — standard filters stay in repositories; search goes through a separate search service. PostgreSQL FTS is the default backend (zero additional dependencies); self-hosted engines (e.g. Meilisearch) are explicit opt-ins; Fastplace never adds a third-party or paid search service as a default.
 - **Contract-tested portability** — an automated compatibility matrix runs every portable public-API behavior against SQLite, PostgreSQL, and MySQL; MongoDB carries its own document-adapter contract suite.
 

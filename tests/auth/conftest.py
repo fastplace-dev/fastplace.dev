@@ -46,7 +46,15 @@ def build_auth_app() -> object:
 
     class SubmitController:
         async def store(self, request):
-            return {"ok": True}
+            # Echo the parsed form/JSON payload back — the CSRF middleware must
+            # not drain the body before the controller reads it.
+            content_type = (request.header("Content-Type") or "").lower()
+            if "json" in content_type:
+                body = await request.json()
+            else:
+                form = await request.form()
+                body = {key: form.get(key) for key in form.keys()}
+            return {"ok": True, "payload": (body or {}).get("payload")}
 
     class WebhookController:
         async def store(self, request):

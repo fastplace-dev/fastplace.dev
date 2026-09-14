@@ -60,6 +60,27 @@ class _SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+class _QueryTrackerMiddleware:
+    """Pure-ASGI middleware scoping query instrumentation to one request.
+
+    Opens an ``activate_tracker()`` window so SQL logging, slow-query
+    warnings, and N+1 detection attribute to the request that caused them.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        from fastplace.orm.instrumentation import activate_tracker
+
+        with activate_tracker():
+            await self.app(scope, receive, send)
+
+
 def get_app(
     *,
     routes: Router | None = None,
@@ -103,6 +124,7 @@ def get_app(
     _mount_routes(app, routes=routes, api_routes=api_routes, ai_routes=ai_routes)
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
+    app.add_middleware(_QueryTrackerMiddleware)
     _install_session_middleware(app, cfg, app_env=app_env)
     _install_error_handlers(app, debug=debug)
     return app
@@ -303,6 +325,18 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Any, exc: Exception) -> Response:
+        from fastplace.http.error_pages import (
+            debug_error_page,
+            production_error_page,
+            wants_html,
+        )
+
+        # Browser navigations get a styled page (rich in debug, generic in
+        # production); API clients and the SPA bridge keep the JSON contract.
+        if wants_html(request):
+            if debug:
+                return debug_error_page(request, exc)
+            return production_error_page(request)
         detail = repr(exc) if debug else "Server error."
         return Json({"message": "Server error.", "debug": detail}, status_code=500)
 

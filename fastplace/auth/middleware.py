@@ -117,6 +117,7 @@ class CsrfMiddleware(Middleware):
         content_type = (request.header("Content-Type") or "").lower()
         if "application/json" in content_type:
             try:
+                await request.body()  # cache the stream for downstream re-reads
                 payload = await request.json()
             except Exception:
                 return None
@@ -125,6 +126,10 @@ class CsrfMiddleware(Middleware):
                 return value if isinstance(value, str) else None
         if "form-urlencoded" in content_type or "multipart/form-data" in content_type:
             try:
+                # form() consumes the receive stream without populating the
+                # body cache — read the body first so BaseHTTPMiddleware can
+                # replay it for the controller downstream.
+                await request.body()
                 form = await request.form()
             except Exception:
                 return None  # unparseable body fails closed

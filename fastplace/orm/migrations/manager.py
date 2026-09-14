@@ -82,17 +82,16 @@ class MigrationsManager:
     def upgrade(self) -> bool:
         """Run all pending migrations (``alembic upgrade head``).
 
-        Everything this invocation applies is recorded as one batch in the
-        framework-managed ``fastplace_migrations`` table, so a subsequent
-        ``downgrade()`` without steps can revert exactly this batch.
+        Everything applied is recorded as one batch in the framework-managed
+        ``fastplace_migrations`` table, so a subsequent ``downgrade()``
+        without steps can revert exactly this batch.
         """
         from alembic import command
 
         self.require_configured()
-        before = self._applied_revisions()
         with redirect_stdout(io.StringIO()):
             command.upgrade(self._config(), "head")
-        self._sync_tracking(before)
+        self._sync_tracking()
         return True
 
     def downgrade(self, steps: int | None = None) -> bool:
@@ -120,16 +119,23 @@ class MigrationsManager:
             command.downgrade(self._config(), "base")
             command.upgrade(self._config(), "head")
         # The rebuild applied the whole history in this one invocation.
-        self._sync_tracking(set())
+        self._sync_tracking()
         return True
 
     # -- batch tracking ------------------------------------------------------------
     # `migrate:rollback` reverts "the latest migration batch" (blueprint §7 /
     # CLAUDE.md): every revision applied by the most recent `migrate` run.
     # Alembic alone does not track invocation batches, so the framework keeps
-    # a small bookkeeping table next to alembic_version.
+    # a small bookkeeping table next to alembic_version. All bookkeeping rides
+    # the configured async engine — sync drivers (psycopg2/pymysql) are never
+    # required.
 
-    def _applied_revisions(self) -> set[str]:
+    def _database_url(self) -> str:
+        from fastplace.config import config
+
+        return str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
+
+    async def _applied_revisions_async(self) -> set[str]:
         """Every applied revision — the full ancestor chain, not just the head.
 
         ``get_current_heads()`` returns only the head of each branch; a
@@ -138,17 +144,16 @@ class MigrationsManager:
         """
         from alembic.runtime.migration import MigrationContext
         from alembic.script import ScriptDirectory
-        from sqlalchemy import create_engine
+        from sqlalchemy.ext.asyncio import create_async_engine
 
-        from fastplace.config import config
-
-        url = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
-        engine = create_engine(_to_sync_url(url))
+        engine = create_async_engine(self._database_url())
         try:
-            with engine.connect() as conn:
-                heads = set(MigrationContext.configure(conn).get_current_heads())
+            async with engine.connect() as conn:
+                heads = set(
+                    await conn.run_sync(lambda c: MigrationContext.configure(c).get_current_heads())
+                )
         finally:
-            engine.dispose()
+            await engine.dispose()
         if not heads:
             return set()
         script = ScriptDirectory.from_config(self._config())
@@ -159,26 +164,26 @@ class MigrationsManager:
                 applied.add(rev.revision)
         return applied
 
-    def _sync_tracking(self, before: set[str] | None = None) -> None:
-        """Align the batch table with alembic_version.
+    def _sync_tracking(self) -> None:
+        """Align the batch table with alembic_version (reconciling both ways).
 
-        ``before`` is the pre-invocation applied set (upgrade path): newly
-        applied revisions are recorded as one batch. ``None`` (downgrade
-        path) only forgets revisions that are no longer applied.
+        Revisions no longer applied are forgotten; applied-but-untracked
+        revisions (e.g. a crash between upgrade and bookkeeping) are recorded
+        into the newest batch so rollback batches never silently shrink.
         """
+        _run_async(self._sync_tracking_async())
+
+    async def _sync_tracking_async(self) -> None:
         import datetime
 
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
 
-        from fastplace.config import config
-
-        url = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
-        engine = create_engine(_to_sync_url(url))
-        # Full ancestor chain of the stored version, not just the head rows.
-        applied = self._applied_revisions()
+        applied = await self._applied_revisions_async()
+        engine = create_async_engine(self._database_url())
         try:
-            with engine.begin() as conn:
-                conn.execute(
+            async with engine.begin() as conn:
+                await conn.execute(
                     text(
                         "CREATE TABLE IF NOT EXISTS fastplace_migrations ("
                         "revision VARCHAR(255) PRIMARY KEY, "
@@ -186,72 +191,64 @@ class MigrationsManager:
                         "applied_at VARCHAR(64) NOT NULL)"
                     )
                 )
-                tracked = {
-                    row[0]
-                    for row in conn.execute(text("SELECT revision FROM fastplace_migrations"))
-                }
+                rows = await conn.execute(text("SELECT revision FROM fastplace_migrations"))
+                tracked = {row[0] for row in rows}
                 stale = tracked - applied
                 if stale:
-                    conn.execute(
+                    await conn.execute(
                         text("DELETE FROM fastplace_migrations WHERE revision = :r"),
                         [{"r": revision} for revision in sorted(stale)],
                     )
-                new = applied - (before if before is not None else applied)
-                if new:
-                    latest = int(
-                        conn.execute(
-                            text("SELECT COALESCE(MAX(batch), 0) FROM fastplace_migrations")
-                        ).scalar()
-                        or 0
+                missing = applied - tracked
+                if missing:
+                    result = await conn.execute(
+                        text("SELECT COALESCE(MAX(batch), 0) FROM fastplace_migrations")
                     )
+                    latest = int(result.scalar() or 0)
                     stamp = datetime.datetime.now(datetime.UTC).isoformat()
-                    conn.execute(
+                    await conn.execute(
                         text(
                             "INSERT INTO fastplace_migrations (revision, batch, applied_at) "
                             "VALUES (:r, :b, :t)"
                         ),
-                        [{"r": revision, "b": latest + 1, "t": stamp} for revision in sorted(new)],
+                        [
+                            {"r": revision, "b": latest + 1, "t": stamp}
+                            for revision in sorted(missing)
+                        ],
                     )
         finally:
-            engine.dispose()
+            await engine.dispose()
 
     def _last_batch_size(self) -> int:
         """How many revisions the most recent `migrate` applied."""
-        from sqlalchemy import create_engine, inspect, text
+        return _run_async(self._last_batch_size_async())
 
-        from fastplace.config import config
+    async def _last_batch_size_async(self) -> int:
+        from sqlalchemy import inspect, text
+        from sqlalchemy.ext.asyncio import create_async_engine
 
-        url = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
-        engine = create_engine(_to_sync_url(url))
+        engine = create_async_engine(self._database_url())
         try:
-            with engine.connect() as conn:
-                if not inspect(conn).has_table("fastplace_migrations"):
+            async with engine.connect() as conn:
+                if not await conn.run_sync(lambda c: inspect(c).has_table("fastplace_migrations")):
                     return 1
-                latest = int(
-                    conn.execute(
-                        text("SELECT COALESCE(MAX(batch), 0) FROM fastplace_migrations")
-                    ).scalar()
-                    or 0
+                result = await conn.execute(
+                    text("SELECT COALESCE(MAX(batch), 0) FROM fastplace_migrations")
                 )
+                latest = int(result.scalar() or 0)
                 if latest == 0:
                     return 1
-                return max(
-                    1,
-                    int(
-                        conn.execute(
-                            text("SELECT COUNT(*) FROM fastplace_migrations WHERE batch = :b"),
-                            {"b": latest},
-                        ).scalar()
-                        or 0
-                    ),
+                result = await conn.execute(
+                    text("SELECT COUNT(*) FROM fastplace_migrations WHERE batch = :b"),
+                    {"b": latest},
                 )
+                return max(1, int(result.scalar() or 0))
         finally:
-            engine.dispose()
+            await engine.dispose()
 
     def status(self) -> str:
         """Human-readable current revision + pending history."""
         from alembic import command
-        from alembic.runtime.migration import MigrationContext
         from alembic.script import ScriptDirectory
 
         if not self.configured:
@@ -271,19 +268,7 @@ class MigrationsManager:
         if not revisions:
             return "No migrations yet — create one with `fastplace make:migration <name>`."
 
-        from sqlalchemy import create_engine
-
-        from fastplace.config import config
-
-        url = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
-        sync_url = _to_sync_url(url)
-        engine = create_engine(sync_url)
-        try:
-            with engine.connect() as conn:
-                context = MigrationContext.configure(conn)
-                applied = set(context.get_current_heads())
-        finally:
-            engine.dispose()
+        applied = _run_async(self._applied_revisions_async())
 
         lines = ["Migration status:"]
         for rev in revisions:
@@ -295,17 +280,11 @@ class MigrationsManager:
         return "\n".join(lines)
 
 
-def _to_sync_url(url: str) -> str:
-    """Map an async driver URL to its sync counterpart for status checks."""
-    replacements = {
-        "sqlite+aiosqlite": "sqlite",
-        "postgresql+asyncpg": "postgresql+psycopg2",
-        "mysql+asyncmy": "mysql+pymysql",
-    }
-    for async_prefix, sync_prefix in replacements.items():
-        if url.startswith(async_prefix):
-            return sync_prefix + url[len(async_prefix) :]
-    return url
+def _run_async(coro: Any) -> Any:
+    """Run one coroutine on a throwaway loop (CLI paths are synchronous)."""
+    import asyncio
+
+    return asyncio.run(coro)
 
 
 def run_seeders(project_root: str | Path) -> list[str]:

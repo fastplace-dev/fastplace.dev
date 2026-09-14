@@ -174,16 +174,17 @@ class DatabaseManager:
         kwargs: dict[str, Any] = {"echo": bool(cfg.get("echo", False))}
 
         if url.startswith("sqlite"):
-            if ":memory:" in url or url.endswith("://") or url.endswith(":///:memory:"):
-                # One shared connection so the in-memory schema persists, but
-                # checked out one at a time: concurrent scopes queue instead of
-                # interleaving transactions on a single sqlite connection
-                # (StaticPool would hand the same connection to both at once).
-                from sqlalchemy.pool.impl import AsyncAdaptedQueuePool
+            # Serialize connection use. In-memory sqlite needs ONE shared
+            # connection for the schema to persist; file-backed sqlite needs
+            # one-at-a-time writers because concurrent connections break
+            # transactional invariants (check-then-act races) and collide on
+            # the database lock. Either way concurrent scopes queue instead of
+            # interleaving (StaticPool would hand one connection to both).
+            from sqlalchemy.pool.impl import AsyncAdaptedQueuePool
 
-                kwargs["poolclass"] = AsyncAdaptedQueuePool
-                kwargs["pool_size"] = 1
-                kwargs["max_overflow"] = 0
+            kwargs["poolclass"] = AsyncAdaptedQueuePool
+            kwargs["pool_size"] = 1
+            kwargs["max_overflow"] = 0
         else:
             # Server backends reap idle connections (MySQL's wait_timeout is
             # the classic case) — verify liveness on checkout so a pooled
@@ -193,7 +194,11 @@ class DatabaseManager:
                 if key in cfg:
                     kwargs[key] = int(cfg[key])
 
-        return create_async_engine(url, **kwargs)
+        engine = create_async_engine(url, **kwargs)
+        from fastplace.orm.instrumentation import install_instrumentation
+
+        install_instrumentation(engine)
+        return engine
 
     def session_factory(self, name: str = "default") -> async_sessionmaker[AsyncSession]:
         if name not in self._session_factories:

@@ -213,3 +213,116 @@ def test_migration_status_without_migrations_dir(project):
     result = runner.invoke(cli_app, ["migration:status"])
     # Not an error — reports that migrations aren't configured yet.
     assert result.exit_code == 0
+
+
+def test_make_migration_imports_custom_column_types(project):
+    # VectorField serializes as fastplace.orm.types.VectorJSON in the
+    # generated revision — without the import the migration can never run.
+    (project / "app" / "modules" / "blog" / "models" / "note.py").write_text(
+        "from fastplace.orm import Field, Model, VectorField\n"
+        "\n"
+        "class Note(Model):\n"
+        "    __tablename__ = 'notes'\n"
+        "    id: int = Field(primary_key=True)\n"
+        "    body: str = ''\n"
+        "    embedding: 'list[float] | None' = VectorField(dimensions=3)\n"
+    )
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    made = runner.invoke(cli_app, ["make:migration", "add_notes"])
+    assert made.exit_code == 0, made.output
+
+    revision = next((project / "database" / "migrations" / "versions").glob("*.py"))
+    source = revision.read_text()
+    assert "fastplace.orm.types.VectorJSON()" in source
+    assert "import fastplace.orm.types" in source
+
+    migrated = runner.invoke(cli_app, ["migrate"])
+    assert migrated.exit_code == 0, migrated.output
+    assert _rows(project, "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'")
+
+
+def _render_item_from_template():
+    """Extract the env template's _render_item hook for direct testing."""
+    import re
+
+    from fastplace.orm.migrations.manager import _TEMPLATES_DIR
+
+    source = (_TEMPLATES_DIR / "env.py.tpl").read_text()
+    match = re.search(r"\ndef _render_item\(.*?\n(?=\ndef |\nasync def )", source, re.S)
+    assert match, "the env template must define _render_item"
+    namespace: dict = {}
+    exec(match.group(0), namespace)  # noqa: S102 - framework template under test
+    return namespace["_render_item"]
+
+
+def test_render_item_imports_third_party_user_defined_types():
+    """pgvector's VECTOR is a UserDefinedType from a private module — the
+    generated revision must reference (and import) the public package path."""
+    pytest.importorskip("pgvector")
+    from pgvector.sqlalchemy import Vector
+
+    render = _render_item_from_template()
+
+    class _Autogen:
+        imports: set[str] = set()
+
+    ctx = _Autogen()
+    rendered = render("type", Vector(3), ctx)
+    assert rendered == "pgvector.sqlalchemy.VECTOR(dim=3)"
+    assert "import pgvector.sqlalchemy" in ctx.imports
+
+
+def test_migrate_bookkeeping_never_builds_a_sync_engine(project, monkeypatch):
+    """Batch tracking rides the async engine — migrate must not require the
+    sync drivers (psycopg2/pymysql) that the framework never ships."""
+    import sqlalchemy
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("sync create_engine must not be used by migrate")
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", _boom)
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    assert runner.invoke(cli_app, ["make:migration", "create_posts_table"]).exit_code == 0
+    assert runner.invoke(cli_app, ["migrate"]).exit_code == 0
+    # The tracking bookkeeping also runs on rollback paths.
+    assert runner.invoke(cli_app, ["migrate:rollback"]).exit_code == 0
+
+
+def test_bookkeeping_reconciles_applied_but_untracked_revisions(project):
+    """A crash between upgrade and bookkeeping must not shrink rollback batches:
+    the next sync re-records every applied-but-untracked revision."""
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    assert runner.invoke(cli_app, ["make:migration", "create_posts_table"]).exit_code == 0
+    assert runner.invoke(cli_app, ["migrate"]).exit_code == 0
+
+    # Simulate the crash window: the schema is applied but the batch table
+    # lost the record.
+    conn = sqlite3.connect(project / "test.sqlite3")
+    try:
+        conn.execute("DELETE FROM fastplace_migrations")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # A second, independent migration followed by a batch rollback must
+    # revert BOTH revisions — proving the lost record came back.
+    # (The new module is discovered by the filesystem walk; already-imported
+    # models stay cached so they are not defined twice in one MetaData.)
+    (project / "app" / "modules" / "blog" / "models" / "tag.py").write_text(
+        "from fastplace.orm import Field, Model\n"
+        "\n"
+        "class Tag(Model):\n"
+        "    __tablename__ = 'tags'\n"
+        "    id: int = Field(primary_key=True)\n"
+        "    name: str\n"
+    )
+    assert runner.invoke(cli_app, ["make:migration", "add_tags"]).exit_code == 0
+    assert runner.invoke(cli_app, ["migrate"]).exit_code == 0
+    assert _rows(project, "SELECT count(*) FROM tags") == [(0,)]
+
+    rolled = runner.invoke(cli_app, ["migrate:rollback"])
+    assert rolled.exit_code == 0, rolled.output
+    # Both revision tables are gone — the recovered batch reverted both.
+    assert _rows(project, "SELECT count(*) FROM sqlite_master WHERE name IN ('posts','tags')") == [
+        (0,)
+    ]

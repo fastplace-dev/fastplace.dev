@@ -415,3 +415,276 @@ class TestKernelHardening:
         r.get("/ping", ping)
         app = get_app(routes=r, config={"APP_ENV": "local", "APP_KEY": ""})
         assert app is not None
+
+
+# ---------------------------------------------------------------------------
+# Request-scoped query instrumentation (T7.1)
+# ---------------------------------------------------------------------------
+
+
+class TestRequestQueryTracker:
+    async def test_request_runs_inside_a_query_tracker_window(self):
+        from fastplace.http import Request, Router, get_app
+        from fastplace.orm.instrumentation import current_stats
+
+        async def stats(request: Request):
+            return {"tracking": current_stats() is not None}
+
+        r = Router()
+        r.get("/stats", stats)
+        app = get_app(routes=r, config={"APP_DEBUG": True})
+
+        import httpx
+        from asgi_lifespan import LifespanManager
+
+        async with LifespanManager(app):
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                response = await c.get("/stats")
+                assert response.json() == {"tracking": True}
+                # the window closed with the request — nothing leaks out
+                assert current_stats() is None
+
+
+class TestDeveloperErrorPages:
+    """T7.2 — rich HTML error page in debug, JSON everywhere else."""
+
+    async def _boom_app(self, *, debug: bool):
+        from fastplace.http import Request, Router, get_app
+
+        async def boom(request: Request):
+            raise RuntimeError("secret-token")
+
+        r = Router()
+        r.get("/boom", boom)
+        return get_app(routes=r, config={"APP_DEBUG": debug, "APP_ENV": "local"})
+
+    async def test_debug_browser_request_gets_html_error_page(self):
+        import httpx
+        from asgi_lifespan import LifespanManager
+
+        app = await self._boom_app(debug=True)
+        async with LifespanManager(app):
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/boom", headers={"Accept": "text/html,application/xhtml+xml"})
+        assert resp.status_code == 500
+        assert resp.headers["content-type"].startswith("text/html")
+        body = resp.text
+        assert "RuntimeError" in body and "secret-token" in body
+        assert "/boom" in body  # the request that blew up
+        assert "Traceback" in body
+
+    async def test_debug_html_page_escapes_unsafe_exception_text(self):
+        import httpx
+        from asgi_lifespan import LifespanManager
+
+        from fastplace.http import Request, Router, get_app
+
+        async def boom(request: Request):
+            raise ValueError("<script>alert('xss')</script>")
+
+        r = Router()
+        r.get("/boom", boom)
+        app = get_app(routes=r, config={"APP_DEBUG": True, "APP_ENV": "local"})
+        async with LifespanManager(app):
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/boom", headers={"Accept": "text/html"})
+        assert "<script>" not in resp.text
+        assert "alert" in resp.text  # the text survives, escaped
+
+    async def test_api_requests_still_get_json_debug_payload(self):
+        import httpx
+        from asgi_lifespan import LifespanManager
+
+        app = await self._boom_app(debug=True)
+        async with LifespanManager(app):
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/boom", headers={"Accept": "application/json"})
+        assert resp.headers["content-type"].startswith("application/json")
+        assert "secret-token" in resp.json()["debug"]
+
+    async def test_production_never_renders_the_rich_page(self):
+        import httpx
+        from asgi_lifespan import LifespanManager
+
+        app = await self._boom_app(debug=False)
+        async with LifespanManager(app):
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                html_resp = await c.get("/boom", headers={"Accept": "text/html"})
+                json_resp = await c.get("/boom", headers={"Accept": "application/json"})
+        assert "secret-token" not in html_resp.text
+        assert "secret-token" not in json_resp.text
+
+    async def test_accept_media_types_match_case_insensitively(self):
+        """RFC 9110: media types are case-insensitive — TEXT/HTML is still HTML."""
+        import httpx
+        from asgi_lifespan import LifespanManager
+
+        app = await self._boom_app(debug=True)
+        async with LifespanManager(app):
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/boom", headers={"Accept": "TEXT/HTML"})
+        assert resp.status_code == 500
+        assert resp.headers["content-type"].startswith("text/html")
+
+
+class TestRequestValidate:
+    """HTTP-edge schema validation — Pydantic errors map to the 422 contract."""
+
+    async def test_valid_body_returns_the_schema_instance(self):
+        import httpx
+        from pydantic import BaseModel, Field
+
+        from fastplace.http import Request, Router, get_app
+
+        class Payload(BaseModel):
+            title: str = Field(min_length=1)
+            visits: int = 0
+
+        async def create(request: Request):
+            data = await request.validate(Payload)
+            return {"title": data.title, "visits": data.visits}
+
+        r = Router()
+        r.post("/things", create)
+        app = get_app(routes=r, config={"APP_DEBUG": True})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as c:
+            resp = await c.post("/things", json={"title": "ok", "visits": 3})
+        assert resp.status_code == 200
+        assert resp.json() == {"title": "ok", "visits": 3}
+
+    async def test_invalid_body_maps_to_422_with_field_errors(self):
+        import httpx
+        from pydantic import BaseModel, Field
+
+        from fastplace.http import Request, Router, get_app
+
+        class Payload(BaseModel):
+            title: str = Field(min_length=2)
+
+        async def create(request: Request):
+            await request.validate(Payload)
+            return {"never": "reached"}
+
+        r = Router()
+        r.post("/things", create)
+        app = get_app(routes=r, config={"APP_DEBUG": True})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as c:
+            resp = await c.post("/things", json={"title": ""})
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["message"] == "The given data was invalid."
+        assert "title" in body["errors"]
+
+    async def test_non_utf8_body_maps_to_422_not_500(self):
+        """Undecodable bytes are a client fault — the 422 contract, not a 500."""
+        import httpx
+        from pydantic import BaseModel
+
+        from fastplace.http import Request, Router, get_app
+
+        class Payload(BaseModel):
+            title: str
+
+        async def create(request: Request):
+            await request.validate(Payload)
+            return {"never": "reached"}
+
+        r = Router()
+        r.post("/things", create)
+        app = get_app(routes=r, config={"APP_DEBUG": True})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as c:
+            resp = await c.post(
+                "/things", content=b"\x80\x81title", headers={"Content-Type": "application/json"}
+            )
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["message"] == "The given data was invalid."
+        assert "body" in body["errors"]
+
+    async def test_malformed_json_reports_a_body_error_not_field_errors(self):
+        """A truncated JSON document is a parse failure, not a missing field."""
+        import httpx
+        from pydantic import BaseModel
+
+        from fastplace.http import Request, Router, get_app
+
+        class Payload(BaseModel):
+            title: str
+
+        async def create(request: Request):
+            await request.validate(Payload)
+            return {"never": "reached"}
+
+        r = Router()
+        r.post("/things", create)
+        app = get_app(routes=r, config={"APP_DEBUG": True})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as c:
+            resp = await c.post(
+                "/things", content=b'{"title": ', headers={"Content-Type": "application/json"}
+            )
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "body" in body["errors"]
+        # The parse failure must not masquerade as per-field validation noise.
+        assert "title" not in body["errors"]
+
+    async def test_form_encoded_body_validates_through_the_schema(self):
+        """Native (no-JS) form posts validate against the same edge schema."""
+        import httpx
+        from pydantic import BaseModel, Field
+
+        from fastplace.http import Request, Router, get_app
+
+        class Payload(BaseModel):
+            title: str = Field(min_length=2)
+            visits: int = 0
+
+        async def create(request: Request):
+            data = await request.validate(Payload)
+            return {"title": data.title, "visits": data.visits}
+
+        r = Router()
+        r.post("/things", create)
+        app = get_app(routes=r, config={"APP_DEBUG": True})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as c:
+            resp = await c.post(
+                "/things",
+                content=b"title=Hello&visits=5",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"title": "Hello", "visits": 5}
+
+        # …and an invalid form body hits the same 422 contract.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as c:
+            resp = await c.post(
+                "/things",
+                content=b"title=&visits=5",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        assert resp.status_code == 422
+        assert "title" in resp.json()["errors"]

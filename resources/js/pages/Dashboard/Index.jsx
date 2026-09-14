@@ -3,7 +3,9 @@ import { usePage, Link } from "@fastplace/react";
 
 export default function DashboardIndex() {
   const { props } = usePage();
-  const projects = props.projects ?? [];
+  const stats = props.stats ?? { projects: 0, open_tasks: 0, completed_tasks: 0 };
+  const knowledgeItems = props.knowledge_items ?? 0;
+  const recentProjects = props.recent_projects ?? [];
 
   return (
     <main className="min-h-dvh bg-surface text-ink">
@@ -13,16 +15,44 @@ export default function DashboardIndex() {
           <span className="text-ink-muted text-sm">{props.url}</span>
         </header>
 
-        <section className="bg-surface-raised border border-line rounded-xl p-6">
-          <h2 className="text-lg font-medium mb-4">Projects</h2>
-          {projects.length === 0 ? (
+        <section className="grid grid-cols-2 gap-4 sm:grid-cols-4" aria-label="Stats">
+          <div className="bg-surface-raised border border-line rounded-xl p-4">
+            <p className="text-2xl font-semibold">{stats.projects}</p>
+            <p className="text-ink-muted text-sm">{stats.projects} projects</p>
+          </div>
+          <div className="bg-surface-raised border border-line rounded-xl p-4">
+            <p className="text-2xl font-semibold">{stats.open_tasks}</p>
+            <p className="text-ink-muted text-sm">{stats.open_tasks} open tasks</p>
+          </div>
+          <div className="bg-surface-raised border border-line rounded-xl p-4">
+            <p className="text-2xl font-semibold">{stats.completed_tasks}</p>
+            <p className="text-ink-muted text-sm">{stats.completed_tasks} completed</p>
+          </div>
+          <div className="bg-surface-raised border border-line rounded-xl p-4">
+            <p className="text-2xl font-semibold">{knowledgeItems}</p>
+            <p className="text-ink-muted text-sm">{knowledgeItems} knowledge items</p>
+          </div>
+        </section>
+
+        <section className="mt-6 bg-surface-raised border border-line rounded-xl p-6">
+          <div className="mb-4 flex items-baseline justify-between">
+            <h2 className="text-lg font-medium">Recent projects</h2>
+            <Link href="/projects" className="text-accent text-sm">
+              All projects →
+            </Link>
+          </div>
+          {recentProjects.length === 0 ? (
             <p className="text-ink-muted">No projects yet.</p>
           ) : (
             <ul className="divide-y divide-line">
-              {projects.map((project) => (
+              {recentProjects.map((project) => (
                 <li key={project.id} className="py-3 flex justify-between">
-                  <span>{project.name}</span>
-                  <span className="text-ink-muted text-sm">{project.task_count ?? 0} tasks</span>
+                  <Link href={`/projects/${project.id}`} className="text-accent">
+                    {project.name}
+                  </Link>
+                  <span className="text-ink-muted text-sm">
+                    {project.task_count ?? 0} tasks · {project.open_task_count ?? 0} open
+                  </span>
                 </li>
               ))}
             </ul>
@@ -30,6 +60,7 @@ export default function DashboardIndex() {
         </section>
 
         <nav className="mt-6 flex gap-6 text-accent">
+          <Link href="/projects">Projects</Link>
           <Link href="/about">About</Link>
           <a href="/api/v1/health">API health</a>
         </nav>

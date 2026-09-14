@@ -28,6 +28,23 @@ class TestCsrfIssuance:
         assert response.status_code == 200
         assert '<meta name="csrf-token"' in response.text
 
+    async def test_page_props_carry_the_csrf_token(self, auth_client):
+        """No-JS forms cannot read <meta> — render() also injects the token
+        into the page props so hidden ``_token`` inputs can use it."""
+        import json as json_module
+
+        bridge = await auth_client.get("/page", headers={"X-Fastplace-Request": "true"})
+        assert bridge.status_code == 200
+        token = bridge.headers["X-Fastplace-CSRF-Token"]
+        assert bridge.json()["props"]["csrf_token"] == token
+
+        html = await auth_client.get("/page")
+        payload = html.text.split('data-page="', 1)[1].split('"', 1)[0]
+        import html as html_module
+
+        props = json_module.loads(html_module.unescape(payload))["props"]
+        assert props["csrf_token"] == token
+
 
 class TestCsrfValidation:
     async def test_unsafe_post_without_a_token_is_rejected(self, auth_client):
@@ -38,9 +55,11 @@ class TestCsrfValidation:
     async def test_unsafe_post_with_a_valid_header_token_passes(self, auth_client):
         page = await auth_client.get("/me")
         token = page.headers["X-Fastplace-CSRF-Token"]
-        response = await auth_client.post("/submit", headers={"X-Fastplace-CSRF-Token": token})
+        response = await auth_client.post(
+            "/submit", headers={"X-Fastplace-CSRF-Token": token}, data={"payload": 1}
+        )
         assert response.status_code == 200
-        assert response.json() == {"ok": True}
+        assert response.json() == {"ok": True, "payload": "1"}
 
     async def test_mismatched_token_is_rejected(self, auth_client):
         await auth_client.get("/me")  # session now holds the real token
@@ -60,6 +79,15 @@ class TestCsrfValidation:
         token = page.headers["X-Fastplace-CSRF-Token"]
         response = await auth_client.post("/submit", data={"_token": token, "payload": 1})
         assert response.status_code == 200
+
+    async def test_csrf_check_does_not_drain_the_body(self, auth_client):
+        """A form POST with a valid _token must still reach the controller."""
+        page = await auth_client.get("/me")
+        token = page.headers["X-Fastplace-CSRF-Token"]
+        response = await auth_client.post("/submit", data={"_token": token, "payload": 1})
+        assert response.status_code == 200
+        # The controller read the same form after the middleware parsed it.
+        assert response.json()["payload"] == "1"
 
     async def test_valid_bearer_token_bypasses_csrf(
         self, auth_client, registered_user, monkeypatch

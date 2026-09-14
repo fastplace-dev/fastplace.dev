@@ -3,7 +3,6 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import React from "react";
 import { FastplaceProvider, router } from "@fastplace/react";
-import DashboardIndex from "../pages/Dashboard/Index.jsx";
 import AboutIndex from "../pages/About/Index.jsx";
 
 // Collocated app tests under resources/js must be discovered by vitest —
@@ -15,23 +14,7 @@ afterEach(() => {
   router.reset();
 });
 
-describe("app pages render with controller-supplied props", () => {
-  it("Dashboard/Index shows the empty state", () => {
-    render(
-      <FastplaceProvider
-        initialPage={{
-          component: "Dashboard/Index",
-          props: { appName: "Fastplace", projects: [], url: "/" },
-          url: "/",
-        }}
-      >
-        <DashboardIndex />
-      </FastplaceProvider>,
-    );
-    expect(screen.getByRole("heading", { name: "Fastplace" })).toBeInTheDocument();
-    expect(screen.getByText("No projects yet.")).toBeInTheDocument();
-  });
-
+describe("scaffolded pages render with controller-supplied props", () => {
   it("About/Index echoes the framework name", () => {
     render(
       <FastplaceProvider
