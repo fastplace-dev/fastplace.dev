@@ -1,6 +1,12 @@
 """CLI smoke tests — command wiring via Typer's CliRunner."""
 
+import re
+
 from fastplace.cli import app as cli_app
+
+# Rich colorizes help panels when the environment forces color (e.g. CI);
+# style codes can split option names, so assertions match on plain text.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def test_about_runs(monkeypatch):
@@ -19,7 +25,7 @@ def test_run_dev_help_lists_options():
     runner = CliRunner()
     result = runner.invoke(cli_app, ["run", "dev", "--help"])
     assert result.exit_code == 0
-    assert "--skip-vite" in result.output
+    assert "--skip-vite" in ANSI_RE.sub("", result.output)
 
 
 def test_serve_help_lists_options():
@@ -28,7 +34,7 @@ def test_serve_help_lists_options():
     runner = CliRunner()
     result = runner.invoke(cli_app, ["serve", "--help"])
     assert result.exit_code == 0
-    assert "--skip-build" in result.output
+    assert "--skip-build" in ANSI_RE.sub("", result.output)
 
 
 def test_make_page_scaffolds_react_component(tmp_path, monkeypatch):

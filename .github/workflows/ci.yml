@@ -23,9 +23,9 @@ jobs:
     name: Module boundaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -40,9 +40,9 @@ jobs:
     name: Lint & types
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -108,16 +108,16 @@ jobs:
       TEST_MYSQL_URL: mysql://fastplace:fastplace@localhost:3306/fastplace_test
       TEST_MONGODB_URL: mongodb://localhost:27017
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
       - name: Install package (all database extras)
         run: |
-          python -m pip install -e ".[dev,postgresql,mysql,mongodb]"
+          python -m pip install -e ".[dev,postgresql,mysql,mongodb,queue]"
           python -m pip install -e ./packages/tenancy
 
       - name: Enable pgvector extension
@@ -145,12 +145,15 @@ jobs:
     needs: boundary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Pin npm (lockfile is npm-11-generated)
+        run: npm install -g npm@11.19.1
 
       - name: Install dependencies
         run: npm ci
@@ -175,20 +178,23 @@ jobs:
     needs: [backend, frontend]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install package
         run: python -m pip install -e ".[dev]"
+
+      - name: Pin npm (lockfile is npm-11-generated)
+        run: npm install -g npm@11.19.1
 
       - name: Install frontend dependencies
         run: npm ci

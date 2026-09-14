@@ -29,14 +29,16 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Pin npm (lockfile is npm-11-generated)
+        run: npm install -g npm@11.19.1
       - run: npm ci
       - run: npm run docs:build
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: docs/site/.vitepress/dist
 
