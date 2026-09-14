@@ -3,9 +3,14 @@ import "../css/app.css";
 
 // Glob-declared pages: every resources/js/pages/**/*.{jsx,tsx} file is a
 // routable component, resolved by the payload's `component` name. The glob
-// is lazy — each page loads on first render inside the bridge Suspense
-// boundary, keeping the initial bundle small.
-const resolvePage = createPageResolver(import.meta.glob("./pages/**/*.{jsx,tsx,js,ts}"));
+// is eager on purpose: pages declare their persistent layout through a
+// `layout` component static, and a lazy wrapper could not expose it before
+// first render. At dogfood scale the up-front cost is negligible; an app
+// that outgrows this can go lazy and give layout pages a eager glob of
+// their own.
+const resolvePage = createPageResolver(
+  import.meta.glob("./pages/**/*.{jsx,tsx,js,ts}", { eager: true }),
+);
 
 createFastplaceApp({ resolve: resolvePage }).catch((err) => {
   console.error("[fastplace] bootstrap failed:", err);

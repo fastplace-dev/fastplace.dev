@@ -341,6 +341,39 @@ export function createPageResolver(
 }
 
 /* ------------------------------------------------------------------ *
+ * Layouts — pages opt in via a `layout` static
+ * ------------------------------------------------------------------ */
+
+/** A layout component renders its page content through `children`. */
+export type PageLayoutComponent = React.ComponentType<{ children?: React.ReactNode }>;
+
+/** A page's declared layout: a component, or an array (first = outermost). */
+export type PageLayout = PageLayoutComponent | PageLayoutComponent[];
+
+/**
+ * Wrap a rendered page in its declared layout(s).
+ *
+ * A page component opts in with a static `layout` — a component rendering
+ * `children`, or an array of them with the first entry outermost. Because
+ * the layout sits *above* the page component in the tree with a stable
+ * identity, it stays mounted across bridge navigations: its local state
+ * survives while the page content swaps (the Inertia persistent-layout
+ * behavior — navigation no longer resets scroll positions, audio players,
+ * or open menus living in the chrome).
+ */
+export function applyLayouts(page: React.ReactNode, layout: unknown): React.ReactNode {
+  if (layout == null) return page;
+  const declared = Array.isArray(layout) ? layout : [layout];
+  const components = declared.filter(
+    (entry): entry is PageLayoutComponent => typeof entry === "function",
+  );
+  return components.reduceRight(
+    (children, Component) => <Component>{children}</Component>,
+    page as React.ReactNode,
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * App bootstrap
  * ------------------------------------------------------------------ */
 
@@ -405,12 +438,14 @@ export async function createFastplaceApp(options: FastplaceAppOptions) {
 
   // Resolves the component from the live page store on every render, so a
   // bridge navigation (router.visit / popstate) swaps the page component.
+  // A page's `layout` static wraps it from above — the layout identity is
+  // stable, so it stays mounted (state intact) across page swaps.
   const BridgeApp = () => {
     const current = usePage();
     const PageComponent = options.resolve(current.component);
     return (
       <React.Suspense fallback={null}>
-        <PageComponent />
+        {applyLayouts(<PageComponent />, (PageComponent as { layout?: PageLayout }).layout)}
       </React.Suspense>
     );
   };

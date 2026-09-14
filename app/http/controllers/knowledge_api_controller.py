@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from pydantic import BaseModel
+
 from app.http.requests.ingest_knowledge_request import IngestKnowledgeRequest
-from app.modules.knowledge.services.knowledge_service import KnowledgeService
+from app.modules.knowledge.services.knowledge_service import (
+    KnowledgeItemResource,
+    KnowledgeService,
+)
 from fastplace.errors import ValidationError
 from fastplace.http import Controller, Json, Request
 
@@ -12,15 +17,21 @@ from fastplace.http import Controller, Json, Request
 MAX_QUERY_LENGTH = 500
 
 
+class KnowledgeSearchPage(BaseModel):
+    """The `/api/v1/knowledge/search` response contract."""
+
+    data: list[KnowledgeItemResource]
+
+
 class KnowledgeApiController(Controller):
     service = KnowledgeService()
 
-    async def store(self, request: Request):
+    async def store(self, request: Request) -> KnowledgeItemResource:
         data = await request.validate(IngestKnowledgeRequest)
         item = await self.service.ingest(title=data.title, content=data.content)
-        return Json(item, status_code=201)
+        return Json(item.model_dump(mode="json"), status_code=201)
 
-    async def search(self, request: Request):
+    async def search(self, request: Request) -> KnowledgeSearchPage:
         query = str(request.query("q") or "")
         if len(query) > MAX_QUERY_LENGTH:
             raise ValidationError(
@@ -28,4 +39,4 @@ class KnowledgeApiController(Controller):
                 errors={"q": [f"must be at most {MAX_QUERY_LENGTH} characters"]},
             )
         hits = await self.service.search(query)
-        return {"data": hits}
+        return KnowledgeSearchPage(data=hits)

@@ -10,5 +10,7 @@ class DashboardController(Controller):
     service = DashboardService()
 
     async def index(self, request: Request):
-        props = await self.service.compose(url=request.full_path)
-        return render(request, component="Dashboard/Index", props=props)
+        overview = await self.service.compose(url=request.full_path)
+        # Bridge props are JSON payloads — mode="json" keeps dates and other
+        # non-JSON natives stringified.
+        return render(request, component="Dashboard/Index", props=overview.model_dump(mode="json"))

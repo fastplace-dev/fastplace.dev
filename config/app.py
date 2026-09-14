@@ -23,8 +23,11 @@ SESSION_LIFETIME = 7200  # seconds
 # CSRF protection (fastplace.auth.middleware.CsrfMiddleware)
 CSRF_EXCEPT: list[str] = []
 
-# Default HTTP middleware stack (dotted paths, outermost first)
+# Default HTTP middleware stack (dotted paths, outermost first). App-owned
+# middleware lives in app/http/middleware/ — framework and app entries share
+# one stack.
 MIDDLEWARE = [
+    "app.http.middleware.request_timing.RequestTimingMiddleware",
     "fastplace.auth.middleware.ResolveUserMiddleware",
     "fastplace.auth.middleware.CsrfMiddleware",
 ]

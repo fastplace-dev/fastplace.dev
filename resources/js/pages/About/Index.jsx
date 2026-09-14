@@ -1,5 +1,6 @@
 import React from "react";
 import { usePage } from "@fastplace/react";
+import AppLayout from "../../layouts/AppLayout";
 
 // Scaffolded by `fastplace make:page About/Index` — props arrive from the
 // controller that renders this component via `render(request, component="About/Index", props=...)`.
@@ -14,3 +15,6 @@ export default function AboutIndex() {
     </div>
   );
 }
+
+// Persistent-layout opt-in — the bridge reads this static on the component.
+AboutIndex.layout = AppLayout;

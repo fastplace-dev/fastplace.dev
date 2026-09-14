@@ -1,5 +1,6 @@
 import React from "react";
 import { usePage, Link } from "@fastplace/react";
+import AppLayout from "../../layouts/AppLayout";
 
 export default function DashboardIndex() {
   const { props } = usePage();
@@ -8,7 +9,7 @@ export default function DashboardIndex() {
   const recentProjects = props.recent_projects ?? [];
 
   return (
-    <main className="min-h-dvh bg-surface text-ink">
+    <main>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <header className="mb-8 flex items-baseline justify-between">
           <h1 className="text-2xl font-semibold">{props.appName ?? "Fastplace"}</h1>
@@ -58,13 +59,10 @@ export default function DashboardIndex() {
             </ul>
           )}
         </section>
-
-        <nav className="mt-6 flex gap-6 text-accent">
-          <Link href="/projects">Projects</Link>
-          <Link href="/about">About</Link>
-          <a href="/api/v1/health">API health</a>
-        </nav>
       </div>
     </main>
   );
 }
+
+// Persistent-layout opt-in — the bridge reads this static on the component.
+DashboardIndex.layout = AppLayout;

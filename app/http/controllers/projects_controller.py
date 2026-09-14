@@ -32,11 +32,14 @@ class ProjectsController(Controller):
 
     async def index(self, request: Request):
         projects = await self.service.list_projects()
-        return render(request, component="Projects/Index", props={"projects": projects})
+        props = {"projects": [p.model_dump(mode="json") for p in projects]}
+        return render(request, component="Projects/Index", props=props)
 
     async def show(self, request: Request):
         detail = await self.service.project_detail(_int_id(request))
-        return render(request, component="Projects/Show", props={"project": detail})
+        return render(
+            request, component="Projects/Show", props={"project": detail.model_dump(mode="json")}
+        )
 
     async def store(self, request: Request):
         data = await _form_input(request, CreateProjectRequest)
@@ -54,4 +57,4 @@ class ProjectsController(Controller):
 
     async def toggle_task(self, request: Request):
         task = await self.service.toggle_task(_int_id(request))
-        return Redirect(f"/projects/{task['project_id']}", status_code=303)
+        return Redirect(f"/projects/{task.project_id}", status_code=303)

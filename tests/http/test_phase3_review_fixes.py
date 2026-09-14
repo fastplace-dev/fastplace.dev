@@ -17,7 +17,7 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from fastplace.http import Controller, Request, Router, get_app, render, serialization
+from fastplace.http import Controller, Json, Request, Router, get_app, render, serialization
 
 
 def _client(app, *, raise_app_exceptions: bool = False) -> httpx.AsyncClient:
@@ -419,3 +419,34 @@ def test_imported_chunk_css_and_scripts_emitted(tmp_path):
     assert '<link rel="stylesheet" href="/build/assets/vendor-xyz.css">' in tags
     assert '<script type="module" src="/build/assets/vendor-xyz.js"></script>' in tags
     assert '<script type="module" src="/build/assets/main-abc.js"></script>' in tags
+
+
+# ---------------------------------------------------------------------------
+# Serialization — Response passthrough under a return annotation
+# ---------------------------------------------------------------------------
+
+
+async def test_validated_payload_passes_responses_through_untouched():
+    """A controller that builds its own response (status codes, headers)
+    declares the contract by annotation; the Response itself is final."""
+    from fastplace.http import Json
+
+    response = Json({"n": 1}, status_code=201)
+    assert serialization.validated_payload(hinted_handler, response) is response
+
+
+async def test_annotated_controller_can_wrap_its_payload_in_json():
+    """The dogfood pattern: `-> ProjectResource` + Json(dto.model_dump(), 201)
+    must not explode in outbound validation."""
+    r = Router()
+
+    class TypedController(Controller):
+        async def store(self, request: Request) -> _HintedOut:
+            return Json(_HintedOut(n=7).model_dump(mode="json"), status_code=201)
+
+    r.post("/typed", TypedController, "store")
+    app = get_app(api_routes=r)
+    async with _client(app) as c:
+        resp = await c.post("/api/v1/typed", json={})
+    assert resp.status_code == 201
+    assert resp.json() == {"n": 7}

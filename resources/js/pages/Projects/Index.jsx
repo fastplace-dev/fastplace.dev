@@ -1,5 +1,6 @@
 import React from "react";
 import { usePage, Link } from "@fastplace/react";
+import AppLayout from "../../layouts/AppLayout";
 
 export default function ProjectsIndex() {
   const { props } = usePage();
@@ -10,7 +11,7 @@ export default function ProjectsIndex() {
   const csrfToken = props.csrf_token ?? "";
 
   return (
-    <main className="min-h-dvh bg-surface text-ink">
+    <main>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <header className="mb-8 flex items-baseline justify-between">
           <h1 className="text-2xl font-semibold">Projects</h1>
@@ -77,3 +78,6 @@ export default function ProjectsIndex() {
     </main>
   );
 }
+
+// Persistent-layout opt-in — the bridge reads this static on the component.
+ProjectsIndex.layout = AppLayout;

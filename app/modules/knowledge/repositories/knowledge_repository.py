@@ -18,6 +18,12 @@ class KnowledgeRepository:
     async def count_all(self) -> int:
         return await KnowledgeItem.query().count()
 
+    async def recent(self, *, limit: int) -> list[KnowledgeItem]:
+        """Newest items first — id is monotonic, so it orders insertion."""
+        stmt = KnowledgeItem.query().order_by(KnowledgeItem.id.desc()).limit(limit)._statement()
+        result = await run_read(stmt)
+        return list(result.scalars().all())
+
     async def search_like(self, needle: str, *, limit: int) -> list[KnowledgeItem]:
         """DB-side substring fallback for backends without vector/FTS support."""
         pattern = f"%{needle}%"

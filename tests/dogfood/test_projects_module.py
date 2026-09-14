@@ -24,9 +24,9 @@ async def test_create_project_persists_and_lists(service, dogfood_db):
     await service.create_project(name="Beta")
 
     projects = await service.list_projects()
-    names = [p["name"] for p in projects]
+    names = [p.name for p in projects]
     assert "Alpha" in names and "Beta" in names
-    assert all(p["task_count"] == 0 for p in projects)
+    assert all(p.task_count == 0 for p in projects)
 
 
 async def test_create_project_rejects_blank_name(service, dogfood_db):
@@ -36,21 +36,21 @@ async def test_create_project_rejects_blank_name(service, dogfood_db):
 
 async def test_task_counts_come_from_the_database(service, dogfood_db):
     project = await service.create_project(name="With tasks")
-    await service.add_task(project_id=project["id"], title="write tests")
-    await service.add_task(project_id=project["id"], title="ship it")
-    await service.toggle_task((await service.open_tasks(project["id"]))[0]["id"])
+    await service.add_task(project_id=project.id, title="write tests")
+    await service.add_task(project_id=project.id, title="ship it")
+    await service.toggle_task((await service.open_tasks(project.id))[0].id)
 
-    listed = {p["name"]: p for p in await service.list_projects()}
-    assert listed["With tasks"]["task_count"] == 2
-    assert listed["With tasks"]["open_task_count"] == 1
+    listed = {p.name: p for p in await service.list_projects()}
+    assert listed["With tasks"].task_count == 2
+    assert listed["With tasks"].open_task_count == 1
 
 
 async def test_add_task_and_toggle_round_trip(service, dogfood_db, project):
-    task = await service.add_task(project_id=project["id"], title="draft ADR")
-    assert task["completed"] is False
+    task = await service.add_task(project_id=project.id, title="draft ADR")
+    assert task.completed is False
 
-    done = await service.toggle_task(task["id"])
-    assert done["completed"] is True
+    done = await service.toggle_task(task.id)
+    assert done.completed is True
 
 
 async def test_toggle_missing_task_raises_not_found(service, dogfood_db):
@@ -62,7 +62,7 @@ async def test_open_task_limit_enforced_in_transaction(service, dogfood_db, monk
     # Blueprint invariant: a project holds at most 50 open tasks.
     monkeypatch.setattr(service, "max_open_tasks", 2)
     project = await service.create_project(name="Capped")
-    pid = project["id"]
+    pid = project.id
     await service.add_task(project_id=pid, title="one")
     await service.add_task(project_id=pid, title="two")
     with pytest.raises(ValidationError, match="(?i)limit"):
@@ -70,12 +70,12 @@ async def test_open_task_limit_enforced_in_transaction(service, dogfood_db, monk
 
 
 async def test_project_detail_includes_tasks(service, dogfood_db, project):
-    await service.add_task(project_id=project["id"], title="a")
-    await service.add_task(project_id=project["id"], title="b")
+    await service.add_task(project_id=project.id, title="a")
+    await service.add_task(project_id=project.id, title="b")
 
-    detail = await service.project_detail(project["id"])
-    assert detail["name"] == "Framework"
-    assert [t["title"] for t in detail["tasks"]] == ["a", "b"]
+    detail = await service.project_detail(project.id)
+    assert detail.name == "Framework"
+    assert [t.title for t in detail.tasks] == ["a", "b"]
 
 
 async def test_project_detail_missing_raises_not_found(service, dogfood_db):
@@ -90,7 +90,7 @@ async def test_list_projects_two_queries_no_n_plus_one(service, dogfood_db):
 
     for n in range(10):
         p = await service.create_project(name=f"P{n}")
-        await service.add_task(project_id=p["id"], title=f"t{n}")
+        await service.add_task(project_id=p.id, title=f"t{n}")
 
     with activate_tracker():
         await service.list_projects()
@@ -109,7 +109,7 @@ async def test_concurrent_add_task_never_exceeds_the_open_limit(service, dogfood
     import asyncio
 
     monkeypatch.setattr(service, "max_open_tasks", 5)
-    pid = (await service.create_project(name="Concurrent"))["id"]
+    pid = (await service.create_project(name="Concurrent")).id
 
     results = await asyncio.gather(
         *[service.add_task(project_id=pid, title=f"t{i}") for i in range(12)],
@@ -119,23 +119,23 @@ async def test_concurrent_add_task_never_exceeds_the_open_limit(service, dogfood
     rejected = [r for r in results if isinstance(r, ValidationError)]
     assert len(created) == 5, f"invariant broken: {len(created)} tasks survived"
     assert len(rejected) == 7
-    assert len((await service.project_detail(pid))["tasks"]) == 5
+    assert len((await service.project_detail(pid)).tasks) == 5
 
 
 async def test_open_tasks_filtering_happens_in_the_database(service, dogfood_db, project):
     from app.modules.projects.repositories.task_repository import TaskRepository
 
-    await service.add_task(project_id=project["id"], title="open a")
-    second = await service.add_task(project_id=project["id"], title="open b")
-    third = await service.add_task(project_id=project["id"], title="the done one")
-    await service.toggle_task(second["id"])
-    await service.toggle_task(third["id"])
+    await service.add_task(project_id=project.id, title="open a")
+    second = await service.add_task(project_id=project.id, title="open b")
+    third = await service.add_task(project_id=project.id, title="the done one")
+    await service.toggle_task(second.id)
+    await service.toggle_task(third.id)
 
     repo = TaskRepository()
     # The repository owns a WHERE completed IS FALSE query ordered by id —
     # the service delegates instead of filtering rows in Python.
-    assert [t.title for t in await repo.open_tasks_for_project(project["id"])] == ["open a"]
-    assert [t["title"] for t in await service.open_tasks(project["id"])] == ["open a"]
+    assert [t.title for t in await repo.open_tasks_for_project(project.id)] == ["open a"]
+    assert [t.title for t in await service.open_tasks(project.id)] == ["open a"]
 
 
 async def test_count_projects_counts_beyond_the_page(service, dogfood_db):
@@ -159,18 +159,18 @@ async def test_soft_deleted_tasks_leave_the_aggregates(service, dogfood_db, proj
     aggregates must respect it as strictly as the query builder does."""
     from app.modules.projects.models.task import Task
 
-    await service.add_task(project_id=project["id"], title="kept")
-    gone = await service.add_task(project_id=project["id"], title="gone")
-    doomed = await Task.query().find(gone["id"])
+    await service.add_task(project_id=project.id, title="kept")
+    gone = await service.add_task(project_id=project.id, title="gone")
+    doomed = await Task.query().find(gone.id)
     await doomed.delete()
 
-    listed = {p["name"]: p for p in await service.list_projects()}
-    assert listed["Framework"]["task_count"] == 1
-    assert listed["Framework"]["open_task_count"] == 1
+    listed = {p.name: p for p in await service.list_projects()}
+    assert listed["Framework"].task_count == 1
+    assert listed["Framework"].open_task_count == 1
 
     split = await service.stats()
-    assert split["open_tasks"] == 1
-    assert split["completed_tasks"] == 0
+    assert split.open_tasks == 1
+    assert split.completed_tasks == 0
 
 
 def test_long_text_columns_use_the_text_type():

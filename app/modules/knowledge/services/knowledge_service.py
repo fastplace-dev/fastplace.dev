@@ -1,12 +1,12 @@
 """Knowledge service — ingestion with embeddings, capability-gated search.
 
 The module's only public surface: controllers and other modules call these
-methods, never the repository or model below.
+methods, never the repository or model below. Data leaves as typed DTOs.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from pydantic import BaseModel
 
 from app.modules.knowledge.models.knowledge_item import EMBEDDING_DIMENSIONS, KnowledgeItem
 from app.modules.knowledge.repositories.knowledge_repository import KnowledgeRepository
@@ -14,13 +14,22 @@ from fastplace.db import db
 from fastplace.errors import ValidationError
 
 
-def item_resource(item: KnowledgeItem) -> dict[str, Any]:
-    return {
-        "id": item.id,
-        "title": item.title,
-        "content": item.content,
-        "embedding": item.embedding,
-    }
+class KnowledgeItemResource(BaseModel):
+    """Serialization contract for KnowledgeItem records leaving the module."""
+
+    id: int
+    title: str
+    content: str
+    embedding: list[float] | None = None
+
+
+def item_resource(item: KnowledgeItem) -> KnowledgeItemResource:
+    return KnowledgeItemResource(
+        id=item.id,
+        title=item.title,
+        content=item.content,
+        embedding=item.embedding,
+    )
 
 
 class KnowledgeService:
@@ -35,7 +44,7 @@ class KnowledgeService:
         title: str,
         content: str,
         embed_vector: bool = True,
-    ) -> dict[str, Any]:
+    ) -> KnowledgeItemResource:
         if not (title or "").strip() and not (content or "").strip():
             raise ValidationError("a knowledge item needs a title or content")
         embedding: list[float] | None = None
@@ -60,7 +69,7 @@ class KnowledgeService:
         )
         return item_resource(item)
 
-    async def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    async def search(self, query: str, *, limit: int = 10) -> list[KnowledgeItemResource]:
         query = (query or "").strip()
         if not query:
             return []
@@ -80,6 +89,11 @@ class KnowledgeService:
                 rows = await self.items.search_vector(vector, limit=limit)
         else:
             rows = await self.items.search_like(query, limit=limit)
+        return [item_resource(row) for row in rows]
+
+    async def recent_items(self, *, limit: int = 20) -> list[KnowledgeItemResource]:
+        """Newest items for the bridge page — newest first, DB-side."""
+        rows = await self.items.recent(limit=limit)
         return [item_resource(row) for row in rows]
 
     async def count_items(self) -> int:

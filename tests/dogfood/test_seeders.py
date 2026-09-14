@@ -95,10 +95,10 @@ def test_seeder_completes_partial_state_without_duplicating(monkeypatch, tmp_pat
         from app.modules.projects.services.projects_service import ProjectsService
 
         service = ProjectsService()
-        projects = {p["name"]: p for p in await service.list_projects()}
+        projects = {p.name: p for p in await service.list_projects()}
         assert set(projects) == {"Framework build", "Scratchpad"}  # no duplicate
-        detail = await service.project_detail(projects["Framework build"]["id"])
-        assert [t["title"] for t in detail["tasks"]] == [
+        detail = await service.project_detail(projects["Framework build"].id)
+        assert [t.title for t in detail.tasks] == [
             "Write the ORM contract",
             "Ship the React bridge",
             "Wire the AI assistant",

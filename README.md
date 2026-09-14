@@ -31,8 +31,14 @@ What you get on first boot:
 
 - `/` — dashboard bridge page (project stats, recent projects) rendered through the Inertia-style React bridge
 - `/projects` — the projects module's SPA pages (create projects, add/toggle tasks)
-- `/api/v1/*` — the same services as a unified JSON API (`/api/v1/health`, `/api/v1/dashboard`, `/api/v1/projects`, `/api/v1/knowledge/search?q=…`)
+- `/knowledge` — the knowledge module's bridge page (browse recent items, search via `?q=`)
+- `/assistant` — the assistant chat page, streaming from the agent over SSE (set `AI_API_KEY` in `.env` for a real provider; the agent's `search_docs` tool queries the knowledge base)
+- `/api/v1/*` — the same services as a unified JSON API (`/api/v1/health`, `/api/v1/dashboard`, `/api/v1/projects`, `/api/v1/knowledge/search?q=…`) with Pydantic response contracts on every controller
 - `/ai/assistant` — SSE-streamed agent responses (set `AI_API_KEY` in `.env` for a real provider)
+
+Every page is framed by the persistent `AppLayout` (nav chrome survives bridge
+navigation), and app-owned middleware lives in `app/http/middleware/`
+(`X-Process-Time` request timing) registered from `config/app.py`.
 
 Running the checks:
 

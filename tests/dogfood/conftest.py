@@ -31,9 +31,13 @@ def purge_app_modules() -> None:
         del sys.modules[name]
     Model.metadata.clear()
     sqlalchemy.orm.clear_mappers()
+    from fastplace.ai import reset_tool_registry
     from fastplace.db import reset_db
 
     reset_db()
+    # app.* re-imports re-run @Tool decorators — without this clear the
+    # fresh module objects collide with their own prior registrations.
+    reset_tool_registry()
 
 
 @pytest.fixture(autouse=True)
@@ -58,15 +62,20 @@ async def dogfood_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from app.modules.projects.models.task import Task  # noqa: F401
     from fastplace.db import db
     from fastplace.http import get_app
+    from fastplace.http.kernel import _middleware_from_config
     from routes.ai import router as ai_router
     from routes.api import router as api_router
     from routes.web import router as web_router
 
     await db.create_all()
+    # The same config-driven stack create_app installs — config/app.py
+    # MIDDLEWARE (app-owned entries included), outermost first.
+    middleware = _middleware_from_config(Path(_PROJECT_ROOT))
     return get_app(
         routes=web_router,
         api_routes=api_router,
         ai_routes=ai_router,
+        middleware=middleware,
         config={"APP_ENV": "local", "APP_DEBUG": True},
     )
 
@@ -77,6 +86,18 @@ async def dogfood_client(dogfood_app):
 
     transport = httpx.ASGITransport(app=dogfood_app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # The app stack now includes CSRF (config/app.py MIDDLEWARE). Play
+        # the browser's part: first page load mints the session token, and
+        # every unsafe-method request carries it back. The middleware's own
+        # acceptance/rejection matrix lives in tests/auth/test_csrf.py.
+        page = await client.get("/", headers={"X-Fastplace-Request": "true"})
+        token = page.headers.get("X-Fastplace-CSRF-Token")
+
+        async def attach_csrf(request: httpx.Request) -> None:
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and token:
+                request.headers.setdefault("X-Fastplace-CSRF-Token", token)
+
+        client.event_hooks["request"].append(attach_csrf)
         yield client
 
 

@@ -21,8 +21,12 @@ def validated_payload(handler: Any, result: Any) -> Any:
 
     This is the automatic response-schema mechanism: the controller's return
     annotation is the Pydantic v2 response schema, and the framework ensures
-    the outbound JSON payload conforms to it.
+    the outbound JSON payload conforms to it. A controller that already
+    built a Response (custom status code, headers, streaming) is final —
+    the annotation declares the contract, the Response is the payload.
     """
+    from fastplace.http.response import Response
+
     try:
         hints = _cached_type_hints(handler)
     except Exception:  # pragma: no cover - unresolvable forward refs
@@ -32,7 +36,7 @@ def validated_payload(handler: Any, result: Any) -> Any:
         inspect.isclass(annotation) and issubclass(annotation, BaseModel)
     ):
         return result
-    if isinstance(result, annotation):
+    if isinstance(result, (Response, annotation)):
         return result
     if isinstance(result, BaseModel):
         return annotation.model_validate(result.model_dump(mode="json"))
