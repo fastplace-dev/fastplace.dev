@@ -146,8 +146,13 @@ class MigrationsManager:
 
     def _database_url(self) -> str:
         from fastplace.config import config
+        from fastplace.orm.manager import normalize_database_url
 
-        return str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
+        # Bare schemes (mysql://, postgresql://) bind to the async driver —
+        # the same contract as the runtime DatabaseManager, or Alembic would
+        # reach for the sync drivers (MySQLdb / psycopg2) that are not installed.
+        raw = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
+        return normalize_database_url(raw)
 
     async def _applied_revisions_async(self) -> set[str]:
         """Every applied revision — the full ancestor chain, not just the head.
@@ -286,7 +291,9 @@ class MigrationsManager:
 
         lines = ["Migration status:"]
         for rev in revisions:
-            marker = "[applied]" if rev.revision in applied else "[ pending]"
+            # Rich would swallow a bare [applied] as a markup tag — escape
+            # the brackets so the marker reaches the terminal verbatim.
+            marker = "\\[applied]" if rev.revision in applied else "\\[ pending]"
             lines.append(f"  {marker} {rev.revision[:12]}  {rev.doc}")
         lines.append(f"  head: {head[:12] if head else '(none)'}")
         if current_lines:

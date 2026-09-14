@@ -13,7 +13,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, func, inspect, select
+from sqlalchemy import ForeignKey, Integer, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import Select
@@ -30,6 +30,7 @@ from fastplace.orm.fields import (
 from fastplace.orm.query import QueryBuilder
 from fastplace.orm.relationships import RelationshipMarker
 from fastplace.orm.scopes import scope
+from fastplace.orm.types import PortableDateTime
 
 _MISSING_ANNOTATION = object()
 
@@ -604,7 +605,7 @@ def _transform_declarative_fields(cls: type) -> None:
         setattr(
             cls,
             stamp_name,
-            mapped_column(DateTime(timezone=True), nullable=True, **column_kwargs),
+            mapped_column(PortableDateTime(), nullable=True, **column_kwargs),
         )
         resolved_annotations[stamp_name] = Mapped[datetime.datetime | None]
 

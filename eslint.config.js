@@ -34,6 +34,9 @@ export default tseslint.config(
         URL: "readonly",
         URLSearchParams: "readonly",
         FormData: "readonly",
+        Headers: "readonly",
+        Request: "readonly",
+        Response: "readonly",
         HTMLElement: "readonly",
         HTMLAnchorElement: "readonly",
         Event: "readonly",
@@ -59,6 +62,16 @@ export default tseslint.config(
   {
     // Node-side config files (vite/eslint/playwright configs).
     files: ["*.config.js", "*.config.mjs", "*.config.ts"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        __dirname: "readonly",
+      },
+    },
+  },
+  {
+    // Playwright's global setup also runs under Node (not a browser page).
+    files: ["e2e/**/*.mjs"],
     languageOptions: {
       globals: {
         process: "readonly",

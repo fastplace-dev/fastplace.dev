@@ -31,11 +31,22 @@ def _uvicorn_command(*args: str) -> list[str]:
     return [sys.executable, "-m", "uvicorn", *args]
 
 
+def _fastplace_bin() -> str | None:
+    """The console script next to the running interpreter, else on PATH."""
+    sibling = Path(sys.executable).with_name("fastplace")
+    if sibling.exists():
+        return str(sibling)
+    return shutil.which("fastplace")
+
+
 @run_app.command("dev")
 def run_dev(
     host: str = typer.Option(None, help="Bind host (default: APP_HOST or 127.0.0.1)."),
     port: int = typer.Option(None, help="Bind port (default: APP_PORT or 8000)."),
     skip_vite: bool = typer.Option(False, "--skip-vite", help="Do not start the Vite dev server."),
+    skip_lint: bool = typer.Option(
+        False, "--skip-lint", help="Do not start the module-boundary lint watcher."
+    ),
 ) -> None:
     """Run the ASGI backend (Uvicorn reload) + Vite dev server (HMR) together."""
     host = host or _cfg("APP_HOST", "127.0.0.1")
@@ -52,6 +63,18 @@ def run_dev(
 
     backend = _uvicorn_command("asgi:app", "--reload", "--host", host, "--port", str(port))
     children.append(subprocess.Popen(backend, cwd=_project_root(), env=env))
+
+    # Instant boundary feedback on save (blueprint §4): a third child
+    # re-runs `lint:modules` semantics on every app/**.py edit.
+    if not skip_lint:
+        fastplace = _fastplace_bin()
+        if fastplace:
+            console.print("  lint     → module boundaries re-checked on save")
+            children.append(
+                subprocess.Popen([fastplace, "lint:watch"], cwd=_project_root(), env=env)
+            )
+        else:
+            console.print("[warning]fastplace CLI not found — skipping lint watcher.[/]")
 
     if not skip_vite and (Path.cwd() / "package.json").exists():
         npm = shutil.which("npm")

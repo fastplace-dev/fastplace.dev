@@ -2,6 +2,10 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
+// The project venv is the normal case locally; CI installs the package into
+// the runner's interpreter instead — resolve whichever exists.
+const FASTPLACE = existsSync(".venv/bin/fastplace") ? ".venv/bin/fastplace" : "fastplace";
+
 // E2E runs against APP_ENV=production, whose shell resolves hashed assets
 // from the build manifest. public/build is gitignored, so a fresh clone has
 // none — build it once here to keep `npx playwright test` self-contained.
@@ -25,7 +29,7 @@ export default function globalSetup() {
   rmSync(E2E_DATABASE, { force: true });
   rmSync(`${E2E_DATABASE}-wal`, { force: true });
   rmSync(`${E2E_DATABASE}-shm`, { force: true });
-  execSync(`.venv/bin/fastplace migrate`, {
+  execSync(`${FASTPLACE} migrate`, {
     stdio: "inherit",
     env: { ...process.env, DATABASE_URL: `sqlite+aiosqlite:///${E2E_DATABASE}` },
   });

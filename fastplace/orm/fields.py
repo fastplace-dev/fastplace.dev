@@ -20,7 +20,7 @@ from sqlalchemy import (
     Text,
 )
 
-from fastplace.orm.types import GUID, PortableJSON, vector_type_for
+from fastplace.orm.types import GUID, PortableDateTime, PortableJSON, vector_type_for
 
 _MISSING = object()
 
@@ -153,7 +153,7 @@ def python_type_to_sa(annotation: Any, field: Field, url: str | None):
         if base is decimal.Decimal:
             return Numeric(field.precision, field.scale)
         if base is datetime.datetime:
-            return DateTime(timezone=True)
+            return PortableDateTime()
         if base is datetime.time:
             from sqlalchemy import Time as SATime
 

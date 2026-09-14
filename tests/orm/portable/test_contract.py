@@ -1,42 +1,16 @@
 """Relational portability contract — identical behavior on every backend.
 
-Runs against in-memory SQLite always, and against MySQL / PostgreSQL when
-``TEST_MYSQL_URL`` / ``TEST_POSTGRES_URL`` are exported (blueprint §8:
-"portable is a test property, not a hope"). Every public-API behavior a
-repository might rely on is asserted here per backend.
+The ``backend`` fixture (see conftest) parametrizes over in-memory SQLite
+plus every server backend CI exports (blueprint §8: "portable is a test
+property, not a hope"). Every public-API behavior a repository might rely
+on is asserted here per backend.
 """
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
 
 import pytest
-
-_BACKENDS: dict[str, str] = {"sqlite": "sqlite+aiosqlite:///:memory:"}
-if os.environ.get("TEST_MYSQL_URL"):
-    _BACKENDS["mysql"] = os.environ["TEST_MYSQL_URL"]
-if os.environ.get("TEST_POSTGRES_URL"):
-    _BACKENDS["postgresql"] = os.environ["TEST_POSTGRES_URL"]
-
-
-@pytest.fixture(params=sorted(_BACKENDS))
-async def backend(request, monkeypatch):
-    url = _BACKENDS[request.param]
-    monkeypatch.setenv("DATABASE_URL", url)
-    monkeypatch.setenv("DATABASE_DRIVER", request.param)
-
-    from fastplace.db import reset_db
-
-    reset_db()
-    yield request.param
-
-    # Server backends persist between runs — leave the scratch database as
-    # empty as the in-memory sqlite each test starts from.
-    from fastplace.db import db
-
-    await db.drop_all()
-    await db.dispose()
 
 
 @pytest.fixture()

@@ -1,0 +1,193 @@
+# CI — the compatibility matrix the blueprint promises (§8): portable suites
+# run against every relational backend; dialect suites run against their own
+# database; module boundaries gate the build before any test executes.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  # Blueprint §4: a boundary violation "fails the build before tests even
+  # run" — hence a standalone job every other job depends on.
+  boundary:
+    name: Module boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+
+      - name: Enforce module import boundaries
+        run: fastplace lint:modules
+
+  quality:
+    name: Lint & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Mypy
+        run: mypy fastplace
+
+  backend:
+    name: Backend matrix
+    needs: boundary
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector image: the PostgreSQL dialect suite exercises real
+        # VECTOR columns, which need the extension pre-installed.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: fastplace
+          POSTGRES_PASSWORD: fastplace
+          POSTGRES_DB: fastplace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fastplace"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: fastplace_test
+          MYSQL_USER: fastplace
+          MYSQL_PASSWORD: fastplace
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' localhost:27017/test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql://fastplace:fastplace@localhost:5432/fastplace_test
+      TEST_MYSQL_URL: mysql://fastplace:fastplace@localhost:3306/fastplace_test
+      TEST_MONGODB_URL: mongodb://localhost:27017
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install package (all database extras)
+        run: python -m pip install -e ".[dev,postgresql,mysql,mongodb]"
+
+      - name: Enable pgvector extension
+        run: |
+          python - <<'PY'
+          import asyncio
+
+          import asyncpg
+
+          async def main() -> None:
+              conn = await asyncpg.connect(dsn="${{ env.TEST_POSTGRES_URL }}")
+              try:
+                  await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+              finally:
+                  await conn.close()
+
+          asyncio.run(main())
+          PY
+
+      - name: Run test suite (portable matrix + dialect suites)
+        run: python -m pytest -q
+
+  frontend:
+    name: Frontend
+    needs: boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Types (tsc)
+        run: npm run types
+
+      - name: ESLint
+        run: npm run lint:check
+
+      - name: Prettier
+        run: npm run format:check
+
+      - name: Vitest
+        run: npm run test:run
+
+  e2e:
+    name: Playwright E2E
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E suite
+        run: npx playwright test

@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastplace.config import config  # noqa: E402
+from fastplace.orm.manager import normalize_database_url  # noqa: E402
 from fastplace.orm.model import Model  # noqa: E402
 from fastplace.orm.registry import import_all_models  # noqa: E402
 
@@ -32,7 +33,11 @@ if alembic_config.config_file_name is not None:
 import_all_models(PROJECT_ROOT)
 target_metadata = Model.metadata
 
-database_url = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
+# Bare schemes (mysql://, postgresql://) bind to the async driver before
+# Alembic builds its engine — same contract as the runtime DatabaseManager.
+database_url = normalize_database_url(
+    str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
+)
 alembic_config.set_main_option("sqlalchemy.url", database_url)
 
 # Framework bookkeeping tables live beside the schema but are not part of it —

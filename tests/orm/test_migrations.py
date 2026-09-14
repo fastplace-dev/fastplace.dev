@@ -484,3 +484,33 @@ def test_upsert_env_lines_trailing_newline_convention():
     assert _upsert_env_lines("APP_NAME=X", {"APP_NAME": "Y"}) == "APP_NAME=Y\n"
     # …and empty input degrades to the appended block, not a blank file.
     assert _upsert_env_lines("", {"A": "1"}) == "A=1\n"
+
+
+def test_migration_pipeline_binds_async_drivers(project, monkeypatch):
+    """Bare schemes (mysql://, postgresql://) must bind to asyncmy/asyncpg.
+
+    The runtime DatabaseManager already does this; the migration pipeline
+    must share the contract, or a CI-style bare-scheme URL crashes Alembic
+    with ModuleNotFoundError (MySQLdb / psycopg2).
+    """
+    from fastplace.orm.migrations.manager import MigrationsManager
+
+    manager = MigrationsManager(project)
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db:5432/app")
+    assert manager._database_url() == "postgresql+asyncpg://u:p@db:5432/app"
+
+    monkeypatch.setenv("DATABASE_URL", "mysql://u:p@db:3306/app")
+    assert manager._database_url() == "mysql+asyncmy://u:p@db:3306/app"
+
+    # Already-bound and unbound-but-non-relational URLs pass through untouched.
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./x.sqlite3")
+    assert manager._database_url() == "sqlite+aiosqlite:///./x.sqlite3"
+
+
+def test_env_template_binds_async_drivers(project):
+    """The scaffolded env.py shares _database_url's contract — normalize
+    before Alembic builds its engine."""
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    env_py = (project / "database" / "migrations" / "env.py").read_text()
+    assert "normalize_database_url" in env_py
