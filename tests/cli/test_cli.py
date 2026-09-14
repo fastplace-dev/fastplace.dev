@@ -241,3 +241,57 @@ def test_make_agent_rejects_invalid_names(tmp_path, monkeypatch):
     result = runner.invoke(cli_app, ["make:agent", "../evil"])
     assert result.exit_code == 1
     assert not (tmp_path / "app" / "ai" / "agents" / "..").exists()
+
+
+def test_make_service_scaffolds_csr_service_stub(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    runner = CliRunner()
+
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["make:service", "Invoice", "--module", "billing"])
+    assert result.exit_code == 0, result.output
+
+    path = tmp_path / "app" / "modules" / "billing" / "services" / "invoice_service.py"
+    assert path.exists(), "expected app/modules/<module>/services/<snake>_service.py"
+
+    source = path.read_text()
+    assert "class InvoiceService:" in source
+    # The stub must be valid Python as written.
+    compile(source, str(path), "exec")
+
+
+def test_make_service_refuses_to_clobber(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    runner = CliRunner()
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "app" / "modules" / "billing" / "services" / "invoice_service.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("# hand-written\n")
+
+    result = runner.invoke(cli_app, ["make:service", "Invoice", "--module", "billing"])
+    assert result.exit_code == 0, result.output
+    assert path.read_text() == "# hand-written\n"
+
+
+def test_make_repository_scaffolds_data_access_stub(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    runner = CliRunner()
+
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["make:repository", "Invoice", "--module", "billing"])
+    assert result.exit_code == 0, result.output
+
+    path = tmp_path / "app" / "modules" / "billing" / "repositories" / "invoice_repository.py"
+    assert path.exists(), "expected app/modules/<module>/repositories/<snake>_repository.py"
+
+    source = path.read_text()
+    assert "class InvoiceRepository:" in source
+    # Repositories are the data-access layer: the stub talks to the ORM.
+    assert "from fastplace.db import db" in source or "from fastplace.orm import" in source
+    compile(source, str(path), "exec")

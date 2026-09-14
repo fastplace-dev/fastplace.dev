@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import shutil
 from pathlib import Path
 
 import typer
@@ -14,6 +16,24 @@ _MIGRATIONS_NOT_CONFIGURED = typer.style(
     "Migrations are not configured — run ", fg=typer.colors.YELLOW
 ) + typer.style("fastplace db:configure", fg=typer.colors.CYAN, bold=True)
 
+#: driver → the env block `db:configure <driver>` writes. mongodb is the
+#: document adapter: it carries MONGODB_URL, not the relational DATABASE_* keys.
+_DRIVER_ENV: dict[str, dict[str, str]] = {
+    "sqlite": {
+        "DATABASE_DRIVER": "sqlite",
+        "DATABASE_URL": "sqlite+aiosqlite:///./database.sqlite3",
+    },
+    "postgresql": {
+        "DATABASE_DRIVER": "postgresql",
+        "DATABASE_URL": "postgresql+asyncpg://user:password@localhost/fastplace",
+    },
+    "mysql": {
+        "DATABASE_DRIVER": "mysql",
+        "DATABASE_URL": "mysql+asyncmy://user:password@localhost/fastplace",
+    },
+    "mongodb": {"MONGODB_URL": "mongodb://localhost:27017/fastplace"},
+}
+
 
 def _project_root() -> Path:
     return Path.cwd()
@@ -25,27 +45,162 @@ def _manager():
     return MigrationsManager(_project_root())
 
 
+def _upsert_env_lines(text: str, values: dict[str, str]) -> str:
+    """Replace existing ``KEY=`` lines in place (commented or not); append the rest.
+
+    Keys already present — even commented out — keep their position so a
+    hand-organized .env never gets duplicate blocks. Every occurrence of a
+    key is rewritten and later duplicates collapse into the first:
+    python-dotenv resolves duplicate keys last-wins, so a surviving stale
+    second line would silently undo the switch.
+    """
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*#?\s*([A-Z0-9_]+)\s*=", line)
+        key = match.group(1) if match is not None else None
+        if key is None or key not in values:
+            kept.append(line)
+            continue
+        if key in seen:
+            continue  # duplicate line of an already-rewritten key — drop it
+        kept.append(f"{key}={values[key]}")
+        seen.add(key)
+    remaining = [key for key in values if key not in seen]
+    if remaining:
+        if kept and kept[-1].strip():
+            kept.append("")
+        kept.extend(f"{key}={values[key]}" for key in remaining)
+    return "\n".join(kept) + ("\n" if kept else "")
+
+
+def _ensure_example_keys(example: Path, values: dict[str, str]) -> None:
+    """Keep .env.example covering every key db:configure can write."""
+    text = example.read_text() if example.exists() else "# Fastplace environment template.\n"
+    missing = {
+        key: value
+        for key, value in values.items()
+        if not re.search(rf"^\s*#?\s*{key}\s*=", text, re.MULTILINE)
+    }
+    if missing:
+        additions = "\n".join(f"# {key}={value}" for key, value in missing.items())
+        text = (
+            text.rstrip("\n")
+            + f"\n\n# Switchable via `fastplace db:configure <driver>`\n{additions}\n"
+        )
+        example.write_text(text)
+
+
+#: Every value db:configure ever writes — switching between these is the
+#: command's normal job; anything else in .env is operator-authored config.
+_KNOWN_PLACEHOLDER_VALUES = frozenset(
+    value for block in _DRIVER_ENV.values() for value in block.values()
+)
+
+
+def _custom_active_values(text: str, values: dict[str, str]) -> dict[str, str]:
+    """Active KEY=value lines this write would overwrite with something that
+    is neither the value already there nor a known placeholder."""
+    custom: dict[str, str] = {}
+    for line in text.splitlines():
+        match = re.match(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$", line)
+        if match is None:
+            continue  # commented or plain text — only active assignments count
+        key, current = match.group(1), match.group(2)
+        if key not in values:
+            continue
+        if current == values[key] or current in _KNOWN_PLACEHOLDER_VALUES:
+            continue
+        custom[key] = current
+    return custom
+
+
+def _write_driver_env(driver: str, root: Path, *, force: bool = False) -> dict[str, str]:
+    """Write the driver's DATABASE_* block into .env (and keep .env.example synced).
+
+    Refuses to overwrite operator-authored values (real connection strings)
+    unless ``force`` — clobbering them was silent and unrecoverable (.env is
+    never in version control). With ``force`` the old file survives as
+    ``.env.bak`` so the switch is always reversible by hand.
+    """
+    values = _DRIVER_ENV[driver]
+    env = root / ".env"
+    if not env.exists():
+        example = root / ".env.example"
+        env.write_text(example.read_text() if example.exists() else "")
+    else:
+        custom = _custom_active_values(env.read_text(), values)
+        if custom and not force:
+            console.print(
+                "[red]refusing to overwrite[/] existing value(s): " + ", ".join(sorted(custom))
+            )
+            console.print(
+                "these look hand-configured — re-run with [cyan]--force[/] to replace "
+                "them (the previous .env is kept as .env.bak)"
+            )
+            raise typer.Exit(code=1)
+        if env.read_text().strip():
+            shutil.copyfile(env, env.parent / (env.name + ".bak"))
+    env.write_text(_upsert_env_lines(env.read_text(), values))
+    # The example documents the whole switchable surface, not just this driver.
+    # Shared DATABASE_* keys show the recommended (postgresql) values.
+    every_key = {
+        **_DRIVER_ENV["sqlite"],
+        **_DRIVER_ENV["mysql"],
+        **_DRIVER_ENV["postgresql"],
+        **_DRIVER_ENV["mongodb"],
+    }
+    _ensure_example_keys(root / ".env.example", every_key)
+    return values
+
+
 @database_app.command("db:configure")
-def db_configure() -> None:
-    """Scaffold database/migrations/ with the framework-managed Alembic env."""
+def db_configure(
+    driver: str = typer.Argument(
+        None,
+        help="Write this driver's DATABASE_* block into .env: sqlite, postgresql, mysql, mongodb.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Replace hand-configured values too (previous .env kept as .env.bak).",
+    ),
+) -> None:
+    """Scaffold the Alembic env; with a driver, also switch .env to it."""
+    root = _project_root()
+    if driver is not None and driver not in _DRIVER_ENV:
+        console.print(
+            f"[red]unknown driver[/] {driver!r} — choose one of: " + ", ".join(sorted(_DRIVER_ENV))
+        )
+        raise typer.Exit(code=1)
+
     created = _manager().scaffold()
     if created:
         for path in created:
-            console.print(f"[green]created[/] {path.relative_to(_project_root())}")
+            console.print(f"[green]created[/] {path.relative_to(root)}")
     else:
         console.print("[dim]migrations already configured[/]")
+
+    if driver is not None:
+        written = _write_driver_env(driver, root, force=force)
+        for key in written:
+            console.print(f"[green]set[/] {key} in .env ({driver})")
 
 
 @database_app.command("make:migration")
 def make_migration(
     name: str = typer.Argument(..., help="Migration message, e.g. create_posts_table"),
+    empty: bool = typer.Option(
+        False, "--empty", "-e", help="Skip autogenerate — an empty skeleton to hand-write."
+    ),
 ) -> None:
-    """Autogenerate a migration from declared model changes."""
+    """Autogenerate a migration from declared model changes (--empty to hand-write)."""
     manager = _manager()
     if not manager.configured:
         console.print(_MIGRATIONS_NOT_CONFIGURED)
         raise typer.Exit(code=1)
-    revision = manager.make(name)
+    revision = manager.make_empty(name) if empty else manager.make(name)
     if revision is not None:
         console.print(f"[green]created[/] {revision.relative_to(_project_root())}")
 

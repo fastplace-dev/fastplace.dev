@@ -165,3 +165,32 @@ async def test_nested_eager_loading(schema):
 
     loaded = await blog.Post.with_("author.profile").find(post.id)
     assert loaded.author.profile.bio == "b"
+
+
+async def test_unloaded_relationship_attribute_raises_instead_of_hidden_io(schema):
+    """lazy='raise' is the N+1 guard: plain attribute access on an unloaded
+    relationship must fail loudly, never silently run synchronous IO."""
+    from sqlalchemy.exc import InvalidRequestError
+
+    blog = schema
+    user = await blog.User.create(name="Firoz")
+    await blog.Post.create(title="Post 1", user_id=user.id)
+
+    fresh = await blog.User.find(user.id)  # loaded WITHOUT .with_("posts")
+    with pytest.raises(InvalidRequestError):
+        _ = fresh.posts
+
+    # The sanctioned lazy path still works after the raise.
+    posts = await fresh.relation("posts")
+    assert [p.title for p in posts] == ["Post 1"]
+
+
+async def test_eager_loaded_relationship_attribute_does_not_raise(schema):
+    """The other half of the contract: with_() loads the relationship, so
+    plain attribute access is a plain memory read."""
+    blog = schema
+    user = await blog.User.create(name="Firoz")
+    await blog.Post.create(title="Post 1", user_id=user.id)
+
+    loaded = await blog.User.with_("posts").find(user.id)
+    assert [p.title for p in loaded.posts] == ["Post 1"]

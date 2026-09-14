@@ -37,6 +37,23 @@ class QueryStats:
     total_seconds: float = 0.0
     duplicates: dict[str, int] = field(default_factory=dict)
 
+    def summary(self) -> dict[str, Any]:
+        """JSON-safe digest for debug payloads — statement count, slow count,
+        cumulative time, and the repeated statements (N+1 candidates) with
+        whitespace-collapsed previews so payloads stay bounded."""
+        previews: dict[str, int] = {}
+        for sql, count in self.duplicates.items():
+            # Distinct statements can collapse onto one preview; merge their
+            # counts so nothing is silently dropped.
+            preview = " ".join(sql.split())[:120]
+            previews[preview] = previews.get(preview, 0) + count
+        return {
+            "statements": self.statements,
+            "slow_queries": self.slow_queries,
+            "total_seconds": round(self.total_seconds, 4),
+            "duplicates": previews,
+        }
+
 
 class QueryTracker:
     """Counts statements inside one window (usually a request)."""
@@ -105,6 +122,25 @@ def current_stats() -> QueryStats | None:
     """Snapshot of the active window (None outside one)."""
     tracker = _current_tracker.get()
     return tracker.stats if tracker is not None else None
+
+
+def request_query_stats(request: Any) -> QueryStats | None:
+    """Stats for the request being handled.
+
+    During normal handling the live tracker window answers. When an exception
+    escaped the stack, the kernel's tracker middleware has already closed the
+    window — in that case the snapshot it stashed on the ASGI scope answers
+    (the error handler runs outside the window).
+    """
+    tracker = _current_tracker.get()
+    if tracker is not None:
+        return tracker.stats
+    scope = getattr(request, "scope", None)
+    if isinstance(scope, dict):
+        stats = scope.get("fastplace_query_stats")
+        if isinstance(stats, QueryStats):
+            return stats
+    return None
 
 
 def install_instrumentation(engine: AsyncEngine) -> None:

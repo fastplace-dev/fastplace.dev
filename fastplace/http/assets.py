@@ -21,8 +21,20 @@ def asset_tags(project_root: str | Path, *, vite_dev_url: str | None, app_env: s
     """Return <script>/<link> tags for the app entry point."""
     if vite_dev_url and app_env.lower() in _DEV_ENVS:
         base = vite_dev_url.rstrip("/")
+        # The react-refresh preamble normally rides Vite's transformIndexHtml;
+        # this shell never passes through Vite, so the framework injects it
+        # itself. Module scripts run in document order — the preamble must
+        # precede the entry module or every JSX module throws
+        # "@vitejs/plugin-react can't detect preamble".
         return (
             f'<script type="module" src="{base}/@vite/client"></script>\n'
+            f'    <script type="module">\n'
+            f'      import RefreshRuntime from "{base}/@react-refresh"\n'
+            f"      RefreshRuntime.injectIntoGlobalHook(window)\n"
+            f"      window.$RefreshReg$ = () => {{}}\n"
+            f"      window.$RefreshSig$ = () => (type) => type\n"
+            f"      window.__vite_plugin_react_preamble_installed__ = true\n"
+            f"    </script>\n"
             f'    <script type="module" src="{base}/resources/js/main.jsx"></script>'
         )
     return _production_tags(project_root)

@@ -65,6 +65,9 @@ class _QueryTrackerMiddleware:
 
     Opens an ``activate_tracker()`` window so SQL logging, slow-query
     warnings, and N+1 detection attribute to the request that caused them.
+    When an exception escapes, the window closes before the outermost error
+    handler runs — the stats snapshot is stashed on the scope so debug error
+    payloads can still report what the request executed.
     """
 
     def __init__(self, app: Any) -> None:
@@ -77,8 +80,12 @@ class _QueryTrackerMiddleware:
 
         from fastplace.orm.instrumentation import activate_tracker
 
-        with activate_tracker():
-            await self.app(scope, receive, send)
+        with activate_tracker() as tracker:
+            try:
+                await self.app(scope, receive, send)
+            except BaseException:
+                scope["fastplace_query_stats"] = tracker.stats
+                raise
 
 
 def get_app(
@@ -338,7 +345,17 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
                 return debug_error_page(request, exc)
             return production_error_page(request)
         detail = repr(exc) if debug else "Server error."
-        return Json({"message": "Server error.", "debug": detail}, status_code=500)
+        payload: dict[str, Any] = {"message": "Server error."}
+        if debug:
+            payload["debug"] = detail
+            # What the request executed before it died — statement counts and
+            # N+1 candidates, never surfaced outside debug mode.
+            from fastplace.orm.instrumentation import request_query_stats
+
+            stats = request_query_stats(request)
+            if stats is not None:
+                payload["queries"] = stats.summary()
+        return Json(payload, status_code=500)
 
 
 def _install_static_mounts(app: FastAPI, root: Path) -> None:

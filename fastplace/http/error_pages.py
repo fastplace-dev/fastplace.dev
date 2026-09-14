@@ -55,8 +55,29 @@ def wants_html(request: Any) -> bool:
     return "text/html" in accept and "application/json" not in accept
 
 
+def _query_stats_card(request: Any) -> str:
+    """The card showing what the request executed before it died (may be empty)."""
+    from fastplace.orm.instrumentation import request_query_stats
+
+    stats = request_query_stats(request)
+    if stats is None:
+        return ""
+    duplicates = stats.duplicates or {}
+    lines = [
+        f"{stats.statements} statements · {stats.slow_queries} slow · "
+        f"{stats.total_seconds * 1000:.1f}ms total"
+    ]
+    for sql, count in list(duplicates.items())[:5]:
+        preview = " ".join(sql.split())[:120]
+        lines.append(f"x{count}  {preview}")
+    if len(duplicates) > 5:
+        lines.append(f"… and {len(duplicates) - 5} more repeated statements")
+    rows = "\n".join(html.escape(line) for line in lines)
+    return f'  <div class="card">\n    <h2>Query stats</h2>\n    <pre>{rows}</pre>\n  </div>\n'
+
+
 def debug_error_page(request: Any, exc: Exception) -> Html:
-    """Rich 500 page: exception, request line, and full traceback."""
+    """Rich 500 page: exception, request line, query stats, and full traceback."""
     title = f"{type(exc).__name__}: {exc}"
     tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     body = f"""<!doctype html>
@@ -79,6 +100,7 @@ def debug_error_page(request: Any, exc: Exception) -> Html:
     <pre>{html.escape(request.method)} {html.escape(str(request.url.path))}</pre>
   </div>
 
+{_query_stats_card(request)}
   <div class="card frames">
     <h2>Traceback</h2>
     <pre>{html.escape(tb_text)}</pre>

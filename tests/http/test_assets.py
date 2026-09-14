@@ -45,6 +45,22 @@ def test_dev_mode_uses_vite_server(tmp_path):
     assert 'src="http://localhost:5173/resources/js/main.jsx"' in tags
 
 
+def test_dev_mode_installs_react_refresh_preamble_before_entry(tmp_path):
+    """@vitejs/plugin-react needs its preamble before the first JSX module.
+
+    The bridge shell is written by the framework — it never passes through
+    Vite's transformIndexHtml, where the plugin normally injects the
+    preamble. Without it every transformed module throws "can't detect
+    preamble" and the SPA never mounts.
+    """
+    tags = asset_tags(tmp_path, vite_dev_url="http://localhost:5173/", app_env="local")
+    assert 'from "http://localhost:5173/@react-refresh"' in tags
+    assert "window.__vite_plugin_react_preamble_installed__ = true" in tags
+    # Module scripts execute in document order: the preamble must precede
+    # the entry module.
+    assert tags.index("@react-refresh") < tags.index("resources/js/main.jsx")
+
+
 def test_missing_manifest_leaves_comment(tmp_path):
     tags = asset_tags(tmp_path, vite_dev_url=None, app_env="production")
     assert "no build manifest" in tags
