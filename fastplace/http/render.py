@@ -18,12 +18,43 @@ from fastplace.http.response import Html, Json, Response
 
 _BRIDGE_HEADER = "X-Fastplace-Request"
 
+# The pre-paint block between the marker comments must stay byte-identical to
+# the copy in the repo-root index.html (tests/http/test_render.py enforces the
+# lockstep). Because this shell is a str.format() template, every literal
+# brace inside the block is doubled here.
 _HTML_SHELL = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{title}</title>
+    <!-- fastplace-appearance-prepaint -->
+    <script>
+      (function () {{
+        var mode = "system";
+        try {{
+          var stored = localStorage.getItem("fastplace-appearance");
+          if (stored === "light" || stored === "dark") mode = stored;
+        }} catch (e) {{}}
+        var dark =
+          mode === "dark" ||
+          (mode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        var root = document.documentElement;
+        if (mode === "light" || mode === "dark") root.setAttribute("data-theme", mode);
+        else root.removeAttribute("data-theme");
+        if (dark) root.classList.add("dark");
+        root.style.colorScheme = dark ? "dark" : "light";
+      }})();
+    </script>
+    <style>
+      html {{
+        background-color: oklch(0.985 0.005 250);
+      }}
+      html.dark {{
+        background-color: oklch(0.19 0.02 262);
+      }}
+    </style>
+    <!-- /fastplace-appearance-prepaint -->
     {assets}
 </head>
 <body>

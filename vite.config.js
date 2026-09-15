@@ -15,6 +15,8 @@ export default defineConfig({
     alias: {
       "@fastplace/react": path.resolve(__dirname, "packages/react/src/index.tsx"),
       "@fastplace/ai-react": path.resolve(__dirname, "packages/ai-react/src/index.ts"),
+      // App-tree alias: dev, build, and vitest share this config.
+      "@": path.resolve(__dirname, "resources/js"),
     },
   },
   root: ".",

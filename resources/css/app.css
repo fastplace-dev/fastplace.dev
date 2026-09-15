@@ -1,8 +1,28 @@
 /*
  * Fastplace global styles — the single source of truth for the color theme
  * (light + dark). Components use these tokens via Tailwind's theme function.
+ *
+ * Token architecture (two layers):
+ *   1. Raw palette vars on :root (--surface, --ink, ...) — swapped per color
+ *      scheme below; never referenced directly by components.
+ *   2. @theme maps every --color-* name onto a raw var, so utilities like
+ *      bg-surface / text-ink stay stable while the palette swaps.
+ *
+ * The shadcn-style alias set (background/card/popover/primary/...) rides the
+ * same raw layer so ported design-system components theme themselves for
+ * free. Note: "accent-surface" is that system's muted hover surface — it is
+ * deliberately NOT the brand accent (--color-accent stays the brand color).
+ *
+ * Radius knob: --radius drives rounded-lg/md/sm. Stock Fastplace look was
+ * 0.5rem everywhere; rollback to it by setting --radius: 0.5rem.
  */
 @import "tailwindcss";
+@import "tw-animate-css";
+
+/* Dual-mechanism dark variant: explicit toggle (data-theme) and the .dark
+ * class drive ported dark: utilities identically. No-JS users keep the OS
+ * media-query fallback on the raw vars below. */
+@custom-variant dark (&:is([data-theme="dark"] *, .dark *));
 
 @theme {
   /* Brand */
@@ -14,36 +34,179 @@
   --color-brand-700: oklch(0.48 0.18 262);
   --color-brand-900: oklch(0.3 0.12 262);
 
-  /* Semantic surface tokens — swapped per color scheme below */
-  --color-surface: oklch(0.985 0.005 250);
-  --color-surface-raised: white;
-  --color-ink: oklch(0.24 0.02 260);
-  --color-ink-muted: oklch(0.5 0.02 260);
-  --color-line: oklch(0.91 0.01 255);
-  --color-accent: var(--color-brand-500);
-  --color-success: oklch(0.6 0.13 155);
-  --color-warning: oklch(0.72 0.15 75);
-  --color-danger: oklch(0.58 0.2 25);
+  /* Fastplace semantic tokens — raw values swapped per scheme below */
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  /* Design-system alias set (shadcn-compatible names on Fastplace hues) */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent-surface: var(--accent-surface);
+  --color-accent-surface-foreground: var(--accent-surface-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Sidebar namespace (ported sidebar ecosystem) */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Radius scale off a single knob (see header note for rollback) */
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+:root {
+  /* Fastplace raw palette (light) */
+  --surface: oklch(0.985 0.005 250);
+  --surface-raised: white;
+  --ink: oklch(0.24 0.02 260);
+  --ink-muted: oklch(0.5 0.02 260);
+  --line: oklch(0.91 0.01 255);
+  --accent: var(--color-brand-500);
+  --success: oklch(0.6 0.13 155);
+  --warning: oklch(0.72 0.15 75);
+  --danger: oklch(0.58 0.2 25);
+
+  /* Aliases over the palette (light) */
+  --background: var(--surface);
+  --foreground: var(--ink);
+  --card: var(--surface-raised);
+  --card-foreground: var(--ink);
+  --popover: var(--surface-raised);
+  --popover-foreground: var(--ink);
+  --primary: var(--color-brand-600);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.955 0.008 255);
+  --secondary-foreground: var(--ink);
+  --muted: oklch(0.955 0.008 255);
+  --muted-foreground: var(--ink-muted);
+  --accent-surface: oklch(0.955 0.008 255);
+  --accent-surface-foreground: var(--ink);
+  --destructive: var(--danger);
+  --destructive-foreground: oklch(1 0 0);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--color-brand-500);
+  --radius: 0.625rem;
+
+  /* Sidebar namespace — most values ride the palette through var()
+   * indirection so they swap per color scheme for free. */
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--ink);
+  /* Sidebar primary is the sidebar's brand moment: reuse the action hue
+   * pair from --primary/--primary-foreground so sidebar CTAs read as the
+   * same brand as app buttons. */
+  --sidebar-primary: var(--color-brand-600);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: var(--accent-surface);
+  --sidebar-accent-foreground: var(--accent-surface-foreground);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--ring);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-surface: oklch(0.19 0.02 262);
-    --color-surface-raised: oklch(0.23 0.02 262);
-    --color-ink: oklch(0.94 0.01 255);
-    --color-ink-muted: oklch(0.68 0.02 258);
-    --color-line: oklch(0.32 0.02 262);
-    --color-accent: var(--color-brand-300);
+    --surface: oklch(0.19 0.02 262);
+    --surface-raised: oklch(0.23 0.02 262);
+    --ink: oklch(0.94 0.01 255);
+    --ink-muted: oklch(0.68 0.02 258);
+    --line: oklch(0.32 0.02 262);
+    --accent: var(--color-brand-300);
+    /* Dark-adjusted status hues — the light values sit too dim on dark
+     * surfaces (these were previously left unswapped). */
+    --success: oklch(0.68 0.13 155);
+    --warning: oklch(0.79 0.14 75);
+    --danger: oklch(0.65 0.19 25);
+
+    /* Palette-dependent aliases re-pointed for dark */
+    --popover: oklch(0.28 0.02 262);
+    --primary: var(--color-brand-300);
+    --primary-foreground: var(--color-brand-900);
+    --secondary: oklch(0.27 0.02 262);
+    --muted: oklch(0.27 0.02 262);
+    --accent-surface: oklch(0.27 0.02 262);
+    --ring: var(--color-brand-300);
+
+    /* Sidebar namespace re-pointed for dark — the primary pair flips like
+     * --primary does; the rest resolve through the swapped palette above. */
+    --sidebar: var(--surface);
+    --sidebar-foreground: var(--ink);
+    --sidebar-primary: var(--color-brand-300);
+    --sidebar-primary-foreground: var(--color-brand-900);
+    --sidebar-accent: var(--accent-surface);
+    --sidebar-accent-foreground: var(--accent-surface-foreground);
+    --sidebar-border: var(--line);
+    --sidebar-ring: var(--ring);
   }
 }
 
+/* Explicit theme choice — sourced after the media block so it always wins
+ * over the OS preference. The runtime keeps .dark and data-theme in sync. */
+.dark,
 :root[data-theme="dark"] {
-  --color-surface: oklch(0.19 0.02 262);
-  --color-surface-raised: oklch(0.23 0.02 262);
-  --color-ink: oklch(0.94 0.01 255);
-  --color-ink-muted: oklch(0.68 0.02 258);
-  --color-line: oklch(0.32 0.02 262);
-  --color-accent: var(--color-brand-300);
+  --surface: oklch(0.19 0.02 262);
+  --surface-raised: oklch(0.23 0.02 262);
+  --ink: oklch(0.94 0.01 255);
+  --ink-muted: oklch(0.68 0.02 258);
+  --line: oklch(0.32 0.02 262);
+  --accent: var(--color-brand-300);
+  --success: oklch(0.68 0.13 155);
+  --warning: oklch(0.79 0.14 75);
+  --danger: oklch(0.65 0.19 25);
+
+  --popover: oklch(0.28 0.02 262);
+  --primary: var(--color-brand-300);
+  --primary-foreground: var(--color-brand-900);
+  --secondary: oklch(0.27 0.02 262);
+  --muted: oklch(0.27 0.02 262);
+  --accent-surface: oklch(0.27 0.02 262);
+  --ring: var(--color-brand-300);
+
+  /* Sidebar namespace re-pointed for dark — mirrors the media-query block
+   * above so an explicit theme choice behaves identically. */
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--color-brand-300);
+  --sidebar-primary-foreground: var(--color-brand-900);
+  --sidebar-accent: var(--accent-surface);
+  --sidebar-accent-foreground: var(--accent-surface-foreground);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--ring);
+}
+
+/* Default border color for every element so ported cards/inputs pick up the
+ * theme line without each utility repeating it. */
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
 }
 
 body {

@@ -317,6 +317,10 @@ export function createPageResolver(
   for (const [path, module] of Object.entries(modules)) {
     const marker = path.lastIndexOf("/pages/");
     if (marker === -1) continue;
+    // Colocated tests are not routable pages — a glob over pages/** sweeps
+    // __tests__ neighbors in, and registering one would execute its vitest
+    // imports in the browser.
+    if (/(?:^|\/)__tests__\/|\.(?:test|spec)\.[^.]+$/.test(path.slice(marker))) continue;
     const name = path.slice(marker + "/pages/".length).replace(/\.(jsx?|tsx?)$/, "");
     if (typeof module === "function") {
       // Lazy (non-eager) glob entry — load the page on first render.
@@ -384,6 +388,11 @@ export interface FastplaceAppOptions {
   setup?: (options: { el: HTMLElement; render: () => void }) => void;
   /** Root element selector (default: #fastplace). */
   selector?: string;
+  /**
+   * Wrap the page tree in app-level chrome (providers, toasts). Called inside
+   * FastplaceProvider, so the chrome may read the page context via usePage().
+   */
+  withApp?: (app: React.ReactNode) => React.ReactNode;
 }
 
 /** Read the initial page payload the backend embedded in the HTML shell. */
@@ -452,14 +461,365 @@ export async function createFastplaceApp(options: FastplaceAppOptions) {
 
   const render = async () => {
     const { createRoot } = await import("react-dom/client");
+    const app = (
+      <BridgeErrorBoundary>
+        <BridgeApp />
+      </BridgeErrorBoundary>
+    );
     createRoot(el).render(
       <FastplaceProvider initialPage={page}>
-        <BridgeErrorBoundary>
-          <BridgeApp />
-        </BridgeErrorBoundary>
+        {options.withApp ? options.withApp(app) : app}
       </FastplaceProvider>,
     );
   };
   await (options.setup ?? (async ({ render: r }) => r()))({ el, render });
   return { page, el };
+}
+
+/* ------------------------------------------------------------------ *
+ * Forms — declarative bridge submissions with 422 error mapping
+ *
+ * The backend's validation contract answers 422 with
+ * `{message, errors: {field: [messages]}}`. Form submissions map that onto
+ * component state instead of the full-page fallback visit() would take, so
+ * the user's input survives a failed save.
+ * ------------------------------------------------------------------ */
+
+/** Per-field validation messages from the backend's 422 contract. */
+export type FormErrors = Record<string, string[]>;
+
+export interface FormSubmitOptions {
+  headers?: Record<string, string>;
+  /** Called for a 2xx response (payload is null when the page swapped). */
+  onSuccess?: (payload: unknown) => void;
+  /** Called with the mapped field errors on a 422 (or `{}` on other failures). */
+  onError?: (errors: FormErrors) => void;
+  /** Always called once the submission settles. */
+  onFinish?: () => void;
+}
+
+type SubmitOutcome =
+  | { kind: "swapped" }
+  | { kind: "succeeded"; payload: unknown }
+  | { kind: "errored"; errors: FormErrors }
+  | { kind: "navigated" };
+
+function isFieldErrorMap(value: unknown): value is FormErrors {
+  if (value == null || typeof value !== "object") return false;
+  return Object.values(value).every(
+    (messages) => Array.isArray(messages) && messages.every((m) => typeof m === "string"),
+  );
+}
+
+async function submitBridge(
+  url: string,
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  data: unknown,
+  headers?: Record<string, string>,
+): Promise<SubmitOutcome> {
+  const token = csrfToken();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        [BRIDGE_HEADER]: "true",
+        Accept: "application/json",
+        ...(token ? { "X-Fastplace-CSRF-Token": token } : {}),
+        "Content-Type": "application/json",
+        ...(headers ?? {}),
+      },
+      body: JSON.stringify(data),
+    });
+  } catch {
+    // Network-level failure — nothing to map onto fields.
+    return { kind: "errored", errors: {} };
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    // Non-bridge answer (a redirect that landed on HTML, a downloaded file) —
+    // hand the navigation to the browser, which follows it natively.
+    window.location.assign(response.redirected ? response.url : url);
+    return { kind: "navigated" };
+  }
+
+  const payload = await response.json().catch(() => null);
+
+  if (response.status === 422 && isFieldErrorMap((payload as { errors?: unknown })?.errors)) {
+    return { kind: "errored", errors: (payload as { errors: FormErrors }).errors };
+  }
+  if (!response.ok) {
+    return { kind: "errored", errors: {} };
+  }
+  if (isBridgePage(payload)) {
+    setPage(payload);
+    return { kind: "swapped" };
+  }
+  return { kind: "succeeded", payload };
+}
+
+/** FormData entries to a JSON body: repeated keys collect into arrays. */
+function serializeForm(formData: FormData): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  for (const [key, value] of formData.entries()) {
+    const existing = data[key];
+    if (existing === undefined) data[key] = value;
+    else if (Array.isArray(existing)) existing.push(value);
+    else data[key] = [existing, value];
+  }
+  return data;
+}
+
+/** State handed to a <Form> render-prop child. */
+export interface FormRenderState {
+  processing: boolean;
+  errors: FormErrors;
+  clearErrors: () => void;
+  reset: () => void;
+}
+
+export interface FormProps extends Omit<
+  React.FormHTMLAttributes<HTMLFormElement>,
+  "action" | "method" | "onSubmit" | "onError" | "children"
+> {
+  /** Where the bridge submission is sent; also the no-JS form action. */
+  action: string;
+  method?: "post" | "put" | "patch" | "delete";
+  /** Field names restored to their initial DOM values after a success. */
+  resetOnSuccess?: string[];
+  /** Static children, or a render prop receiving the live form state. */
+  children: React.ReactNode | ((state: FormRenderState) => React.ReactNode);
+  headers?: Record<string, string>;
+  onSuccess?: (payload: unknown) => void;
+  onError?: (errors: FormErrors) => void;
+  onFinish?: () => void;
+}
+
+/**
+ * A native `<form>` whose submit is intercepted for the bridge. Without JS
+ * it still posts to `action` — the no-JS fallback keeps working. The DOM
+ * owns the field values (uncontrolled); on submit the entries are collected
+ * from the live form element and sent as JSON.
+ */
+export function Form({
+  action,
+  method = "post",
+  resetOnSuccess,
+  children,
+  headers,
+  onSuccess,
+  onError,
+  onFinish,
+  ...rest
+}: FormProps) {
+  const [processing, setProcessing] = React.useState(false);
+  const [errors, setErrors] = React.useState<FormErrors>({});
+  const formRef = React.useRef<HTMLFormElement | null>(null);
+
+  const clearErrors = React.useCallback(() => setErrors({}), []);
+  const reset = React.useCallback(() => {
+    formRef.current?.reset();
+    setErrors({});
+  }, []);
+
+  /** Restore only the named controls to their initial DOM values. */
+  const resetFields = React.useCallback((names: string[]) => {
+    const form = formRef.current;
+    if (!form) return;
+    for (const name of names) {
+      const node = form.elements.namedItem(name);
+      const controls = node instanceof RadioNodeList ? Array.from(node) : node ? [node] : [];
+      for (const control of controls) {
+        if (
+          control instanceof HTMLInputElement &&
+          (control.type === "checkbox" || control.type === "radio")
+        ) {
+          control.checked = control.defaultChecked;
+        } else if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) {
+          control.value = control.defaultValue;
+        } else if (control instanceof HTMLSelectElement) {
+          control.selectedIndex = 0;
+        }
+      }
+    }
+  }, []);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const collected = serializeForm(new FormData(event.currentTarget));
+    setProcessing(true);
+    try {
+      const outcome = await submitBridge(
+        action,
+        method.toUpperCase() as "POST" | "PUT" | "PATCH" | "DELETE",
+        collected,
+        headers,
+      );
+      if (outcome.kind === "errored") {
+        setErrors(outcome.errors);
+        onError?.(outcome.errors);
+      } else {
+        if (resetOnSuccess) resetFields(resetOnSuccess);
+        if (outcome.kind === "succeeded") {
+          onSuccess?.(outcome.payload);
+        } else if (outcome.kind === "swapped") {
+          onSuccess?.(null);
+        }
+      }
+    } finally {
+      setProcessing(false);
+      onFinish?.();
+    }
+  };
+
+  return (
+    // The DOM element always posts natively (the only verb HTML knows);
+    // the real verb rides on the bridge request.
+    <form
+      ref={formRef}
+      action={action}
+      method="post"
+      onSubmit={handleSubmit}
+      data-slot="form"
+      {...rest}
+    >
+      {typeof children === "function"
+        ? (children as (state: FormRenderState) => React.ReactNode)({
+            processing,
+            errors,
+            clearErrors,
+            reset,
+          })
+        : children}
+    </form>
+  );
+}
+
+export interface UseFormReturn<TData extends Record<string, unknown>> {
+  data: TData;
+  setData: {
+    (updater: (data: TData) => TData): void;
+    (key: keyof TData & string, value: unknown): void;
+    (patch: Partial<TData>): void;
+  };
+  processing: boolean;
+  errors: FormErrors;
+  setErrors: (errors: FormErrors) => void;
+  clearErrors: () => void;
+  /** Restore initial data — all fields, or just the ones named. */
+  reset: (...fields: (keyof TData & string)[]) => void;
+  /** Rewrite the payload right before it is sent. */
+  transform: (transformer: (data: TData) => TData) => void;
+  wasSuccessful: boolean;
+  /** True for ~2s after a successful submit — for "Saved." indicators. */
+  recentlySuccessful: boolean;
+  submit: (
+    method: "post" | "put" | "patch" | "delete",
+    url: string,
+    options?: FormSubmitOptions,
+  ) => Promise<void>;
+  post: (url: string, options?: FormSubmitOptions) => Promise<void>;
+  put: (url: string, options?: FormSubmitOptions) => Promise<void>;
+  patch: (url: string, options?: FormSubmitOptions) => Promise<void>;
+  delete: (url: string, options?: FormSubmitOptions) => Promise<void>;
+}
+
+/** Controlled bridge form state for pages that own their field values. */
+export function useForm<TData extends Record<string, unknown>>(
+  initialData: TData | (() => TData),
+): UseFormReturn<TData> {
+  const initialRef = React.useRef(initialData);
+  const [data, setDataState] = React.useState<TData>(initialData);
+  const [processing, setProcessing] = React.useState(false);
+  const [errors, setErrorsState] = React.useState<FormErrors>({});
+  const [wasSuccessful, setWasSuccessful] = React.useState(false);
+  const [recentlySuccessful, setRecentlySuccessful] = React.useState(false);
+  const transformRef = React.useRef<(data: TData) => TData>((current) => current);
+
+  const setData = (
+    keyOrPatchOrUpdater: ((data: TData) => TData) | (keyof TData & string) | Partial<TData>,
+    value?: unknown,
+  ): void => {
+    if (typeof keyOrPatchOrUpdater === "function") {
+      setDataState((current) => keyOrPatchOrUpdater(current));
+    } else if (typeof keyOrPatchOrUpdater === "string") {
+      setDataState((current) => ({ ...current, [keyOrPatchOrUpdater]: value }));
+    } else {
+      setDataState((current) => ({ ...current, ...keyOrPatchOrUpdater }));
+    }
+  };
+
+  const setErrors = React.useCallback((next: FormErrors) => setErrorsState(next), []);
+  const clearErrors = React.useCallback(() => setErrorsState({}), []);
+  const reset = React.useCallback((...fields: (keyof TData & string)[]) => {
+    const seed = initialRef.current;
+    const base = typeof seed === "function" ? (seed as () => TData)() : seed;
+    setDataState((current) => {
+      if (fields.length === 0) return base;
+      const restored: Record<string, unknown> = {};
+      for (const field of fields) restored[field] = base[field];
+      return { ...current, ...restored };
+    });
+  }, []);
+  const transform = React.useCallback((transformer: (data: TData) => TData) => {
+    transformRef.current = transformer;
+  }, []);
+
+  const submit = React.useCallback(
+    async (
+      method: "post" | "put" | "patch" | "delete",
+      url: string,
+      options: FormSubmitOptions = {},
+    ) => {
+      setProcessing(true);
+      try {
+        const outcome = await submitBridge(
+          url,
+          method.toUpperCase() as "POST" | "PUT" | "PATCH" | "DELETE",
+          transformRef.current(data),
+          options.headers,
+        );
+        if (outcome.kind === "errored") {
+          setErrorsState(outcome.errors);
+          options.onError?.(outcome.errors);
+        } else {
+          setWasSuccessful(true);
+          setRecentlySuccessful(true);
+          setTimeout(() => setRecentlySuccessful(false), 2000);
+          options.onSuccess?.(outcome.kind === "succeeded" ? outcome.payload : null);
+        }
+      } finally {
+        setProcessing(false);
+        options.onFinish?.();
+      }
+    },
+    [data],
+  );
+
+  return {
+    data,
+    setData,
+    processing,
+    errors,
+    setErrors,
+    clearErrors,
+    reset,
+    transform,
+    wasSuccessful,
+    recentlySuccessful,
+    submit,
+    post: (url, options) => submit("post", url, options),
+    put: (url, options) => submit("put", url, options),
+    patch: (url, options) => submit("patch", url, options),
+    delete: (url, options) => submit("delete", url, options),
+  };
+}
+
+/** Set the document title from a page component. */
+export function Head({ title }: { title?: string }) {
+  React.useEffect(() => {
+    if (title !== undefined) document.title = title;
+  }, [title]);
+  return null;
 }

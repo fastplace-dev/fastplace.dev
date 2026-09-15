@@ -48,7 +48,7 @@ async def test_dashboard_props_come_from_the_service_layer(monkeypatch, tmp_path
     app = _sample_app(APP_ENV="local")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        resp = await c.get("/", headers={"X-Fastplace-Request": "true"})
+        resp = await c.get("/dashboard", headers={"X-Fastplace-Request": "true"})
     body = resp.json()
     assert body["component"] == "Dashboard/Index"
     # appName flows from config through DashboardService — never hardcoded.
@@ -67,3 +67,44 @@ async def test_about_page_props_come_from_the_service_layer():
     assert body["component"] == "About/Index"
     assert body["props"]["framework"] == "fastplace"
     assert body["props"]["url"] == "/about"
+
+
+async def test_settings_appearance_page_serves_the_ported_component():
+    app = _sample_app(APP_ENV="local")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        # Bridge request — must answer with the Settings/Appearance payload.
+        resp = await c.get("/settings/appearance", headers={"X-Fastplace-Request": "true"})
+    body = resp.json()
+    assert body["component"] == "Settings/Appearance"
+    # The appearance page is fully client-side — no server props required.
+    assert body["props"] == {}
+
+
+async def test_settings_appearance_full_document_load():
+    app = _sample_app(APP_ENV="local")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/settings/appearance")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+
+
+async def test_home_page_serves_the_ported_component():
+    app = _sample_app(APP_ENV="local")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/", headers={"X-Fastplace-Request": "true"})
+    body = resp.json()
+    assert body["component"] == "Home/Index"
+    # The home page reads only optional shared data — no server props.
+    assert body["props"] == {}
+
+
+async def test_home_page_full_document_load():
+    app = _sample_app(APP_ENV="local")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]

@@ -4,6 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Fastplace</title>
+    <!-- fastplace-appearance-prepaint -->
+    <script>
+      (function () {
+        var mode = "system";
+        try {
+          var stored = localStorage.getItem("fastplace-appearance");
+          if (stored === "light" || stored === "dark") mode = stored;
+        } catch (e) {}
+        var dark =
+          mode === "dark" ||
+          (mode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        var root = document.documentElement;
+        if (mode === "light" || mode === "dark") root.setAttribute("data-theme", mode);
+        else root.removeAttribute("data-theme");
+        if (dark) root.classList.add("dark");
+        root.style.colorScheme = dark ? "dark" : "light";
+      })();
+    </script>
+    <style>
+      html {
+        background-color: oklch(0.985 0.005 250);
+      }
+      html.dark {
+        background-color: oklch(0.19 0.02 262);
+      }
+    </style>
+    <!-- /fastplace-appearance-prepaint -->
     <!-- Dev-only source of truth; production HTML is rendered by the Python shell. -->
     <script type="module" src="/resources/js/main.jsx"></script>
   </head>

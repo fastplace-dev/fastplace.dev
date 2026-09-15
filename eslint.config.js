@@ -9,6 +9,8 @@ export default tseslint.config(
       ".venv/**",
       "node_modules/**",
       "public/build/**",
+      // Local-only reference material (gitignored) — never linted.
+      "docs/**",
       "packages/*/dist/**",
       "docs/site/.vitepress/dist/**",
       "docs/site/.vitepress/cache/**",

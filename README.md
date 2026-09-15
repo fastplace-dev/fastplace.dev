@@ -4,6 +4,8 @@
 
 Fastplace is a **modular monolith by default** — one deployable unit composed of strictly bounded internal modules — that serves every client through two presentation edges: a **Server-Driven SPA** (Inertia pattern) for the web and a **Unified API** for mobile and desktop applications, all backed by a single **Controller-Service-Repository (CSR)** core. AI is native infrastructure, not an integration: LLM tool calling, vector search, and SSE streaming are part of the framework fabric.
 
+![Fastplace banner](docs/fastpklace-banner.png)
+
 > **Status:** The framework is implemented (Phases 1–7) and exercised end-to-end by the sample application in this repo. The [Architectural Blueprint](docs/framework_architectural_blueprint.md) remains the single source of truth — read it before any feature work, and update it whenever the architecture changes.
 
 ---

@@ -200,6 +200,22 @@ describe("createPageResolver", () => {
     expect(resolver("Projects/Index")).toBe(ProjectsPage);
     expect(() => resolver("Missing/Page")).toThrow(/Missing\/Page/);
   });
+
+  it("never registers colocated test files as pages", () => {
+    // An eager glob over pages/** sweeps __tests__ neighbors in unless the
+    // resolver defends itself — a registered test module would execute its
+    // vitest imports in the browser.
+    const TestPage = () => <div>test</div>;
+    const fakeModules: Record<string, any> = {
+      "/abs/path/resources/js/pages/Auth/Login.tsx": { default: DashboardPage },
+      "/abs/path/resources/js/pages/__tests__/Login.test.tsx": { default: TestPage },
+      "/abs/path/resources/js/pages/__tests__/helper.spec.js": { default: TestPage },
+    };
+    const resolver = createPageResolver(fakeModules);
+    expect(resolver("Auth/Login")).toBe(DashboardPage);
+    expect(() => resolver("__tests__/Login.test")).toThrow(/__tests__\/Login\.test/);
+    expect(() => resolver("__tests__/helper.spec")).toThrow(/__tests__\/helper\.spec/);
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -572,6 +588,70 @@ describe("bootstrap error boundary", () => {
 /* ------------------------------------------------------------------ *
  * createFastplaceApp — the real bootstrap swaps components on visit
  * ------------------------------------------------------------------ */
+
+describe("createFastplaceApp withApp", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+    document.body.innerHTML = "";
+  });
+
+  it("wraps the page tree inside the provider so app chrome can use the page context", async () => {
+    // Mount a shell that reads page props — only possible when withApp
+    // renders above the page but below FastplaceProvider.
+    const Shell = ({ children }: { children?: React.ReactNode }) => {
+      const { props } = usePage();
+      return (
+        <div data-testid="shell">
+          <span>user:{(props as any).user}</span>
+          {children}
+        </div>
+      );
+    };
+
+    const el = document.createElement("div");
+    el.id = "fastplace";
+    el.dataset.page = JSON.stringify({
+      component: "Dashboard/Index",
+      props: { user: "Firoz" },
+      url: "/dashboard",
+      version: "v1",
+    });
+    document.body.appendChild(el);
+
+    const resolve = createPageResolver({
+      "/x/resources/js/pages/Dashboard/Index.jsx": { default: DashboardPage },
+    });
+
+    await createFastplaceApp({ resolve, withApp: (app) => <Shell>{app}</Shell> });
+
+    await waitFor(() => expect(screen.getByTestId("shell")).toBeInTheDocument());
+    expect(screen.getByText("user:Firoz")).toBeInTheDocument();
+    expect(screen.getByText("Dashboard: Firoz")).toBeInTheDocument();
+    // The shell wraps the router content — shell first, page inside it.
+    expect(screen.getByTestId("shell")).toContainElement(screen.getByText("Dashboard: Firoz"));
+  });
+
+  it("keeps the unwrapped tree when no withApp is given", async () => {
+    const el = document.createElement("div");
+    el.id = "fastplace";
+    el.dataset.page = JSON.stringify({
+      component: "Dashboard/Index",
+      props: { user: "Ana" },
+      url: "/dashboard",
+      version: "v1",
+    });
+    document.body.appendChild(el);
+
+    const resolve = createPageResolver({
+      "/x/resources/js/pages/Dashboard/Index.jsx": { default: DashboardPage },
+    });
+
+    await createFastplaceApp({ resolve });
+    await waitFor(() => expect(screen.getByText("Dashboard: Ana")).toBeInTheDocument());
+  });
+});
 
 describe("createFastplaceApp", () => {
   afterEach(() => {

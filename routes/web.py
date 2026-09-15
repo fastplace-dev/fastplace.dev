@@ -4,17 +4,62 @@ from __future__ import annotations
 
 from app.http.controllers.about_controller import AboutController
 from app.http.controllers.assistant_page_controller import AssistantPageController
+from app.http.controllers.auth_page_controller import AuthPageController
 from app.http.controllers.dashboard_controller import DashboardController
+from app.http.controllers.home_controller import HomeController
 from app.http.controllers.knowledge_controller import KnowledgeController
 from app.http.controllers.projects_controller import ProjectsController
+from app.http.controllers.settings_appearance_controller import SettingsAppearanceController
+from app.http.controllers.settings_pages_controller import SettingsPagesController
 from fastplace.http import Router
 
 router = Router()
 
-router.get("/", DashboardController, "index", name="dashboard")
+router.get("/", HomeController, "index", name="home")
+router.get("/dashboard", DashboardController, "index", name="dashboard")
 router.get("/about", AboutController, "index", name="about")
 router.get("/assistant", AssistantPageController, "index", name="assistant")
 router.get("/knowledge", KnowledgeController, "index", name="knowledge.index")
+router.get(
+    "/settings/appearance",
+    SettingsAppearanceController,
+    "index",
+    name="settings.appearance",
+)
+
+# Account settings pages — GET-only bridge renders until the Phase 4 auth
+# backend wires their form targets.
+router.get(
+    "/settings/profile",
+    SettingsPagesController,
+    "profile",
+    name="settings.profile",
+)
+router.get(
+    "/settings/security",
+    SettingsPagesController,
+    "security",
+    name="settings.security",
+)
+
+# Guest auth pages — GET-only bridge renders until the Phase 4 auth backend.
+router.get("/login", AuthPageController, "login", name="auth.login")
+router.get("/register", AuthPageController, "register", name="auth.register")
+router.get("/forgot-password", AuthPageController, "forgot_password", name="auth.forgot_password")
+router.get("/reset-password", AuthPageController, "reset_password", name="auth.reset_password")
+router.get("/verify-email", AuthPageController, "verify_email", name="auth.verify_email")
+router.get(
+    "/user/confirm-password",
+    AuthPageController,
+    "confirm_password",
+    name="auth.confirm_password",
+)
+router.get(
+    "/two-factor-challenge",
+    AuthPageController,
+    "two_factor_challenge",
+    name="auth.two_factor_challenge",
+)
 
 router.get("/projects", ProjectsController, "index", name="projects.index")
 router.post("/projects", ProjectsController, "store", name="projects.store")

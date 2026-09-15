@@ -31,7 +31,7 @@ async def test_dashboard_api_aggregates_across_modules(sample_client, embedding_
 async def test_dashboard_bridge_page_gets_the_same_props(sample_client, embedding_seam):
     await _seed(sample_client)
 
-    resp = await sample_client.get("/", headers={"X-Fastplace-Request": "true"})
+    resp = await sample_client.get("/dashboard", headers={"X-Fastplace-Request": "true"})
     body = resp.json()
     assert body["component"] == "Dashboard/Index"
     assert body["props"]["stats"]["projects"] == 2

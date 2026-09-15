@@ -2,7 +2,7 @@ import React from "react";
 import { Link, usePage } from "@fastplace/react";
 
 const NAV = [
-  { href: "/", label: "Dashboard" },
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/projects", label: "Projects" },
   { href: "/knowledge", label: "Knowledge" },
   { href: "/assistant", label: "Assistant" },
@@ -17,13 +17,13 @@ const NAV = [
 export default function AppLayout({ children }) {
   const { url } = usePage();
   const current = url.split("?")[0];
-  const active = (href) => (href === "/" ? current === "/" : current.startsWith(href));
+  const active = (href) => current === href || current.startsWith(`${href}/`);
 
   return (
     <div className="min-h-dvh bg-surface text-ink">
-      <header className="bg-surface-raised border-b border-line">
+      <header className="bg-surface-raised/80 sticky top-0 z-40 border-b border-line backdrop-blur">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
-          <Link href="/" className="text-lg font-semibold">
+          <Link href="/dashboard" className="text-lg font-semibold tracking-tight">
             Fastplace
           </Link>
           <nav aria-label="Primary" className="flex gap-1 text-sm">
@@ -34,8 +34,8 @@ export default function AppLayout({ children }) {
                 aria-current={active(href) ? "page" : undefined}
                 className={
                   active(href)
-                    ? "bg-surface text-ink rounded-lg px-3 py-1.5 font-medium"
-                    : "text-ink-muted hover:text-ink rounded-lg px-3 py-1.5"
+                    ? "bg-accent/10 text-accent rounded-lg px-3 py-1.5 font-medium"
+                    : "text-ink-muted hover:bg-surface hover:text-ink rounded-lg px-3 py-1.5 transition-colors"
                 }
               >
                 {label}

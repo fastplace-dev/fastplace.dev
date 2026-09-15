@@ -7,7 +7,12 @@
     "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./resources/js/*"],
+      "@fastplace/react": ["./packages/react/src/index.tsx"]
+    }
   },
   "include": ["packages/react/src", "packages/ai-react/src", "resources/js"]
 }

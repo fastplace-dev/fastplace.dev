@@ -46,6 +46,7 @@ pnpm-debug.log*
 
 # OS / IDE
 .DS_Store
+._*
 .idea/
 .vscode/
 .claude/settings.local.json
@@ -63,4 +64,8 @@ docs/site/.vitepress/cache/
 commit-message.txt
 
 # Local agent instructions (never published)
+docs/framework_architectural_blueprint.md
+docs/superpowers
+docs/status_checklist.md
+/.playwright-mcp/
 CLAUDE.md

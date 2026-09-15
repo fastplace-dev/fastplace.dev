@@ -1,6 +1,10 @@
 import React from "react";
 import { usePage, Link } from "@fastplace/react";
-import AppLayout from "../../layouts/AppLayout";
+import { Card, CardContent } from "../../components/ui/card";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import { Label } from "../../components/ui/label";
+import AppLayout from "@/layouts/app-layout";
 
 export default function ProjectsShow() {
   const { props } = usePage();
@@ -11,7 +15,7 @@ export default function ProjectsShow() {
   const csrfToken = props.csrf_token ?? "";
 
   return (
-    <main>
+    <div>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <header className="mb-8">
           <Link href="/projects" className="text-accent text-sm">
@@ -19,57 +23,55 @@ export default function ProjectsShow() {
           </Link>
           <h1 className="text-2xl font-semibold mt-2">{project.name}</h1>
           {project.description ? (
-            <p className="text-ink-muted mt-1">{project.description}</p>
+            <p className="text-muted-foreground mt-1">{project.description}</p>
           ) : null}
         </header>
 
-        <form
-          method="post"
-          action={`/projects/${project.id}/tasks`}
-          className="bg-surface-raised border border-line rounded-xl p-4 mb-6 flex gap-3 items-end"
-        >
-          <input type="hidden" name="_token" value={csrfToken} />
-          <label className="flex-1">
-            <span className="block text-ink-muted text-sm mb-1">Task title</span>
-            <input
-              name="title"
-              required
-              maxLength={255}
-              className="w-full rounded-lg border border-line bg-surface px-3 py-2"
-            />
-          </label>
-          <button
-            type="submit"
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface"
-          >
-            Add task
-          </button>
-        </form>
+        <Card className="mb-6 gap-3 py-4">
+          <CardContent className="px-4">
+            <form
+              method="post"
+              action={`/projects/${project.id}/tasks`}
+              className="flex flex-wrap items-end gap-3"
+            >
+              <input type="hidden" name="_token" value={csrfToken} />
+              <div className="min-w-48 flex-1">
+                <Label htmlFor="task-title" className="mb-1">
+                  Task title
+                </Label>
+                <Input id="task-title" name="title" required maxLength={255} />
+              </div>
+              <Button type="submit">Add task</Button>
+            </form>
+          </CardContent>
+        </Card>
 
-        <section className="bg-surface-raised border border-line rounded-xl p-6">
-          {(project.tasks ?? []).length === 0 ? (
-            <p className="text-ink-muted">No tasks yet.</p>
-          ) : (
-            <ul className="divide-y divide-line">
-              {project.tasks.map((task) => (
-                <li key={task.id} className="py-3 flex items-center justify-between gap-4">
-                  <span className={task.completed ? "line-through text-ink-muted" : ""}>
-                    {task.title}
-                  </span>
-                  <Link
-                    href={`/tasks/${task.id}/toggle`}
-                    method="post"
-                    className="text-accent text-sm"
-                  >
-                    {task.completed ? "Reopen" : "Mark done"}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <Card className="py-6">
+          <CardContent>
+            {(project.tasks ?? []).length === 0 ? (
+              <p className="text-muted-foreground">No tasks yet.</p>
+            ) : (
+              <ul className="divide-y divide-line">
+                {project.tasks.map((task) => (
+                  <li key={task.id} className="flex items-center justify-between gap-4 py-3">
+                    <span className={task.completed ? "line-through text-muted-foreground" : ""}>
+                      {task.title}
+                    </span>
+                    <Link
+                      href={`/tasks/${task.id}/toggle`}
+                      method="post"
+                      className="text-accent text-sm"
+                    >
+                      {task.completed ? "Reopen" : "Mark done"}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       </div>
-    </main>
+    </div>
   );
 }
 

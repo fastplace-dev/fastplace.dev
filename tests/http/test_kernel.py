@@ -587,6 +587,43 @@ class TestRequestValidate:
         assert body["message"] == "The given data was invalid."
         assert "title" in body["errors"]
 
+    async def test_bridge_header_keeps_the_422_field_contract(self):
+        """Bridge form submissions (X-Fastplace-Request) see the same shape.
+
+        <Form>/useForm from @fastplace/react map ``errors`` onto field state
+        for exactly this payload — the contract must not change shape when
+        the request rides the bridge header.
+        """
+        import httpx
+        from pydantic import BaseModel, Field
+
+        from fastplace.http import Request, Router, get_app
+
+        class Payload(BaseModel):
+            title: str = Field(min_length=2)
+
+        async def create(request: Request):
+            await request.validate(Payload)
+            return {"never": "reached"}
+
+        r = Router()
+        r.post("/things", create)
+        app = get_app(routes=r, config={"APP_DEBUG": True})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as c:
+            resp = await c.post(
+                "/things",
+                json={"title": ""},
+                headers={"X-Fastplace-Request": "true"},
+            )
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["message"] == "The given data was invalid."
+        assert isinstance(body["errors"]["title"], list)
+        assert all(isinstance(m, str) for m in body["errors"]["title"])
+
     async def test_non_utf8_body_maps_to_422_not_500(self):
         """Undecodable bytes are a client fault — the 422 contract, not a 500."""
         import httpx
