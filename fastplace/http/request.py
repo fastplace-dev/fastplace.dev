@@ -153,6 +153,27 @@ class Request:
     def is_authenticated(self) -> bool:
         return self._r.scope.get("fastplace_user") is not None
 
+    # -- auth facade helpers (spec §4.16) ---------------------------------
+    @property
+    def auth_id(self) -> Any:
+        """The authenticated user's identifier (provider semantics), or None."""
+        user = self.user
+        if user is None:
+            return None
+        from fastplace.auth.providers import user_identifier
+
+        return user_identifier(user)
+
+    @property
+    def check(self) -> bool:
+        """Auth-facade parity: True when a user is authenticated."""
+        return self.is_authenticated
+
+    @property
+    def guest(self) -> bool:
+        """True when no user is authenticated."""
+        return not self.is_authenticated
+
     # -- bridge protocol --------------------------------------------------------
     @property
     def is_bridge(self) -> bool:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel
@@ -63,12 +64,41 @@ _HTML_SHELL = """<!DOCTYPE html>
 </html>"""
 
 
+SharedPropsCallback = Callable[[Request], dict[str, Any] | None]
+
+#: Registered shared-props callbacks merged into every page payload (§4.16).
+_shared_props: list[SharedPropsCallback] = []
+
+
+def share(callback: SharedPropsCallback) -> None:
+    """Register a callback contributing shared props to every page payload.
+
+    Page-specific props win: shared values merge with ``setdefault``
+    semantics. Later phases register ``auth.user`` and flash/status
+    channels here.
+    """
+    _shared_props.append(callback)
+
+
+def reset_shared_props() -> None:
+    """Drop every shared-props registration — tests and config reloads."""
+    _shared_props.clear()
+
+
 def page_payload(request: Request, component: str, props: Any) -> dict:
     """Build the JSON page payload shared by both render modes."""
     if isinstance(props, BaseModel):
         props = props.model_dump(mode="json")
     props = props or {}
     if isinstance(props, dict):
+        # Shared channels first (auth.user, flash, status) — page props and
+        # the CSRF token below always win over shared contributions.
+        for callback in _shared_props:
+            extra = callback(request)
+            if isinstance(extra, dict):
+                for key, value in extra.items():
+                    if key != "csrf_token":
+                        props.setdefault(key, value)
         # No-JS form posts cannot read the <meta> tag — every page's props
         # carry the session CSRF token so hidden ``_token`` inputs can use it.
         token = _session_csrf_token(request)
