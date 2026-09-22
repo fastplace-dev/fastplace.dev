@@ -21,7 +21,7 @@ from fastplace.errors import ConfigurationError, FastplaceError
 from fastplace.http import lifecycle
 from fastplace.http.middleware import Middleware, wrap_middleware
 from fastplace.http.response import Json, Response
-from fastplace.http.router import Router, endpoint_adapter
+from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware
 from fastplace.http.websocket import websocket_adapter
 
 API_PREFIX = "/api/v1"
@@ -93,6 +93,7 @@ def get_app(
     api_routes: Router | None = None,
     ai_routes: Router | None = None,
     middleware: list[Middleware] | None = None,
+    route_middleware: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
     project_root: str | Path | None = None,
 ) -> FastAPI:
@@ -127,7 +128,13 @@ def get_app(
         redoc_url=None,
     )
     app.state.fastplace_root = str(project_root or cfg.root)
-    _mount_routes(app, routes=routes, api_routes=api_routes, ai_routes=ai_routes)
+    _mount_routes(
+        app,
+        routes=routes,
+        api_routes=api_routes,
+        ai_routes=ai_routes,
+        route_middleware=_route_middleware_registry(route_middleware, cfg),
+    )
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
     app.add_middleware(_QueryTrackerMiddleware)
@@ -245,28 +252,56 @@ def _instantiate_middleware(entry: str) -> Middleware:
     return instance
 
 
+def _route_middleware_registry(
+    overrides: dict[str, Any] | None, cfg: _ConfigShim
+) -> dict[str, Any]:
+    """Programmatic aliases first, then ROUTE_MIDDLEWARE dotted paths."""
+    registry: dict[str, Any] = dict(overrides or {})
+    declared = cfg.get("ROUTE_MIDDLEWARE", default={}) or {}
+    if not isinstance(declared, dict):
+        # Env vars arrive as strings — a string simply means "not configured".
+        declared = {}
+    for name, entry in declared.items():
+        if name in registry:
+            continue
+        if isinstance(entry, str):
+            module_path, _, class_name = entry.rpartition(".")
+            module = importlib.import_module(module_path)
+            entry = getattr(module, class_name)
+        registry[name] = entry
+    return registry
+
+
 def _mount_routes(
     app: FastAPI,
     *,
     routes: Router | None,
     api_routes: Router | None,
     ai_routes: Router | None,
+    route_middleware: dict[str, Any] | None = None,
 ) -> None:
     api = APIRouter()
     if routes:
-        _register_router(api, routes)
+        _register_router(api, routes, route_middleware=route_middleware)
     if api_routes:
-        _register_router(api, api_routes, prefix=API_PREFIX)
+        _register_router(api, api_routes, prefix=API_PREFIX, route_middleware=route_middleware)
     if ai_routes:
-        _register_router(api, ai_routes, prefix=AI_PREFIX)
+        _register_router(api, ai_routes, prefix=AI_PREFIX, route_middleware=route_middleware)
     app.include_router(api)
 
 
-def _register_router(target: APIRouter, router: Router, prefix: str = "") -> None:
+def _register_router(
+    target: APIRouter,
+    router: Router,
+    prefix: str = "",
+    route_middleware: dict[str, Any] | None = None,
+) -> None:
+    registry = route_middleware or {}
     for route in router.routes:
+        chain = tuple(resolve_route_middleware(registry, alias) for alias in route.middleware)
         target.add_api_route(
             prefix + route.path,
-            endpoint_adapter(route.handler),
+            endpoint_adapter(route.handler, chain),
             methods=[route.method],
             name=route.name or getattr(route.handler, "__name__", None) or "endpoint",
         )
