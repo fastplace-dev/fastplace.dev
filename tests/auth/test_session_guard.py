@@ -88,6 +88,27 @@ class TestSessionGuardHttp:
         # The cookie is signed (itsdangerous) — the payload is not plaintext.
         assert "Firoz" not in cookie
 
+    async def test_login_regenerates_the_session_id(self, auth_client):
+        # Session-fixation defense: the pre-login session ID must not survive
+        # login — the response issues a fresh ID and the old row is destroyed.
+        import httpx
+
+        token = await bootstrap_csrf(auth_client)
+        old_id = auth_client.cookies.get("fastplace_session")
+        assert old_id, "pre-login request must have issued a session cookie"
+
+        response = await auth_client.post("/login", headers={"X-Fastplace-CSRF-Token": token})
+
+        assert response.status_code == 200
+        new_id = response.cookies.get("fastplace_session")
+        assert new_id and new_id != old_id
+
+        # A session ID planted before login must authenticate nobody after it.
+        transport = httpx.ASGITransport(app=auth_client._transport.app)  # type: ignore[attr-defined]
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as bare:
+            replayed = await bare.get("/me", headers={"Cookie": f"fastplace_session={old_id}"})
+        assert replayed.json() == {"user": None}
+
     async def test_me_resolves_request_user_from_the_session_cookie(self, auth_client):
         await login(auth_client)
         response = await auth_client.get("/me")

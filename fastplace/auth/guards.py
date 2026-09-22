@@ -38,14 +38,21 @@ class SessionGuard:
     async def login(self, request: Any, user: Any) -> None:
         """Start a fresh authenticated session for ``user``.
 
-        Session-fixation defense (OWASP): everything planted in the
-        pre-authentication session is discarded and the CSRF token is
-        rotated, so nothing observed before login authorizes anything after.
+        Session-fixation defense (OWASP): the session ID is regenerated
+        (server-side sessions), everything planted in the pre-authentication
+        session is discarded, and the CSRF token is rotated, so nothing
+        observed before login authorizes anything after.
         """
         import secrets
 
         from fastplace.auth.middleware import CSRF_SESSION_KEY
 
+        regen = getattr(request.session, "regenerate", None)
+        if callable(regen):
+            # ServerSession: flag rotation — the middleware mints a fresh ID
+            # and destroys the old row on the response. Plain dict sessions
+            # (unit-test stand-ins) have nothing to rotate.
+            regen()
         request.session.clear()
         request.session[self.SESSION_KEY] = self.provider.identifier(user)
         request.session[CSRF_SESSION_KEY] = secrets.token_urlsafe(32)
