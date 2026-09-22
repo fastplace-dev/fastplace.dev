@@ -301,3 +301,19 @@ def test_make_repository_scaffolds_data_access_stub(tmp_path, monkeypatch):
     # Repositories are the data-access layer: the stub talks to the ORM.
     assert "from fastplace.db import db" in source or "from fastplace.orm import" in source
     compile(source, str(path), "exec")
+
+
+def test_session_gc_reports_removed_rows(monkeypatch, tmp_path):
+    """session:gc routes through session_store() and prints the sweep count."""
+    from typer.testing import CliRunner
+
+    class StubStore:
+        async def gc(self, lifetime=None):
+            return 3
+
+    monkeypatch.setattr("fastplace.http.session.session_store", lambda config_get=None: StubStore())
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["session:gc"])
+    assert result.exit_code == 0
+    plain = ANSI_RE.sub("", result.output)
+    assert "3" in plain and "session" in plain.lower()

@@ -52,7 +52,13 @@ class SessionGuard:
 
     async def logout(self, request: Any) -> None:
         """End the session entirely — nothing of the authenticated state survives."""
-        request.session.clear()
+        invalidate = getattr(request.session, "invalidate", None)
+        if callable(invalidate):
+            # ServerSession: destroy the backing row and expire the cookie —
+            # a bare clear() would leave the store row revivable.
+            invalidate()
+        else:
+            request.session.clear()
 
     async def user(self, request: Any) -> Any | None:
         identifier = request.session.get(self.SESSION_KEY)

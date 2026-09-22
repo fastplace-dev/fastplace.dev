@@ -16,9 +16,22 @@ VITE_DEV_URL = "http://localhost:5173"
 # Production refuses to boot without it (kernel fails fast).
 APP_KEY = ""
 
-# Signed-cookie session (kernel installs Starlette SessionMiddleware)
+# Server-side session cookie (kernel installs ServerSessionMiddleware)
 SESSION_COOKIE = "fastplace_session"
 SESSION_LIFETIME = 7200  # seconds
+
+# Server-side session driver: "database" (production default), "redis", or
+# "memory" (local dev/tests). Unset resolves per environment — see
+# fastplace/http/session/__init__.py:session_store.
+SESSION_DRIVER = ""
+# Cookie attributes (path/domain default to the whole app; set SESSION_DOMAIN
+# for cross-subdomain sessions).
+SESSION_DOMAIN = ""
+SESSION_PATH = "/"
+
+# Per-route middleware aliases: {"alias": "dotted.path.ToMiddleware"}.
+# Parameterized aliases parse as "name:arg1,arg2" at route declaration.
+ROUTE_MIDDLEWARE = {}
 
 # CSRF protection (fastplace.auth.middleware.CsrfMiddleware)
 CSRF_EXCEPT: list[str] = []

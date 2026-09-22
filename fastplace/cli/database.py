@@ -269,3 +269,27 @@ def db_reset() -> None:
     console.print("[green]reset[/] schema rebuilt to head")
     for name in ran:
         console.print(f"[green]seeded[/] {name}")
+
+
+@database_app.command("session:gc")
+def session_gc(
+    lifetime: int = typer.Option(
+        0, "--lifetime", help="Idle seconds before sweeping (0 = SESSION_LIFETIME)."
+    ),
+) -> None:
+    """Sweep expired server-side sessions (spec §4.1)."""
+    import asyncio
+
+    from fastplace.config import load_env
+
+    load_env()
+
+    async def _run() -> int:
+        # Imported here so tests can monkeypatch the factory symbol.
+        from fastplace.http.session import session_store
+
+        window: int | None = lifetime or None  # 0 -> the store's configured window
+        return await session_store().gc(window)
+
+    removed = asyncio.run(_run())
+    console.print(f"[green]Swept {removed} expired session(s).[/green]")

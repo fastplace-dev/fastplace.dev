@@ -8,7 +8,6 @@ Application code imports ``fastplace.http`` and never ``fastapi`` directly.
 from __future__ import annotations
 
 import importlib
-import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -288,26 +287,25 @@ def _install_middleware(app: FastAPI, middleware: list[Middleware]) -> None:
 
 
 def _install_session_middleware(app: FastAPI, cfg: _ConfigShim, *, app_env: str) -> None:
-    """Signed-cookie sessions on every Fastplace app (itsdangerous-backed)."""
-    from starlette.middleware.sessions import SessionMiddleware
+    """Server-side sessions on every Fastplace app (opaque-ID cookie + store)."""
+    from fastplace.http.session import session_store
+    from fastplace.http.session.middleware import ServerSessionMiddleware
 
-    secret = str(cfg.get("APP_KEY", default="") or "")
-    if not secret:
-        if app_env == "production":
-            # An ephemeral per-process key silently invalidates sessions
-            # across workers/restarts — production must fail fast.
-            raise ConfigurationError(
-                "APP_KEY is required in production — set it in .env "
-                "(generate: python -c 'import secrets; print(secrets.token_urlsafe(48))')"
-            )
-        secret = secrets.token_urlsafe(48)  # per-process fallback (local dev)
+    if app_env == "production" and not str(cfg.get("APP_KEY", default="") or ""):
+        # An ephemeral per-process key silently invalidates signed URLs and
+        # JWTs across workers/restarts — production must fail fast.
+        raise ConfigurationError(
+            "APP_KEY is required in production — set it in .env "
+            "(generate: python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+        )
     app.add_middleware(
-        SessionMiddleware,
-        secret_key=secret,
-        session_cookie=str(cfg.get("SESSION_COOKIE", default="fastplace_session")),
-        max_age=int(cfg.get("SESSION_LIFETIME", default=7200)),
-        same_site="lax",
-        https_only=app_env == "production",
+        ServerSessionMiddleware,
+        store=session_store(config_get=cfg.get),
+        cookie_name=str(cfg.get("SESSION_COOKIE", default="fastplace_session")),
+        lifetime=int(cfg.get("SESSION_LIFETIME", default=7200)),
+        path=str(cfg.get("SESSION_PATH", default="/")),
+        domain=str(cfg.get("SESSION_DOMAIN", default="") or "") or None,
+        secure=app_env == "production",
     )
 
 
