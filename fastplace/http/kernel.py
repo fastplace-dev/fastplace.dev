@@ -353,7 +353,11 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
         errors = getattr(exc, "errors", None)
         if errors:
             payload["errors"] = errors
-        return Json(payload, status_code=exc.status_code)
+        headers: dict[str, str] = {}
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            headers["Retry-After"] = str(retry_after)
+        return Json(payload, status_code=exc.status_code, headers=headers)
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_handler(request: Any, exc: RequestValidationError) -> Response:
