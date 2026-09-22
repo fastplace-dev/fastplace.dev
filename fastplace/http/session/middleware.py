@@ -23,7 +23,9 @@ class ServerSession(dict):
 
     Lives at ``scope["session"]`` — Starlette's ``request.session`` returns
     it verbatim, so guards/CSRF/render need zero changes. Dirty tracking is
-    a snapshot compare: no mutation interception required.
+    a snapshot compare: no mutation interception required. The compare is
+    shallow, though — nested in-place mutations (e.g.
+    ``setdefault("cart", []).append(x)``) are not detected and never persist.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:

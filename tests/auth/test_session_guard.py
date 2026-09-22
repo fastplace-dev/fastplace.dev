@@ -1,4 +1,4 @@
-"""T4.2 — session guard: signed-cookie sessions, login/logout, request.user."""
+"""T4.2 — session guard: server-side sessions, login/logout, request.user."""
 
 from __future__ import annotations
 
@@ -79,13 +79,13 @@ class TestSessionGuardUnit:
 
 
 class TestSessionGuardHttp:
-    async def test_login_sets_a_signed_session_cookie(self, auth_client):
+    async def test_login_persists_the_user_into_the_server_side_session(self, auth_client):
         token = await bootstrap_csrf(auth_client)
         response = await auth_client.post("/login", headers={"X-Fastplace-CSRF-Token": token})
         assert response.status_code == 200
         cookie = response.cookies.get("fastplace_session")
         assert cookie, "session cookie must be issued on login"
-        # The cookie is signed (itsdangerous) — the payload is not plaintext.
+        # The cookie carries only an opaque session ID — no user payload.
         assert "Firoz" not in cookie
 
     async def test_login_regenerates_the_session_id(self, auth_client):
@@ -136,8 +136,8 @@ class TestSessionGuardHttp:
             response = await bare.get("/me", headers={"Cookie": f"fastplace_session={raw_cookie}"})
         assert response.json() == {"user": None}
 
-    async def test_sessions_survive_across_cookies_within_one_signed_app(self, auth_client):
-        # Round-trip stability: the same app must sign and verify with one key.
+    async def test_sessions_survive_across_requests_within_one_app(self, auth_client):
+        # Round-trip stability: the same app resolves one session across requests.
         await login(auth_client)
         first = await auth_client.get("/me")
         second = await auth_client.get("/me")

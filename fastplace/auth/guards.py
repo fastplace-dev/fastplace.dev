@@ -1,4 +1,4 @@
-"""Auth guards — session (signed cookie) and token (JWT) strategies.
+"""Auth guards — session (server-side store) and token (JWT) strategies.
 
 Both guards answer the same two questions: *log this user in / out* and
 *who is the user on this request*. Guards resolve users through a
@@ -23,11 +23,11 @@ BEARER_SCHEME = "Bearer"
 
 
 class SessionGuard:
-    """Stateful guard backed by the signed-cookie session.
+    """Stateful guard backed by the server-side session.
 
-    The kernel installs Starlette's ``SessionMiddleware`` (itsdangerous
-    signing), so ``request.session`` is a tamper-proof client-side store;
-    the guard only writes the user identifier into it.
+    The kernel installs ``ServerSessionMiddleware`` (opaque-ID cookie over
+    a pluggable store: memory/database/redis), so ``request.session`` is a
+    server-backed dict; the guard only writes the user identifier into it.
     """
 
     SESSION_KEY = "user_id"

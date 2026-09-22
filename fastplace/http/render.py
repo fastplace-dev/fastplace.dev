@@ -185,7 +185,7 @@ def _asset_version() -> str:
 
 
 def _session_csrf_token(request: Request) -> str | None:
-    """The CSRF token from the signed session, when one is active."""
+    """The CSRF token from the request's session, when one is active."""
     try:
         session = request.session
     except Exception:

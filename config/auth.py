@@ -2,7 +2,7 @@
 
 AUTH_DEFAULT_GUARD = "session"
 
-# Guard drivers: "session" (signed cookie) and "jwt" (stateless Bearer token).
+# Guard drivers: "session" (server-side session store) and "jwt" (stateless Bearer token).
 AUTH_GUARDS = {
     "session": {"driver": "session"},
     "token": {"driver": "jwt", "algorithm": "HS256", "ttl": 3600, "issuer": "fastplace"},

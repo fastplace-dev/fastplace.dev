@@ -83,7 +83,7 @@ class Request:
 
     @property
     def session(self) -> dict:
-        """Signed-cookie session (requires SessionMiddleware)."""
+        """Server-side session (requires ServerSessionMiddleware)."""
         return self._r.session
 
     # -- body ---------------------------------------------------------------

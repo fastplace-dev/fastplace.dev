@@ -403,7 +403,7 @@ _CONFIG_AUTH_TEMPLATE = '''"""Authentication guard + user-provider configuration
 
 AUTH_DEFAULT_GUARD = "session"
 
-# Guard drivers: "session" (signed cookie) and "jwt" (stateless Bearer token).
+# Guard drivers: "session" (server-side session store) and "jwt" (stateless Bearer token).
 AUTH_GUARDS = {
     "session": {"driver": "session"},
     "token": {"driver": "jwt", "algorithm": "HS256", "ttl": 3600, "issuer": "fastplace"},
@@ -431,7 +431,7 @@ APP_URL=http://localhost:8000
 # Generate: python -c 'import secrets; print(secrets.token_urlsafe(48))'
 APP_KEY={app_key}
 
-# Auth sessions (signed cookies via itsdangerous)
+# Auth sessions — server-side store; the cookie carries only the opaque ID.
 SESSION_COOKIE=fastplace_session
 SESSION_LIFETIME=7200
 
