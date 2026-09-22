@@ -43,6 +43,10 @@ class SessionStore(Protocol):
         """Delete one session row — logout and regeneration use this."""
         ...
 
+    async def destroy_for_user(self, user_id: Any, *, except_session_id: str | None = None) -> int:
+        """Remove every session attributed to ``user_id`` (logout-others)."""
+        ...
+
     async def gc(self, lifetime: int | None = None) -> int:
         """Sweep sessions idle beyond ``lifetime``; returns rows removed."""
         ...

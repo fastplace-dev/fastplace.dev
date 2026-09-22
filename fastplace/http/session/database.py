@@ -30,7 +30,7 @@ sessions_table = Table(
     "sessions",
     _metadata,
     Column("id", String(64), primary_key=True),
-    Column("user_id", Integer, nullable=True),
+    Column("user_id", Integer, nullable=True, index=True),
     Column("payload", Text, nullable=False),
     Column("last_activity", Integer, nullable=False, index=True),
     Column("ip_address", String(45), nullable=True),
@@ -110,6 +110,16 @@ class DatabaseSessionStore:
         await self._ensure_table()
         async with self._engine().begin() as conn:
             await conn.execute(delete(sessions_table).where(sessions_table.c.id == session_id))
+
+    async def destroy_for_user(self, user_id: Any, *, except_session_id: str | None = None) -> int:
+        """Remove every session row attributed to ``user_id`` (logout-others)."""
+        await self._ensure_table()
+        stmt = delete(sessions_table).where(sessions_table.c.user_id == user_id)
+        if except_session_id is not None:
+            stmt = stmt.where(sessions_table.c.id != except_session_id)
+        async with self._engine().begin() as conn:
+            result = await conn.execute(stmt)
+            return int(result.rowcount or 0)
 
     async def gc(self, lifetime: int | None = None) -> int:
         await self._ensure_table()
