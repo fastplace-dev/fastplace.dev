@@ -173,7 +173,7 @@ class SessionGuard:
 
     def _authenticate_session(self, request: Any, identifier: Any) -> None:
         """Fresh session id, clean payload, rotated CSRF (fixation defense)."""
-        from fastplace.auth.middleware import CSRF_SESSION_KEY
+        from fastplace.auth.middleware import CSRF_SESSION_KEY, INTENDED_SESSION_KEY
 
         session = request.session
         regenerate = getattr(session, "regenerate", None)
@@ -182,9 +182,17 @@ class SessionGuard:
             # and destroys the old row on the response. Plain dict sessions
             # (unit-test stand-ins) have nothing to rotate.
             regenerate()
+        # The parked destination (auth middleware, spec §4.5) is the one
+        # piece of pre-auth state that survives the boundary: login must
+        # still resume the user's journey. It is a server-composed
+        # same-origin path (request.full_path), never client-supplied, so
+        # carrying it across the clear is not a fixation vector.
+        intended = session.get(INTENDED_SESSION_KEY)
         session.clear()
         session[self.SESSION_KEY] = identifier
         session[CSRF_SESSION_KEY] = secrets.token_urlsafe(32)
+        if intended is not None:
+            session[INTENDED_SESSION_KEY] = intended
 
     async def logout(self, request: Any) -> None:
         """End the session entirely — nothing of the authenticated state survives."""

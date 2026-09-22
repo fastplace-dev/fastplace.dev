@@ -174,6 +174,14 @@ class Request:
         """True when no user is authenticated."""
         return not self.is_authenticated
 
+    def intended(self, default: str = "/dashboard") -> str:
+        """The URL parked by ``auth`` middleware before the login redirect.
+
+        Pops the parked value (it is consumed once); ``default`` when the
+        visit carried no parked destination (spec §4.5).
+        """
+        return self.session.pop("url.intended", None) or default
+
     # -- bridge protocol --------------------------------------------------------
     @property
     def is_bridge(self) -> bool:
