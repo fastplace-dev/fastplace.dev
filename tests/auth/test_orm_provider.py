@@ -123,3 +123,19 @@ async def test_model_without_find_api_fails_loudly():
     provider = OrmUserProvider(NotAModel)
     with pytest.raises(TypeError, match="find"):
         await provider.resolve(1)
+
+
+async def test_retrieve_by_credentials_skips_non_column_attributes(account_model):
+    # attempt() forwards the whole request payload as credentials — keys that
+    # are not table columns (a "remember" flag, a model @property) must be
+    # ignored, not turned into WHERE conditions.
+    account_model.is_admin = property(lambda self: True)  # attr, not a column
+    user = await account_model.create(email="firoz@example.test")
+
+    provider = OrmUserProvider(account_model)
+    found = await provider.retrieve_by_credentials(
+        {"email": "firoz@example.test", "is_admin": True, "remember": "on"}
+    )
+
+    assert found is not None
+    assert found.id == user.id

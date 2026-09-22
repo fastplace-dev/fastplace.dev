@@ -130,17 +130,20 @@ class TestOrmProviderCredentials:
         model = credential_model
         await model.create(email="firoz@example.test", password_hash=Hash.make("secret"))
         provider = OrmUserProvider(model)
+        # Non-column keys are skipped (EC4), so the "all conditions must
+        # match" intent is pinned with two column keys — the wrong id wins.
         assert (
-            await provider.retrieve_by_credentials(
-                {"email": "firoz@example.test", "status": "active"}
-            )
+            await provider.retrieve_by_credentials({"email": "firoz@example.test", "id": 424242})
             is None
         )
 
     async def test_unknown_column_returns_none_not_an_error(self, credential_model):
         from fastplace.auth.providers import OrmUserProvider
 
+        await credential_model.create(email="firoz@example.test", password_hash=Hash.make("secret"))
         provider = OrmUserProvider(credential_model)
+        # A payload whose keys name no column matches nobody — even with
+        # rows present (EC4: never fall back to an unconditioned lookup).
         assert await provider.retrieve_by_credentials({"nickname": "fz"}) is None
 
     async def test_password_only_credentials_return_none(self, credential_model):

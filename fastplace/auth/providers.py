@@ -199,16 +199,21 @@ class OrmUserProvider(_PasswordMixin):
         Soft-deleted users are deliberately unresolvable — the global scope
         rides Model.query(); reset flows that must reach them use
         with_deleted() explicitly (documented deviation, spec §4.3).
+
+        Payload keys that are not table columns (a "remember" flag, a model
+        @property) are ignored — they never reach a WHERE clause (EC4 hard
+        gate) — and a payload whose keys name no column at all matches
+        nobody.
         """
         conditions = _credential_conditions(credentials)
+        conditions = {
+            key: value for key, value in conditions.items() if key in self.model.__table__.columns
+        }
         if not conditions:
             return None
         query = self.model.query()
         for key, value in conditions.items():
-            column = getattr(self.model, key, None)
-            if column is None:
-                return None  # credentials name a column the model lacks
-            query = query.where(column == value)
+            query = query.where(getattr(self.model, key) == value)
         return await query.first()
 
     async def update_remember_token(self, user: Any, token_hash: str) -> None:
