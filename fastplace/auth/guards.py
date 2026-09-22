@@ -1,4 +1,4 @@
-"""Auth guards — session (signed cookie) and token (JWT) strategies.
+"""Auth guards — session (server-side store) and token (JWT) strategies.
 
 Both guards answer the same two questions: *log this user in / out* and
 *who is the user on this request*. Guards resolve users through a
@@ -23,11 +23,11 @@ BEARER_SCHEME = "Bearer"
 
 
 class SessionGuard:
-    """Stateful guard backed by the signed-cookie session.
+    """Stateful guard backed by the server-side session.
 
-    The kernel installs Starlette's ``SessionMiddleware`` (itsdangerous
-    signing), so ``request.session`` is a tamper-proof client-side store;
-    the guard only writes the user identifier into it.
+    The kernel installs ``ServerSessionMiddleware`` (opaque-ID cookie over
+    a pluggable store: memory/database/redis), so ``request.session`` is a
+    server-backed dict; the guard only writes the user identifier into it.
     """
 
     SESSION_KEY = "user_id"
@@ -38,21 +38,34 @@ class SessionGuard:
     async def login(self, request: Any, user: Any) -> None:
         """Start a fresh authenticated session for ``user``.
 
-        Session-fixation defense (OWASP): everything planted in the
-        pre-authentication session is discarded and the CSRF token is
-        rotated, so nothing observed before login authorizes anything after.
+        Session-fixation defense (OWASP): the session ID is regenerated
+        (server-side sessions), everything planted in the pre-authentication
+        session is discarded, and the CSRF token is rotated, so nothing
+        observed before login authorizes anything after.
         """
         import secrets
 
         from fastplace.auth.middleware import CSRF_SESSION_KEY
 
+        regen = getattr(request.session, "regenerate", None)
+        if callable(regen):
+            # ServerSession: flag rotation — the middleware mints a fresh ID
+            # and destroys the old row on the response. Plain dict sessions
+            # (unit-test stand-ins) have nothing to rotate.
+            regen()
         request.session.clear()
         request.session[self.SESSION_KEY] = self.provider.identifier(user)
         request.session[CSRF_SESSION_KEY] = secrets.token_urlsafe(32)
 
     async def logout(self, request: Any) -> None:
         """End the session entirely — nothing of the authenticated state survives."""
-        request.session.clear()
+        invalidate = getattr(request.session, "invalidate", None)
+        if callable(invalidate):
+            # ServerSession: destroy the backing row and expire the cookie —
+            # a bare clear() would leave the store row revivable.
+            invalidate()
+        else:
+            request.session.clear()
 
     async def user(self, request: Any) -> Any | None:
         identifier = request.session.get(self.SESSION_KEY)

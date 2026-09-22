@@ -362,4 +362,4 @@ async def test_ai_routes_are_csrf_protected():
         # unsafe POST without the CSRF token — even though the session is live
         response = await client.post("/ai/assistant", json={"message": "hello"})
 
-    assert response.status_code == 403
+    assert response.status_code == 419

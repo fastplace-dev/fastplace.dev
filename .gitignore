@@ -69,3 +69,6 @@ docs/superpowers
 docs/status_checklist.md
 /.playwright-mcp/
 CLAUDE.md
+
+# SDD execution scratch (ledger, briefs, review packages)
+.superpowers/

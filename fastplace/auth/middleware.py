@@ -42,7 +42,7 @@ class ResolveUserMiddleware(Middleware):
         try:
             user = await self._resolve(request)
         except AuthenticationError as exc:
-            return Json({"error": str(exc) or "Invalid credentials."}, status_code=401)
+            return Json({"message": str(exc) or "Invalid credentials."}, status_code=401)
         request.set_user(user)
         return await call_next(request)
 
@@ -93,7 +93,7 @@ class CsrfMiddleware(Middleware):
         expected = request.session.get(CSRF_SESSION_KEY)
         supplied = await self._supplied_token(request)
         if not expected or not supplied or not hmac.compare_digest(expected, supplied):
-            return Json({"error": "CSRF token mismatch."}, status_code=403)
+            return Json({"message": "CSRF token mismatch."}, status_code=419)
 
         response = await call_next(request)
         # Re-read: login() rotates the token across the privilege boundary,

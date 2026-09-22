@@ -49,8 +49,8 @@ class TestCsrfIssuance:
 class TestCsrfValidation:
     async def test_unsafe_post_without_a_token_is_rejected(self, auth_client):
         response = await auth_client.post("/submit")
-        assert response.status_code == 403
-        assert "CSRF" in response.json()["error"]
+        assert response.status_code == 419
+        assert "CSRF" in response.json()["message"]
 
     async def test_unsafe_post_with_a_valid_header_token_passes(self, auth_client):
         page = await auth_client.get("/me")
@@ -66,7 +66,7 @@ class TestCsrfValidation:
         response = await auth_client.post(
             "/submit", headers={"X-Fastplace-CSRF-Token": "forged-token-value"}
         )
-        assert response.status_code == 403
+        assert response.status_code == 419
 
     async def test_json_body_token_is_accepted(self, auth_client):
         page = await auth_client.get("/me")
@@ -112,7 +112,7 @@ class TestCsrfValidation:
         response = await auth_client.post(
             "/submit", headers={"Authorization": "Basic dXNlcjpwd2Q="}
         )
-        assert response.status_code == 403
+        assert response.status_code == 419
 
     async def test_invalid_bearer_without_session_is_rejected_as_unauthorized(
         self, auth_client, monkeypatch
@@ -129,19 +129,19 @@ class TestCsrfValidation:
     async def test_except_glob_does_not_leak_past_the_prefix(self, auth_client, monkeypatch):
         monkeypatch.setenv("CSRF_EXCEPT", "/webhook/*")
         response = await auth_client.post("/webhookify")
-        assert response.status_code == 403  # /webhookify is a different path
+        assert response.status_code == 419  # /webhookify is a different path
 
     async def test_non_exempt_paths_still_protected_under_csrf_except(
         self, auth_client, monkeypatch
     ):
         monkeypatch.setenv("CSRF_EXCEPT", "/webhook/*")
         response = await auth_client.post("/submit")
-        assert response.status_code == 403
+        assert response.status_code == 419
 
     async def test_delete_and_patch_are_also_guarded(self, auth_client):
         for method in ("delete", "patch", "put"):
             response = await auth_client.request(method.upper(), "/submit")
-            assert response.status_code == 403, method
+            assert response.status_code == 419, method
 
 
 class TestCsrfRenderIntegration:
