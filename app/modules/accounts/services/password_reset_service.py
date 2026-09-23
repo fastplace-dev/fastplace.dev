@@ -7,8 +7,12 @@ from typing import Any
 from urllib.parse import quote
 
 from app.modules.accounts.repositories.user_repository import UserRepository
+from app.modules.accounts.services.password_policy import min_password_length
+from fastplace.auth.guards import SESSION_STORE_SCOPE
 from fastplace.auth.hashing import Hash
 from fastplace.auth.passwords import _dummy_digest, throttle_seconds, token_store
+from fastplace.auth.remember import remember_store
+from fastplace.errors import ValidationError
 from fastplace.events import DomainEvent, dispatch
 from fastplace.http import build_absolute_url
 from fastplace.mail import Mail
@@ -48,8 +52,39 @@ class PasswordResetService:
         return self.SENT_MESSAGE
 
     async def reset(self, request: Any, data: dict[str, Any]) -> None:
-        """Redeem a reset token: validate, burn, rehash, revoke, announce.
+        """Redeem a reset token: validate, burn, rehash, revoke, announce."""
+        email = str(data.get("email") or "").strip().lower()
+        token = str(data.get("token") or "")
+        password = str(data.get("password") or "")
+        confirmation = str(data.get("password_confirmation") or "")
 
-        Shipped in Task 11 (declared here so the service lands complete).
-        """
-        raise NotImplementedError  # replaced in Task 11
+        errors: dict[str, list[str]] = {}
+        minimum = min_password_length()
+        if len(password) < minimum:
+            errors.setdefault("password", []).append(
+                f"The password must be at least {minimum} characters."
+            )
+        if password != confirmation:
+            errors.setdefault("password", []).append("The password confirmation does not match.")
+        user = await self.repository.find_by_email(email)
+        # peek (non-consuming) so a validation failure never burns the token;
+        # every miss path pays the dummy scrypt (timing parity, spec §6).
+        valid = await token_store().peek(email, token)
+        if user is None or not valid:
+            errors.setdefault("email", []).append(
+                "We could not find a user with that email address."
+            )
+        if errors:
+            raise ValidationError(errors=errors)
+
+        if not await token_store().consume(email, token):  # lost the race
+            raise ValidationError(
+                errors={"email": ["We could not find a user with that email address."]}
+            )
+
+        await user.update(password_hash=Hash.make(password))
+        await remember_store().revoke_all_for_user(user.id)
+        store = request.scope.get(SESSION_STORE_SCOPE)
+        if store is not None:
+            await store.destroy_for_user(user.id)  # every session — no except_session_id
+        await dispatch(DomainEvent("PasswordReset", {"user_id": user.id, "email": user.email}))

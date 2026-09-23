@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.http.requests.forgot_password_request import ForgotPasswordRequest
 from app.http.requests.login_request import LoginRequest
 from app.http.requests.register_request import RegisterRequest
+from app.http.requests.reset_password_request import ResetPasswordRequest
 from app.modules.accounts.services.auth_service import AuthService
 from app.modules.accounts.services.password_reset_service import PasswordResetService
 from app.modules.accounts.services.registration_service import RegistrationService
@@ -35,3 +36,9 @@ class AuthApiController(Controller):
         message = await self.password_reset_service.send_reset_link(data["email"])
         flash(request, message)
         return Redirect("/forgot-password", status_code=303)
+
+    async def reset_password(self, request: Request):
+        data = (await request.validate(ResetPasswordRequest)).model_dump()
+        await self.password_reset_service.reset(request, data)
+        flash(request, PasswordResetService.RESET_MESSAGE)
+        return Redirect("/login", status_code=303)
