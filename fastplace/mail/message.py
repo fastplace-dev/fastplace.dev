@@ -15,6 +15,7 @@ class MailMessage:
     to: str
     html: str | None = None
     from_address: str | None = None
+    from_name: str | None = None
 
 
 def message_as_dict(message: MailMessage) -> dict[str, str | None]:
@@ -30,4 +31,5 @@ def message_from_dict(data: dict) -> MailMessage:
         to=str(data.get("to") or ""),
         html=str(data["html"]) if data.get("html") is not None else None,
         from_address=str(data["from_address"]) if data.get("from_address") is not None else None,
+        from_name=str(data["from_name"]) if data.get("from_name") is not None else None,
     )

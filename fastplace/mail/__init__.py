@@ -75,4 +75,8 @@ class Mail:
                 from_address=str(config("MAIL_FROM_ADDRESS", default="fastplace@localhost")),
             )
         )
+        if outbound.from_name is None:
+            configured_name = str(config("MAIL_FROM_NAME", default="") or "") or None
+            if configured_name is not None:
+                outbound = dataclasses.replace(outbound, from_name=configured_name)
         await transport_for()(outbound)

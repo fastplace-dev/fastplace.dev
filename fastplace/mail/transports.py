@@ -37,6 +37,7 @@ async def send_via_log(message: MailMessage) -> None:
             "to": message.to,
             "html": message.html,
             "from_address": message.from_address,
+            "from_name": message.from_name,
         },
         ensure_ascii=False,
     )
@@ -59,10 +60,13 @@ async def send_via_smtp(message: MailMessage) -> None:
         ) from exc
 
     from email.message import EmailMessage
+    from email.utils import formataddr
 
     letter = EmailMessage()
-    sender = message.from_address or str(config("MAIL_FROM_ADDRESS", default="fastplace@localhost"))
-    letter["From"] = sender
+    address = message.from_address or str(
+        config("MAIL_FROM_ADDRESS", default="fastplace@localhost")
+    )
+    letter["From"] = formataddr((message.from_name or "", address))
     letter["To"] = message.to
     letter["Subject"] = message.subject
     letter.set_content(message.text)
