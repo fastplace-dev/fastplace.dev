@@ -88,7 +88,7 @@ async def _park_challenge(client, *, code_ok_setup=True):
     codes = generate_recovery_codes()
     user.two_factor_secret = encrypt(secret)
     user.two_factor_recovery_codes = encrypt(json.dumps(codes))
-    user.two_factor_confirmed_at = datetime.datetime.now(datetime.timezone.utc)
+    user.two_factor_confirmed_at = datetime.datetime.now(datetime.UTC)
     await user.save()
 
     await client.post("/logout")

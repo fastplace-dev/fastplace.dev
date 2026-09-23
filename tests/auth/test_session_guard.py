@@ -580,7 +580,7 @@ class TestTwoFactorInterrupt:
             email="2fa@example.test",
             password=Hash.make("secret123"),
             two_factor_confirmed_at=datetime.datetime(
-                2026, 9, 1, tzinfo=datetime.timezone.utc
+                2026, 9, 1, tzinfo=datetime.UTC
             ),
         )
         provider.add(two_factor_user)
@@ -636,7 +636,7 @@ class TestTwoFactorInterrupt:
                 email="2fa@example.test",
                 password=Hash.make("secret123"),
                 two_factor_confirmed_at=datetime.datetime(
-                    2026, 9, 1, tzinfo=datetime.timezone.utc
+                    2026, 9, 1, tzinfo=datetime.UTC
                 ),
             )
         )
@@ -663,7 +663,7 @@ class TestTwoFactorInterrupt:
                 email="2fa@example.test",
                 password=Hash.make("secret123"),
                 two_factor_confirmed_at=datetime.datetime(
-                    2026, 9, 1, tzinfo=datetime.timezone.utc
+                    2026, 9, 1, tzinfo=datetime.UTC
                 ),
             )
         )
@@ -692,7 +692,7 @@ class TestTwoFactorInterrupt:
                 email="2fa@example.test",
                 password=Hash.make("secret123"),
                 two_factor_confirmed_at=datetime.datetime(
-                    2026, 9, 1, tzinfo=datetime.timezone.utc
+                    2026, 9, 1, tzinfo=datetime.UTC
                 ),
             )
         )

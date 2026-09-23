@@ -8,7 +8,6 @@ import pytest
 
 from fastplace.auth.middleware import INTENDED_SESSION_KEY, EnsurePasswordConfirmedMiddleware
 from fastplace.errors import AuthorizationError
-from fastplace.http.request import Request
 
 
 class FakeSession(dict):

@@ -29,7 +29,7 @@ class TestUserTwoFactorColumns:
             password_hash="hash",
             two_factor_secret="fpaes1.AAAA.BBBB",
             two_factor_recovery_codes='["ABCDE-FGHJK"]',
-            two_factor_confirmed_at=datetime.datetime(2026, 9, 23, tzinfo=datetime.timezone.utc),
+            two_factor_confirmed_at=datetime.datetime(2026, 9, 23, tzinfo=datetime.UTC),
         )
         dumped = user.to_dict()
         assert "two_factor_secret" not in dumped

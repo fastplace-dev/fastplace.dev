@@ -70,7 +70,7 @@ async def client_with_confirmed_two_factor_user(client) -> None:
     created = await client.post("/register", json=REGISTER_PAYLOAD)
     assert created.status_code == 303
     user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
-    user.two_factor_confirmed_at = datetime.datetime.now(datetime.timezone.utc)
+    user.two_factor_confirmed_at = datetime.datetime.now(datetime.UTC)
     await user.save()
     logged_out = await client.post("/logout")
     assert logged_out.status_code == 303
