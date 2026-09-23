@@ -22,7 +22,7 @@ from fastplace.auth.remember import (
     REMEMBER_COOKIE_SCOPE,
     REMEMBER_COOKIE_TTL,
 )
-from fastplace.errors import AuthenticationError, FastplaceError
+from fastplace.errors import AuthenticationError, AuthorizationError, FastplaceError
 from fastplace.http.middleware import Middleware
 from fastplace.http.request import Request
 from fastplace.http.response import Json, Redirect, Response
@@ -215,3 +215,17 @@ class GuestMiddleware(Middleware):
             return await call_next(request)
         intended = request.session.pop(INTENDED_SESSION_KEY, None) or "/dashboard"
         return Redirect(intended, status_code=302)
+
+
+class EnsureEmailVerifiedMiddleware(Middleware):
+    """``verified`` route middleware — unverified users bounce to the notice page."""
+
+    async def handle(self, request: Request, call_next) -> Response:
+        user = request.user
+        if user is None or getattr(user, "email_verified_at", None) is not None:
+            return await call_next(request)
+        if request.path.startswith("/api/"):
+            raise AuthorizationError("Your email address is not verified.")
+        # Browser AND bridge: 302 redirect (GuestMiddleware precedent) — a 403
+        # envelope would strand the SPA after register → /dashboard.
+        return Redirect("/email/verify", status_code=302)

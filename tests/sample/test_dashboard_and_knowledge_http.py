@@ -17,6 +17,25 @@ async def _seed(client):
     return p1
 
 
+async def _login_verified_user(client):
+    import datetime
+
+    from app.modules.accounts.models.user import User
+    from fastplace.auth.hashing import Hash
+
+    if await User.where(User.email == "dash@example.test").first() is None:
+        await User.create(
+            name="Dash",
+            email="dash@example.test",
+            password_hash=Hash.make("secret123"),
+            email_verified_at=datetime.datetime.now(datetime.UTC),
+        )
+    response = await client.post(
+        "/login", json={"email": "dash@example.test", "password": "secret123"}
+    )
+    assert response.status_code == 303
+
+
 async def test_dashboard_api_aggregates_across_modules(sample_client, embedding_seam):
     await _seed(sample_client)
 
@@ -30,6 +49,7 @@ async def test_dashboard_api_aggregates_across_modules(sample_client, embedding_
 
 async def test_dashboard_bridge_page_gets_the_same_props(sample_client, embedding_seam):
     await _seed(sample_client)
+    await _login_verified_user(sample_client)
 
     resp = await sample_client.get("/dashboard", headers={"X-Fastplace-Request": "true"})
     body = resp.json()

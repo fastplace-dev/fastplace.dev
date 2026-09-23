@@ -19,6 +19,7 @@ from typing import Any
 
 import jwt
 
+from fastplace.auth.hashing import Hash
 from fastplace.auth.providers import UserProvider, provider_from_config
 from fastplace.auth.remember import (
     REMEMBER_COOKIE_NAME,
@@ -76,6 +77,18 @@ class SessionGuard:
         ip = getattr(request, "ip", None) or ""
         return hashlib.sha1(f"{email.lower()}|{ip}".encode()).hexdigest()
 
+    async def _equal_work_for_unknown_user(self, credentials: dict[str, Any]) -> None:
+        """Pay the wrong-password hash cost when the user doesn't exist.
+
+        Unknown emails must not be timing-distinguishable from wrong
+        passwords (enumeration defense, spec §6). The function-level import
+        keeps the dummy digest out of guards' import graph (and lets tests
+        patch fastplace.auth.passwords._dummy_digest).
+        """
+        from fastplace.auth.passwords import _dummy_digest
+
+        Hash.check(str(credentials.get("password") or ""), _dummy_digest())
+
     async def attempt(
         self, request: Any, credentials: dict[str, Any], *, remember: bool = False
     ) -> bool:
@@ -100,6 +113,8 @@ class SessionGuard:
         await limiter.hit(key, self._decay)
 
         user = await self.provider.retrieve_by_credentials(credentials)
+        if user is None:
+            await self._equal_work_for_unknown_user(credentials)
         if user is None or not await self._validate_and_rehash(user, credentials):
             await dispatch(DomainEvent("Failed", {"email": email.lower()}))
             return False
@@ -127,6 +142,7 @@ class SessionGuard:
         """attempt() behind an extra gate — ``callback(user)`` must be truthy."""
         user = await self.provider.retrieve_by_credentials(credentials)
         if user is None:
+            await self._equal_work_for_unknown_user(credentials)
             return False
         outcome = callback(user)
         if inspect.isawaitable(outcome):
@@ -139,6 +155,7 @@ class SessionGuard:
         """One-off credential check — no session write, no events."""
         user = await self.provider.retrieve_by_credentials(credentials)
         if user is None:
+            await self._equal_work_for_unknown_user(credentials)
             return False
         return bool(await self.provider.validate_credentials(user, credentials))
 

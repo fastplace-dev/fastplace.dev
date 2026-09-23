@@ -50,6 +50,12 @@ app.add_typer(serve_app, name="")
 # Later phases register their command groups here (migrations, generators, …).
 def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     try:
+        from fastplace.cli.auth import auth_app
+
+        app.add_typer(auth_app, name="")
+    except ImportError:
+        pass
+    try:
         from fastplace.cli.database import database_app
 
         app.add_typer(database_app, name="")

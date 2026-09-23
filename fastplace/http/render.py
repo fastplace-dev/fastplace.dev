@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from fastplace.http.flash import FLASH_SESSION_KEY
 from fastplace.http.request import Request
 from fastplace.http.response import Html, Json, Response
 
@@ -99,6 +100,16 @@ def page_payload(request: Request, component: str, props: Any) -> dict:
                 for key, value in extra.items():
                     if key != "csrf_token":
                         props.setdefault(key, value)
+        # One-shot flash channel: the value survives the redirect (only this
+        # pop consumes it) and page props win over the flashed status.
+        try:
+            session = request.session
+        except Exception:
+            session = None
+        if isinstance(session, dict):
+            value = session.pop(FLASH_SESSION_KEY, None)
+            if value is not None:
+                props.setdefault("status", value)
         # No-JS form posts cannot read the <meta> tag — every page's props
         # carry the session CSRF token so hidden ``_token`` inputs can use it.
         token = _session_csrf_token(request)
