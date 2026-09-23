@@ -1,4 +1,4 @@
-"""Guest auth pages — GET-only bridge renders until the Phase 4 auth backend."""
+"""Guest auth pages — GET-only bridge renders behind the guest middleware."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+
 EMPTY_PROPS_AUTH_PAGES = [
     ("/login", "Auth/Login"),
-    ("/register", "Auth/Register"),
     ("/forgot-password", "Auth/ForgotPassword"),
     ("/verify-email", "Auth/VerifyEmail"),
     ("/user/confirm-password", "Auth/ConfirmPassword"),
@@ -43,6 +43,19 @@ async def test_auth_page_serves_the_ported_component(path, component):
     assert body["component"] == component
     # Auth pages read optional props with typed defaults — none required yet.
     assert body["props"] == {}
+
+
+async def test_register_page_serves_the_ported_component_with_password_rules():
+    app = _sample_app(APP_ENV="local")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/register", headers={"X-Fastplace-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["component"] == "Auth/Register"
+    # The register page's client-side default is "minlength: 8;" — the server
+    # prop carries the same configured policy that validates the POST.
+    assert body["props"] == {"passwordRules": "minlength: 8;"}
 
 
 async def test_reset_password_forwards_query_string_to_page_props():

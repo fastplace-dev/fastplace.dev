@@ -73,6 +73,28 @@ class RedisSessionStore:
     async def destroy(self, session_id: str) -> None:
         await self.client.delete(self._key(session_id))
 
+    async def destroy_for_user(self, user_id: Any, *, except_session_id: str | None = None) -> int:
+        """SCAN the namespace, delete every envelope attributed to ``user_id``."""
+        removed = 0
+        async for key in self.client.scan_iter(match=f"{self._prefix}*"):
+            session_id = (
+                key[len(self._prefix) :]
+                if isinstance(key, str)
+                else key.decode()[len(self._prefix) :]
+            )
+            if session_id == except_session_id:
+                continue
+            raw = await self.client.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            envelope: dict[str, Any] = json.loads(raw)
+            if envelope.get("user_id") == user_id:
+                await self.client.delete(key)
+                removed += 1
+        return removed
+
     async def gc(self, lifetime: int | None = None) -> int:
         # Redis expires keys server-side — nothing to sweep.
         return 0

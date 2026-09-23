@@ -17,15 +17,38 @@ import secrets
 from typing import Any
 
 from fastplace.auth.guards import guard
+from fastplace.auth.remember import (
+    REMEMBER_COOKIE_NAME,
+    REMEMBER_COOKIE_SCOPE,
+    REMEMBER_COOKIE_TTL,
+)
 from fastplace.errors import AuthenticationError, FastplaceError
 from fastplace.http.middleware import Middleware
 from fastplace.http.request import Request
-from fastplace.http.response import Json, Response
+from fastplace.http.response import Json, Redirect, Response
 
 CSRF_HEADER = "X-Fastplace-CSRF-Token"
 CSRF_SESSION_KEY = "_token"
 CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 AUTH_EDGE_KEY = "fastplace_auth_edge"
+
+#: Sentinel distinguishing "no queued cookie" from a queued clear (None).
+_UNSET = object()
+
+INTENDED_SESSION_KEY = "url.intended"
+
+
+def _remember_cookie_header(value: str | None, request: Request) -> str:
+    """Set-Cookie line for the remember cookie — ``value=None`` clears it."""
+    if value is None:
+        return f"{REMEMBER_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+    cookie = (
+        f"{REMEMBER_COOKIE_NAME}={value}; Max-Age={REMEMBER_COOKIE_TTL}; "
+        "Path=/; HttpOnly; SameSite=Lax"
+    )
+    if str(request.url).startswith("https"):
+        cookie += "; Secure"
+    return cookie
 
 
 class ResolveUserMiddleware(Middleware):
@@ -44,7 +67,14 @@ class ResolveUserMiddleware(Middleware):
         except AuthenticationError as exc:
             return Json({"message": str(exc) or "Invalid credentials."}, status_code=401)
         request.set_user(user)
-        return await call_next(request)
+        response = await call_next(request)
+        pending = request.scope.get(REMEMBER_COOKIE_SCOPE, _UNSET)
+        if pending is not _UNSET:
+            # A guard queued a remember-cookie write (or clear) during the
+            # request; guards never touch responses, so flush it here on
+            # the way out (spec §4.6).
+            response.headers.append("set-cookie", _remember_cookie_header(pending, request))
+        return response
 
     async def _resolve(self, request: Request) -> Any:
         token_guard = self._token_guard_or_none()
@@ -153,3 +183,35 @@ class CsrfMiddleware(Middleware):
             elif path == pattern:
                 return True
         return False
+
+
+class AuthenticateMiddleware(Middleware):
+    """``auth`` route middleware — reject anonymous requests (spec §4.5).
+
+    Route middleware runs inside the endpoint (after ResolveUserMiddleware),
+    so ``request.user`` is already resolved here. Bridge/API requests get the
+    401 JSON envelope; browser navigations are redirected to /login with the
+    intended URL parked in the session for ``request.intended()`` to resume.
+    """
+
+    async def handle(self, request: Request, call_next) -> Response:
+        if request.user is not None:
+            return await call_next(request)
+        if request.is_bridge or request.path.startswith("/api/"):
+            raise AuthenticationError()
+        request.session[INTENDED_SESSION_KEY] = request.full_path
+        return Redirect("/login", status_code=302)
+
+
+class GuestMiddleware(Middleware):
+    """``guest`` route middleware — authenticated users bounce to the app.
+
+    An authenticated visitor is redirected to the URL parked by ``auth``
+    middleware (the journey they were on before login) or the dashboard.
+    """
+
+    async def handle(self, request: Request, call_next) -> Response:
+        if request.user is None:
+            return await call_next(request)
+        intended = request.session.pop(INTENDED_SESSION_KEY, None) or "/dashboard"
+        return Redirect(intended, status_code=302)

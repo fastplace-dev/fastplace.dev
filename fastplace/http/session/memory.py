@@ -24,8 +24,8 @@ class MemorySessionStore:
     ) -> None:
         self._lifetime = lifetime
         self._clock = clock
-        # session_id -> (payload, last_activity, expires_at)
-        self._rows: dict[str, tuple[dict[str, Any], int, float]] = {}
+        # session_id -> (payload, last_activity, expires_at, user_id)
+        self._rows: dict[str, tuple[dict[str, Any], int, float, Any]] = {}
 
     def _ttl(self) -> int:
         return self._lifetime if self._lifetime is not None else session_lifetime()
@@ -34,7 +34,7 @@ class MemorySessionStore:
         row = self._rows.get(session_id)
         if row is None:
             return None
-        payload, last_activity, expires_at = row
+        payload, last_activity, expires_at, _user_id = row
         if self._clock() >= expires_at:
             del self._rows[session_id]  # lazy sweep
             return None
@@ -47,18 +47,31 @@ class MemorySessionStore:
         *,
         user_id: int | None = None,
     ) -> None:
-        # user_id is a no-op here: the memory driver keeps no revocation index.
+        # Attribute the row to its user when the caller didn't pass one —
+        # the payload key is the SessionGuard's SESSION_KEY ("user_id").
+        if user_id is None:
+            user_id = payload.get("user_id")
         now = int(self._clock())
-        self._rows[session_id] = (dict(payload), now, now + self._ttl())
+        self._rows[session_id] = (dict(payload), now, now + self._ttl(), user_id)
 
     async def destroy(self, session_id: str) -> None:
         self._rows.pop(session_id, None)
+
+    async def destroy_for_user(self, user_id: Any, *, except_session_id: str | None = None) -> int:
+        doomed = [
+            sid
+            for sid, (_, _, _, row_user_id) in self._rows.items()
+            if row_user_id == user_id and sid != except_session_id
+        ]
+        for sid in doomed:
+            del self._rows[sid]
+        return len(doomed)
 
     async def gc(self, lifetime: int | None = None) -> int:
         # The passed lifetime is advisory: rows already carry their own
         # write-time deadline, so the sweep is simply "past deadline".
         now = self._clock()
-        stale = [sid for sid, (_, _, expires_at) in self._rows.items() if now >= expires_at]
+        stale = [sid for sid, (_, _, expires_at, _) in self._rows.items() if now >= expires_at]
         for sid in stale:
             del self._rows[sid]
         return len(stale)

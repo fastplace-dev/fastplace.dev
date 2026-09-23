@@ -137,6 +137,9 @@ class ServerSessionMiddleware:
 
         scope["session"] = await self._load(scope)
         session: ServerSession = scope["session"]
+        # Guards (logout_other_devices) need the live store for per-user
+        # revocation — reach it without re-resolving the factory.
+        scope["fastplace_session_store"] = self.store
 
         async def send_wrapper(message: dict) -> None:
             if message["type"] == "http.response.start":
@@ -193,7 +196,10 @@ class ServerSessionMiddleware:
 
         session_id = session.session_id or secrets.token_hex(32)
         previous_id = session._previous_id
-        await self.store.write(session_id, dict(session))
+        payload = dict(session)
+        # EC2: attribute the row to its user — the payload key is the
+        # SessionGuard's SESSION_KEY ("user_id").
+        await self.store.write(session_id, payload, user_id=payload.get("user_id"))
         if previous_id and previous_id != session_id:
             await self.store.destroy(previous_id)  # regenerate() cleanup
         session.mark_persisted(session_id, dict(session), last_activity=now)

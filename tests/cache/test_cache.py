@@ -11,6 +11,7 @@ import json
 import pytest
 
 from fastplace.cache import (
+    DatabaseCache,
     MemoryCache,
     RedisCache,
     cache,
@@ -133,6 +134,44 @@ async def test_memory_expired_entry_is_dropped_on_read(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# MemoryCache — increment / ttl primitives (login throttling groundwork)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryIncrement:
+    async def test_increment_counts_up(self):
+        store = MemoryCache()
+        assert await store.increment("hits") == 1
+        assert await store.increment("hits") == 2
+        assert await store.increment("hits") == 3
+
+    async def test_ttl_reports_remaining_seconds(self):
+        store = MemoryCache()
+        await store.increment("hits", ttl=60)
+        remaining = await store.ttl("hits")
+        assert remaining is not None and 0 < remaining <= 60
+
+    async def test_ttl_is_none_for_missing_keys(self):
+        assert await MemoryCache().ttl("nope") is None
+
+    async def test_ttl_is_none_for_an_entry_without_a_deadline(self):
+        # put() without a ttl lives forever — there is no expiry to report.
+        store = MemoryCache()
+        await store.put("durable", 1)
+        assert await store.ttl("durable") is None
+
+    async def test_increment_restarts_after_expiry(self):
+        # An expired counter reads as missing, not as a stale integer — the
+        # next increment restarts at 1 (fresh decay window).
+        store = MemoryCache()
+        await store.increment("hits", ttl=1)
+        # Force the deadline into the past (the _Entry deadline is monotonic).
+        store._entries["hits"] = store._entries["hits"].__class__(store._entries["hits"].value, 0.0)
+        assert await store.get("hits") is None  # expired row reads as missing
+        assert await store.increment("hits") == 1
+
+
+# ---------------------------------------------------------------------------
 # RedisCache — injected fake client only, never a live server
 # ---------------------------------------------------------------------------
 
@@ -143,10 +182,17 @@ class FakeRedis:
     def __init__(self):
         self.store: dict[str, str] = {}
         self.commands: list[tuple] = []
+        # increment/ttl surface: remaining-seconds-per-key + expire call count.
+        self.deadline: dict[str, int] = {}
+        self.expire_calls = 0
 
     async def set(self, key, value, ex=None):
         self.commands.append(("set", key, value, ex))
         self.store[key] = value
+        if ex is None:
+            self.deadline.pop(key, None)
+        else:
+            self.deadline[key] = int(ex)
 
     async def get(self, key):
         self.commands.append(("get", key))
@@ -155,6 +201,27 @@ class FakeRedis:
     async def delete(self, key):
         self.commands.append(("delete", key))
         self.store.pop(key, None)
+        self.deadline.pop(key, None)
+
+    async def incr(self, key):
+        # Redis INCR works on plain int text — the driver must store counters
+        # that way, never JSON-quoted ("3", not "\"3\"" or "3.0").
+        self.commands.append(("incr", key))
+        current = int(self.store.get(key, "0")) + 1
+        self.store[key] = str(current)
+        return current
+
+    async def ttl(self, key):
+        # Redis semantics: -2 = key absent, -1 = no expiry, else seconds left.
+        self.commands.append(("ttl", key))
+        if key not in self.store:
+            return -2
+        return self.deadline.get(key, -1)
+
+    async def expire(self, key, seconds):
+        self.commands.append(("expire", key, seconds))
+        self.deadline[key] = int(seconds)
+        self.expire_calls += 1
 
     async def scan_iter(self, match=None):
         # Mirrors redis.asyncio: scan_iter is an async iterator.
@@ -168,6 +235,7 @@ class FakeRedis:
         self.commands.append(("unlink", keys))
         for key in keys:
             self.store.pop(key, None)
+            self.deadline.pop(key, None)
 
 
 async def test_redis_put_get_roundtrip_json():
@@ -252,6 +320,30 @@ def test_redis_lazy_client_construction_is_offline_safe():
     # never touch the network.
     store = RedisCache(url="redis://localhost:6379/9")
     assert store._client is None  # not even built yet
+
+
+async def test_redis_increment_sets_expiry_once():
+    # Counters stay plain int text (INCR-compatible) and only the first INCR
+    # arms the TTL — the decay window is fixed, not slid by every hit.
+    client = FakeRedis()
+    store = RedisCache(client=client)
+    assert await store.increment("hits", ttl=60) == 1
+    assert await store.increment("hits", ttl=60) == 2
+    assert await store.increment("hits", ttl=60) == 3
+    assert client.store["fastplace:cache:hits"] == "3"
+    assert client.expire_calls == 1
+
+
+async def test_redis_ttl_reports_remaining():
+    client = FakeRedis()
+    client.store["fastplace:cache:hits"] = "3"
+    client.deadline["fastplace:cache:hits"] = 41
+    store = RedisCache(client=client)
+    assert await store.ttl("hits") == 41.0
+
+
+async def test_redis_ttl_is_none_for_missing_keys():
+    assert await RedisCache(client=FakeRedis()).ttl("nope") is None
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +476,11 @@ async def test_factory_returns_singleton_per_process(monkeypatch):
 async def test_factory_selects_redis_driver(monkeypatch):
     monkeypatch.setenv("CACHE_DRIVER", "redis")
     assert isinstance(cache(), RedisCache)
+
+
+async def test_factory_selects_database_driver(monkeypatch):
+    monkeypatch.setenv("CACHE_DRIVER", "database")
+    assert isinstance(cache(), DatabaseCache)
 
 
 async def test_factory_rejects_unknown_driver(monkeypatch):

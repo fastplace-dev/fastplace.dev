@@ -90,6 +90,7 @@ class _QueryTrackerMiddleware:
 def get_app(
     *,
     routes: Router | None = None,
+    auth_routes: Router | None = None,
     api_routes: Router | None = None,
     ai_routes: Router | None = None,
     middleware: list[Middleware] | None = None,
@@ -99,7 +100,8 @@ def get_app(
 ) -> FastAPI:
     """Build a FastAPI application around Fastplace routers and middleware.
 
-    ``routes`` mount at the root (bridge pages), ``api_routes`` under
+    ``routes`` mount at the root (bridge pages), ``auth_routes`` at the root
+    beside them (credential POST endpoints), ``api_routes`` under
     ``/api/v1``, ``ai_routes`` under ``/ai``.
     """
 
@@ -131,6 +133,7 @@ def get_app(
     _mount_routes(
         app,
         routes=routes,
+        auth_routes=auth_routes,
         api_routes=api_routes,
         ai_routes=ai_routes,
         route_middleware=_route_middleware_registry(route_middleware, cfg),
@@ -166,12 +169,14 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     import_jobs(root)
 
     web = _load_router_module(root, "routes.web")
+    auth = _load_router_module(root, "routes.auth")
     api = _load_router_module(root, "routes.api")
     ai = _load_router_module(root, "routes.ai")
 
     middleware = _middleware_from_config(root)
     app = get_app(
         routes=web,
+        auth_routes=auth,
         api_routes=api,
         ai_routes=ai,
         middleware=middleware,
@@ -276,6 +281,7 @@ def _mount_routes(
     app: FastAPI,
     *,
     routes: Router | None,
+    auth_routes: Router | None = None,
     api_routes: Router | None,
     ai_routes: Router | None,
     route_middleware: dict[str, Any] | None = None,
@@ -283,6 +289,10 @@ def _mount_routes(
     api = APIRouter()
     if routes:
         _register_router(api, routes, route_middleware=route_middleware)
+    if auth_routes:
+        # Credential endpoints live on the root surface beside the web
+        # routes (POST /login, /register, /logout) — no prefix.
+        _register_router(api, auth_routes, route_middleware=route_middleware)
     if api_routes:
         _register_router(api, api_routes, prefix=API_PREFIX, route_middleware=route_middleware)
     if ai_routes:
@@ -353,7 +363,11 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
         errors = getattr(exc, "errors", None)
         if errors:
             payload["errors"] = errors
-        return Json(payload, status_code=exc.status_code)
+        headers: dict[str, str] = {}
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            headers["Retry-After"] = str(retry_after)
+        return Json(payload, status_code=exc.status_code, headers=headers)
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_handler(request: Any, exc: RequestValidationError) -> Response:

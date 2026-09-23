@@ -14,6 +14,21 @@ from fastplace.http.router import Router
 TEST_USER = SimpleNamespace(id=7, name="Firoz", email="firoz@example.test")
 
 
+@pytest.fixture(autouse=True)
+def _dict_provider_for_default_guard(monkeypatch: pytest.MonkeyPatch):
+    """Pin guard()'s config-driven provider to the dict singleton.
+
+    config/auth.py ships the ORM provider for the sample app; this suite
+    exercises the framework middleware against SimpleNamespace users, and
+    ResolveUserMiddleware builds its guard through the global config — the
+    provider it resolves must agree with the SessionGuard(dict_provider)
+    the test apps construct explicitly, or logins and resolutions diverge.
+    """
+    monkeypatch.setattr(
+        "fastplace.auth.guards.provider_from_config", lambda config_get: dict_provider
+    )
+
+
 def build_auth_app() -> object:
     """App with session login/logout, a guarded ``/me`` echo, and a POST
     endpoint behind CSRF — mirrors the sample app's middleware stack."""

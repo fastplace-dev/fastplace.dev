@@ -26,6 +26,17 @@ class ConfigurationError(FastplaceError):
     default_message = "Configuration error"
 
 
+class ThrottleRequestsError(FastplaceError):
+    """Too many attempts — the client must wait (Retry-After in seconds)."""
+
+    status_code = 429
+    default_message = "Too many attempts. Try again later."
+
+    def __init__(self, message: str | None = None, *, retry_after: int = 60) -> None:
+        super().__init__(message)
+        self.retry_after = max(0, int(retry_after))
+
+
 class ValidationError(FastplaceError):
     """Request or domain input validation failed."""
 

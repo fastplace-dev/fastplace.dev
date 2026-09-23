@@ -1,13 +1,15 @@
-"""Cache — framework cache store with memory and redis drivers.
+"""Cache — framework cache store with memory, redis, and database drivers.
 
 ``cache()`` returns the process-wide store selected by ``CACHE_DRIVER``:
-``memory`` (default, zero-dependency dev fallback) or ``redis`` (JSON values
-on redis.asyncio). Both drivers share one async interface — ``get``, ``put``,
-``forget``, ``remember``, ``flush`` — so controllers and services never care
-which driver is configured.
+``memory`` (default, zero-dependency dev fallback), ``redis`` (JSON values on
+redis.asyncio), or ``database`` (a portable ``cache`` table over SQLAlchemy
+Core — the production default alongside redis). All drivers share one async
+interface — ``get``, ``put``, ``forget``, ``remember``, ``flush``,
+``increment``, ``ttl`` — so controllers and services never care which driver
+is configured.
 
-Serialization caveat: the redis driver stores JSON, so types JSON cannot
-represent (tuples, non-string dict keys, datetimes) do not round-trip
+Serialization caveat: the redis and database drivers store JSON, so types JSON
+cannot represent (tuples, non-string dict keys, datetimes) do not round-trip
 identically — and unserializable values raise :class:`CacheSerializationError`
 at ``put()`` time. Code that must be driver-agnostic should cache JSON-shaped
 data only.
@@ -17,9 +19,24 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from collections.abc import Callable
 from time import monotonic
 from typing import Any, Protocol, runtime_checkable
+
+from sqlalchemy import (
+    Column,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    cast,
+    delete,
+    insert,
+    select,
+    update,
+)
 
 from fastplace.config import config
 from fastplace.errors import CacheSerializationError, ConfigurationError
@@ -54,12 +71,25 @@ def _default_ttl(ttl: int | float | None) -> int | float | None:
     return raw
 
 
+def _counter_horizon(ttl: int | float | None) -> float:
+    """Resolve a counter's decay window — counters are always bounded.
+
+    Unlike put() (where ``None`` means "lives forever"), an increment() window
+    must exist: an unbounded counter can never release a locked-out key.
+    """
+    resolved = _default_ttl(ttl)
+    if resolved is None:
+        raise ValueError("cache ttl must be a positive number of seconds, got None")
+    _validate_ttl(resolved)
+    return float(resolved)
+
+
 @runtime_checkable
 class CacheStore(Protocol):
     """The async surface every cache driver implements.
 
-    Drivers may serialize values (redis stores JSON) — tuple/int-key fidelity
-    is not guaranteed across drivers.
+    Drivers may serialize values (redis/database store JSON) — tuple/int-key
+    fidelity is not guaranteed across drivers.
     """
 
     async def get(self, key: str) -> Any: ...
@@ -69,6 +99,13 @@ class CacheStore(Protocol):
     async def remember(
         self, key: str, ttl: int | float | None = None, factory: Callable[[], Any] = lambda: None
     ) -> Any: ...
+    async def increment(self, key: str, ttl: int | float | None = None) -> int:
+        """Atomic +1 (storing 1 on first hit); expired counters restart at 1."""
+        ...
+
+    async def ttl(self, key: str) -> float | None:
+        """Seconds remaining before expiry; None when the key is absent (or has no TTL)."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +172,26 @@ class MemoryCache:
             value = await value
         await self.put(key, value, ttl=resolved)
         return value
+
+    async def increment(self, key: str, ttl: int | float | None = None) -> int:
+        """Atomic +1 on the in-process counter; expired counters restart at 1.
+
+        Each hit re-arms the deadline (a sliding window) — the counter is a
+        plain stored value, so it follows put() ttl semantics with the
+        configured CACHE_TTL as the default horizon.
+        """
+        current = self._get(key)
+        base = current if isinstance(current, int) else 0
+        horizon = _counter_horizon(ttl)
+        value = int(base) + 1
+        self._entries[key] = _Entry(value, monotonic() + horizon)
+        return value
+
+    async def ttl(self, key: str) -> float | None:
+        entry = self._entries.get(key)
+        if entry is None or entry.deadline is None:
+            return None
+        return max(0.0, entry.deadline - monotonic())
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +279,199 @@ class RedisCache:
         await self.put(key, value, ttl=resolved)
         return value
 
+    async def increment(self, key: str, ttl: int | float | None = None) -> int:
+        """INCR-compatible counter — only the first hit arms the expiry.
+
+        Counters are stored as plain int text (what INCR itself writes), never
+        JSON-quoted, so the value stays INCR-compatible across clients.
+        """
+        namespaced = self._namespaced(key)
+        value = await self.client.incr(namespaced)
+        if await self.client.ttl(namespaced) == -1:  # exists, no expiry armed yet
+            await self.client.expire(namespaced, int(_counter_horizon(ttl)))
+        return int(value)
+
+    async def ttl(self, key: str) -> float | None:
+        remaining = await self.client.ttl(self._namespaced(key))
+        if remaining == -2:  # key absent
+            return None
+        return None if remaining == -1 else max(0.0, float(remaining))
+
+
+# ---------------------------------------------------------------------------
+# Database driver
+# ---------------------------------------------------------------------------
+
+# Framework-owned metadata (the sessions-table pattern): the cache table is
+# infrastructure, not app domain — it lives off Model.metadata so app Alembic
+# revisions never depend on it, and the store creates it idempotently.
+_db_cache_metadata = MetaData()
+
+_cache_table = Table(
+    "cache",
+    _db_cache_metadata,
+    Column("key", String(255), primary_key=True),
+    Column("value", Text, nullable=False),
+    # unix seconds; NULL = the row never expires
+    Column("expires_at", Integer, nullable=True, index=True),
+)
+
+
+class DatabaseCache:
+    """SQLAlchemy Core cache driver — the production default alongside redis.
+
+    Portable across SQLite/PG/MySQL: no dialect-specific upsert syntax (the
+    sessions-store UPDATE-then-INSERT pattern), and every op is one statement
+    plus a lazy expired-row sweep on read. Counters keep the INCR contract:
+    plain int text, restart at 1 once the row's deadline has passed.
+    """
+
+    def __init__(self) -> None:
+        self._ensured = False
+
+    def _engine(self) -> Any:
+        # Function-level import: reset_db() rebinds fastplace.db.db, and every
+        # call must see the live binding (tests reload config per case).
+        from fastplace.db import db
+
+        return db.manager.engine("default")
+
+    async def _ensure_table(self) -> None:
+        """Create the table on first use (checkfirst — idempotent)."""
+        if self._ensured:
+            return
+
+        def create(sync_conn: Any) -> None:
+            _db_cache_metadata.create_all(sync_conn, tables=[_cache_table], checkfirst=True)
+
+        async with self._engine().begin() as conn:
+            await conn.run_sync(create)
+        self._ensured = True
+
+    def _prefix_head(self) -> str:
+        return str(config("CACHE_PREFIX", default="fastplace:cache:"))
+
+    def _key(self, key: str) -> str:
+        return f"{self._prefix_head()}{key}"
+
+    async def _lookup(self, stored: str) -> Any:
+        """Row read distinguishing absent/expired (``_MISSING``) from a stored null."""
+        stmt = select(_cache_table.c.value, _cache_table.c.expires_at).where(
+            _cache_table.c.key == stored
+        )
+        async with self._engine().connect() as conn:
+            row = (await conn.execute(stmt)).first()
+        if row is None:
+            return _MISSING
+        if row.expires_at is not None and row.expires_at <= int(time.time()):
+            # Lazy sweep: an expired row reads as missing and stops squatting
+            # on the key (a later increment must restart at 1, not resurrect).
+            async with self._engine().begin() as conn:
+                await conn.execute(delete(_cache_table).where(_cache_table.c.key == stored))
+            return _MISSING
+        return json.loads(row.value)
+
+    async def get(self, key: str) -> Any:
+        await self._ensure_table()
+        value = await self._lookup(self._key(key))
+        return None if value is _MISSING else value
+
+    async def put(self, key: str, value: Any, ttl: int | float | None = None) -> None:
+        await self._ensure_table()
+        _validate_ttl(ttl)
+        try:
+            encoded = json.dumps(value)
+        except TypeError as exc:
+            raise CacheSerializationError(
+                f"cache cannot serialize value for key '{key}' "
+                f"({type(value).__name__} is not JSON-serializable): {exc}"
+            ) from exc
+        # Driver parity: put() without a ttl never expires (CACHE_TTL is the
+        # remember() default, not a put() default) — NULL means "no deadline".
+        expires_at = None if ttl is None else int(time.time()) + int(ttl)
+        stored = self._key(key)
+        # Portable upsert (SQLite/PG/MySQL) — the sessions-store pattern.
+        async with self._engine().begin() as conn:
+            result = await conn.execute(
+                update(_cache_table)
+                .where(_cache_table.c.key == stored)
+                .values(value=encoded, expires_at=expires_at)
+            )
+            if int(result.rowcount or 0) == 0:
+                await conn.execute(
+                    insert(_cache_table).values(key=stored, value=encoded, expires_at=expires_at)
+                )
+
+    async def forget(self, key: str) -> None:
+        await self._ensure_table()
+        async with self._engine().begin() as conn:
+            await conn.execute(delete(_cache_table).where(_cache_table.c.key == self._key(key)))
+
+    async def flush(self) -> None:
+        """Delete only this cache's namespace — the table may be shared."""
+        await self._ensure_table()
+        async with self._engine().begin() as conn:
+            await conn.execute(
+                delete(_cache_table).where(_cache_table.c.key.like(f"{self._prefix_head()}%"))
+            )
+
+    async def remember(
+        self, key: str, ttl: int | float | None = None, factory: Callable[[], Any] = lambda: None
+    ) -> Any:
+        await self._ensure_table()
+        resolved = _default_ttl(ttl)
+        _validate_ttl(resolved)
+        # Sentinel read so a cached JSON null stays a hit (driver parity).
+        cached = await self._lookup(self._key(key))
+        if cached is not _MISSING:
+            return cached
+        value = factory()
+        if inspect.isawaitable(value):
+            value = await value
+        await self.put(key, value, ttl=resolved)
+        return value
+
+    async def increment(self, key: str, ttl: int | float | None = None) -> int:
+        """Expiry-aware +1: first hit stores 1; a hit past expiry restarts at 1."""
+        await self._ensure_table()
+        horizon = int(_counter_horizon(ttl))
+        stored = self._key(key)
+        now = int(time.time())
+        async with self._engine().begin() as conn:
+            result = await conn.execute(
+                update(_cache_table)
+                .where(_cache_table.c.key == stored)
+                .where((_cache_table.c.expires_at.is_(None)) | (_cache_table.c.expires_at > now))
+                .values(value=cast(_cache_table.c.value, Integer) + 1)
+            )
+            if int(result.rowcount or 0) == 0:
+                # Absent or stale (expired) row — restart the window at 1.
+                await conn.execute(delete(_cache_table).where(_cache_table.c.key == stored))
+                await conn.execute(
+                    insert(_cache_table).values(key=stored, value="1", expires_at=now + horizon)
+                )
+                return 1
+        # The UPDATE hit a live row — read the incremented value back.
+        async with self._engine().connect() as conn:
+            row = (
+                await conn.execute(select(_cache_table.c.value).where(_cache_table.c.key == stored))
+            ).first()
+        if row is None:  # pragma: no cover — the row was just updated in-transaction
+            return 1
+        current = row.value
+        if isinstance(current, str):
+            current = json.loads(current)
+        return int(current)
+
+    async def ttl(self, key: str) -> float | None:
+        await self._ensure_table()
+        stmt = select(_cache_table.c.expires_at).where(_cache_table.c.key == self._key(key))
+        async with self._engine().connect() as conn:
+            row = (await conn.execute(stmt)).first()
+        if row is None or row.expires_at is None:
+            return None
+        return max(0.0, float(row.expires_at - int(time.time())))
+
 
 # ---------------------------------------------------------------------------
 # factory
@@ -243,6 +493,8 @@ def cache() -> CacheStore:
                     "CACHE_DRIVER=redis requires the redis library — pip install 'fastplace[queue]'"
                 )
             _default_cache = RedisCache()
+        elif driver == "database":
+            _default_cache = DatabaseCache()
         else:
             raise ConfigurationError(f"unknown CACHE_DRIVER '{driver}'")
     return _default_cache

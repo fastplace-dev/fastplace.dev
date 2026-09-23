@@ -57,6 +57,7 @@ async def sample_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/sample.db")
     monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
 
+    from app.modules.accounts.models.user import User  # noqa: F401
     from app.modules.knowledge.models.knowledge_item import KnowledgeItem  # noqa: F401
     from app.modules.projects.models.project import Project  # noqa: F401
     from app.modules.projects.models.task import Task  # noqa: F401
@@ -65,6 +66,7 @@ async def sample_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from fastplace.http.kernel import _middleware_from_config
     from routes.ai import router as ai_router
     from routes.api import router as api_router
+    from routes.auth import router as auth_router
     from routes.web import router as web_router
 
     await db.create_all()
@@ -73,6 +75,7 @@ async def sample_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     middleware = _middleware_from_config(Path(_PROJECT_ROOT))
     return get_app(
         routes=web_router,
+        auth_routes=auth_router,
         api_routes=api_router,
         ai_routes=ai_router,
         middleware=middleware,

@@ -1,31 +1,30 @@
 """Account settings page controller — profile and security bridge pages.
 
-GET-only page routes: the settings section nav already links to both pages,
-and each renders fully client-side, reading optional props with graceful
-degradation. The account backend itself (profile updates, password changes,
-passkeys, two-factor) is Phase 4 — the form targets stay unrouted until then.
+GET-only page routes behind the ``auth`` route middleware: the settings
+section nav links to both pages and each renders fully client-side,
+reading optional props with graceful degradation. The account backend
+itself (profile updates, password changes, passkeys, two-factor) stays
+in the later auth phases — those form targets are unrouted until then.
 """
 
 from __future__ import annotations
 
+from app.modules.accounts.services.password_policy import frontend_rules
 from fastplace.http import Controller, Request, render
-
-# The security page has no client-side default for passwordRules (the
-# register page applies one), so the server supplies the same default until
-# a configuration surface for password policy lands.
-_PASSWORD_RULES = "minlength: 8;"
 
 
 class SettingsPagesController(Controller):
     async def profile(self, request: Request):
-        # Reads auth?.user as optional — renders empty fields for guests.
+        # Reads auth?.user as optional — the shared auth.user prop arrives
+        # with the later auth phases.
         return render(request, component="Settings/Profile", props={})
 
     async def security(self, request: Request):
-        # canManagePasskeys/canManageTwoFactor stay unset; both sections
-        # render their gated-off states until the auth phase lands.
+        # The security page has no client-side default for passwordRules
+        # (the register page applies one), so the server supplies the
+        # configured policy in the frontend dialect.
         return render(
             request,
             component="Settings/Security",
-            props={"passwordRules": _PASSWORD_RULES},
+            props={"passwordRules": frontend_rules()},
         )

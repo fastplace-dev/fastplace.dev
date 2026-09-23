@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from fastplace.auth.guards import SessionGuard
 from fastplace.auth.providers import DictUserProvider
+from fastplace.auth.remember import (
+    REMEMBER_COOKIE_NAME,
+    REMEMBER_COOKIE_SCOPE,
+    VIA_REMEMBER_SCOPE,
+)
+from fastplace.cache import reset_cache
+from fastplace.events import reset_listeners
 from tests.auth.conftest import bootstrap_csrf
 
 
@@ -161,3 +170,396 @@ async def post_with_csrf(client, path: str):
 
     token = await bootstrap_csrf(client)
     return await client.post(path, headers={CSRF_HEADER: token})
+
+
+# --- Task 6: credential core — attempt family, remember fallback, events ----
+
+
+class FakeRememberStore:
+    """Dict-backed remember store — DB-free guard unit tests."""
+
+    def __init__(self) -> None:
+        self.rows: dict[int, list[str]] = {}
+        self.revoked_all: list[object] = []
+        self._next_id = 100
+
+    async def issue(self, user_id) -> str:
+        self._next_id += 1
+        validator = f"v{self._next_id}"
+        self.rows.setdefault(user_id, []).append(validator)
+        return f"{self._next_id}|{validator}"
+
+    async def consume(self, cookie):
+        row_id, _, validator = cookie.partition("|")
+        for user_id, validators in self.rows.items():
+            if validator in validators:
+                validators.remove(validator)
+                fresh = await self.issue(user_id)
+                return user_id, fresh
+        return None
+
+    async def revoke(self, cookie) -> None:
+        _, _, validator = cookie.partition("|")
+        for validators in self.rows.values():
+            if validator in validators:
+                validators.remove(validator)
+                return
+
+    async def revoke_all_for_user(self, user_id) -> int:
+        self.revoked_all.append(user_id)
+        return len(self.rows.pop(user_id, []))
+
+
+class FakeSessionStore:
+    """Session-store stand-in tracking destroy_for_user calls."""
+
+    def __init__(self) -> None:
+        self.destroyed: list[tuple[object, str | None]] = []
+
+    async def destroy_for_user(self, user_id, *, except_session_id=None) -> int:
+        self.destroyed.append((user_id, except_session_id))
+        return 0
+
+
+class _FakeSession(dict):
+    """Dict session counting regenerate()/invalidate() — fixation-path pins."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.session_id = "fake-session-id"
+        self.regenerated = 0
+        self.invalidated = False
+
+    def regenerate(self) -> None:
+        self.regenerated += 1
+
+    def invalidate(self) -> None:
+        self.invalidated = True
+        self.clear()
+
+
+def make_credentials_user():
+    from fastplace.auth.hashing import Hash
+
+    return SimpleNamespace(id=7, email="firoz@example.test", password=Hash.make("secret123"))
+
+
+def make_request(session=None, *, scope=None, cookies=None):
+    """The SimpleNamespace stub every credential-core test uses."""
+    return SimpleNamespace(
+        session=session if session is not None else _FakeSession(),
+        scope=scope if scope is not None else {},
+        cookies=cookies if cookies is not None else {},
+        user=None,
+        ip="10.0.0.1",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    # The lazy limiter lands on the process-wide memory cache — counters must
+    # not bleed between tests sharing one email|ip key.
+    reset_cache()
+    yield
+    reset_cache()
+
+
+@pytest.fixture(autouse=True)
+def _clean_listeners():
+    reset_listeners()
+    yield
+    reset_listeners()
+
+
+@pytest.fixture()
+def fake_remember(monkeypatch):
+    """Point the guard's remember_store at a dict-backed fake."""
+    import fastplace.auth.guards as guards_module
+
+    store = FakeRememberStore()
+    monkeypatch.setattr(guards_module, "remember_store", lambda: store)
+    return store
+
+
+class TestSessionGuardCredentials:
+    async def test_attempt_dispatches_attempting_and_logs_in(self, fake_remember):
+        from fastplace.events import listen
+
+        provider = DictUserProvider()
+        user = make_credentials_user()
+        provider.add(user)
+        seen: list[tuple[str, dict]] = []
+        listen("Attempting", lambda e: seen.append((e.name, dict(e.payload))))
+        listen("Login", lambda e: seen.append((e.name, dict(e.payload))))
+
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        ok = await guard.attempt(request, {"email": "firoz@example.test", "password": "secret123"})
+
+        assert ok is True
+        assert request.session[SessionGuard.SESSION_KEY] == 7
+        assert seen[0] == (
+            "Attempting",
+            {"email": "firoz@example.test", "remember": False},
+        )
+        assert seen[1] == (
+            "Login",
+            {"user_id": 7, "guard": "session", "remember": False},
+        )
+
+    async def test_attempt_failure_dispatches_failed_and_returns_false(self, fake_remember):
+        from fastplace.events import listen
+
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        failures: list[dict] = []
+        listen("Failed", lambda e: failures.append(dict(e.payload)))
+
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        ok = await guard.attempt(request, {"email": "firoz@example.test", "password": "wrong-pass"})
+
+        assert ok is False
+        assert SessionGuard.SESSION_KEY not in request.session
+        assert failures == [{"email": "firoz@example.test"}]
+
+    async def test_five_failures_then_sixth_raises_throttle(self, fake_remember):
+        from fastplace.errors import ThrottleRequestsError
+
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+
+        async def attempt_with(email: str):
+            return await guard.attempt(make_request(), {"email": email, "password": "wrong-pass"})
+
+        # Mixed-case email lowercases into the same limiter key — five
+        # failures lock the account for both spellings.
+        for _ in range(5):
+            assert await attempt_with("Firoz@Example.test") is False
+        with pytest.raises(ThrottleRequestsError):
+            await attempt_with("firoz@example.test")
+
+    async def test_lockout_payload_carries_email_ip_and_retry_after(self, fake_remember):
+        from fastplace.errors import ThrottleRequestsError
+        from fastplace.events import listen
+
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+        lockouts: list[dict] = []
+        listen("Lockout", lambda e: lockouts.append(dict(e.payload)))
+
+        for _ in range(5):
+            await guard.attempt(make_request(), {"email": "firoz@example.test", "password": "nope"})
+        with pytest.raises(ThrottleRequestsError):
+            await guard.attempt(make_request(), {"email": "firoz@example.test", "password": "nope"})
+
+        assert len(lockouts) == 1
+        assert lockouts[0]["email"] == "firoz@example.test"
+        assert lockouts[0]["ip"] == "10.0.0.1"
+        assert lockouts[0]["retry_after"] >= 1
+
+    async def test_successful_attempt_clears_the_limiter(self, fake_remember):
+        import hashlib
+
+        from fastplace.ratelimit import RateLimiter
+
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        limiter = RateLimiter()
+        guard = SessionGuard(provider, limiter=limiter)
+        key = hashlib.sha1(b"firoz@example.test|10.0.0.1").hexdigest()
+
+        for _ in range(3):
+            await guard.attempt(make_request(), {"email": "firoz@example.test", "password": "nope"})
+        assert await limiter.attempts(key) == 3
+
+        ok = await guard.attempt(
+            make_request(), {"email": "firoz@example.test", "password": "secret123"}
+        )
+
+        assert ok is True
+        assert await limiter.attempts(key) == 0  # success forgives the count
+
+    async def test_attempt_with_remember_issues_and_queues_cookie(self, fake_remember):
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        ok = await guard.attempt(
+            request,
+            {"email": "firoz@example.test", "password": "secret123"},
+            remember=True,
+        )
+
+        assert ok is True
+        assert fake_remember.rows[7], "a remember pair must be issued"
+        queued = request.scope[REMEMBER_COOKIE_SCOPE]
+        _, _, validator = queued.partition("|")
+        assert validator in fake_remember.rows[7]
+
+    async def test_remember_fallback_logs_in_and_flags_via_remember(self, fake_remember):
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        cookie = await fake_remember.issue(7)
+        guard = SessionGuard(provider)
+        request = make_request(cookies={REMEMBER_COOKIE_NAME: cookie})
+
+        user = await guard.user(request)
+
+        assert user is not None and user.id == 7
+        assert request.session[SessionGuard.SESSION_KEY] == 7
+        assert request.scope[VIA_REMEMBER_SCOPE] is True
+        # Rotation: a fresh cookie is queued, unlike the presented one.
+        assert request.scope[REMEMBER_COOKIE_SCOPE] != cookie
+
+    async def test_remember_fallback_regenerates_the_session(self, fake_remember):
+        # Review Focus #2: the fallback IS a login — the pre-fallback session
+        # id must die exactly like on form login (fixation defense).
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        cookie = await fake_remember.issue(7)
+        guard = SessionGuard(provider)
+        request = make_request(cookies={REMEMBER_COOKIE_NAME: cookie})
+
+        await guard.user(request)
+
+        assert request.session.regenerated == 1
+
+    async def test_remember_fallback_rejects_tampered_cookies(self, fake_remember):
+        # Review Focus #1: malformed, unknown-selector, and wrong-validator
+        # cookies authenticate nobody.
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+
+        for bad in ("abc", "999|zzz", ""):
+            request = make_request(cookies={REMEMBER_COOKIE_NAME: bad})
+            assert await guard.user(request) is None
+            assert SessionGuard.SESSION_KEY not in request.session
+
+        cookie = await fake_remember.issue(7)
+        selector, _, validator = cookie.partition("|")
+        tampered = f"{selector}|{validator[:-2]}xx"
+        request = make_request(cookies={REMEMBER_COOKIE_NAME: tampered})
+        assert await guard.user(request) is None
+        assert request.session.regenerated == 0
+        assert SessionGuard.SESSION_KEY not in request.session
+
+    async def test_logout_revokes_the_remember_cookie(self, fake_remember):
+        from fastplace.events import listen
+
+        provider = DictUserProvider()
+        user = make_credentials_user()
+        provider.add(user)
+        guard = SessionGuard(provider)
+        logouts: list[dict] = []
+        listen("Logout", lambda e: logouts.append(dict(e.payload)))
+        request = make_request()
+
+        await guard.login(request, user, remember=True)
+        cookie = request.scope[REMEMBER_COOKIE_SCOPE]
+        assert cookie
+
+        # The browser echoes the cookie back on the logout request.
+        request.cookies = {REMEMBER_COOKIE_NAME: cookie}
+        await guard.logout(request)
+
+        assert fake_remember.rows[7] == [], "the remember pair must be revoked"
+        assert request.scope[REMEMBER_COOKIE_SCOPE] is None  # clear marker queued
+        assert logouts == [{"user_id": 7}]
+        assert request.session.invalidated is True
+
+    async def test_logout_other_devices_with_wrong_password_destroys_nothing(self, fake_remember):
+        # Review Focus #4: a wrong password revokes nothing at all — no
+        # session rows, no remember tokens.
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+        sessions = FakeSessionStore()
+        request = make_request(scope={"fastplace_session_store": sessions})
+        request.session[SessionGuard.SESSION_KEY] = 7
+
+        ok = await guard.logout_other_devices(request, "wrong-password")
+
+        assert ok is False
+        assert sessions.destroyed == []
+        assert fake_remember.revoked_all == []
+
+    async def test_logout_other_devices_revokes_sessions_and_tokens(self, fake_remember):
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+        sessions = FakeSessionStore()
+        request = make_request(scope={"fastplace_session_store": sessions})
+        request.session[SessionGuard.SESSION_KEY] = 7
+
+        ok = await guard.logout_other_devices(request, "secret123")
+
+        assert ok is True
+        # The current session is spared; every other row dies.
+        assert sessions.destroyed == [(7, "fake-session-id")]
+        assert fake_remember.revoked_all == [7]
+        # The current device keeps working: a fresh cookie is queued.
+        fresh = request.scope[REMEMBER_COOKIE_SCOPE]
+        assert fresh and fresh.partition("|")[2] in fake_remember.rows[7]
+
+    async def test_login_using_id_logs_in(self, fake_remember):
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        assert await guard.login_using_id(request, 7) is True
+        assert request.session[SessionGuard.SESSION_KEY] == 7
+
+        other = make_request()
+        assert await guard.login_using_id(other, 999) is False
+        assert SessionGuard.SESSION_KEY not in other.session
+
+    async def test_once_validates_without_session_or_events(self, fake_remember):
+        from fastplace.events import listen
+
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+        seen: list[str] = []
+        for name in ("Attempting", "Failed", "Login", "Lockout", "Logout"):
+            listen(name, lambda e: seen.append(e.name))
+        request = make_request()
+
+        assert (
+            await guard.once(request, {"email": "firoz@example.test", "password": "secret123"})
+            is True
+        )
+        assert (
+            await guard.once(request, {"email": "firoz@example.test", "password": "bad"}) is False
+        )
+
+        assert SessionGuard.SESSION_KEY not in request.session
+        assert seen == []
+
+    async def test_attempt_when_runs_the_callback(self, fake_remember):
+        provider = DictUserProvider()
+        provider.add(make_credentials_user())
+        guard = SessionGuard(provider)
+        credentials = {"email": "firoz@example.test", "password": "secret123"}
+
+        blocked = make_request()
+        assert await guard.attempt_when(blocked, credentials, lambda user: False) is False
+        assert SessionGuard.SESSION_KEY not in blocked.session
+
+        allowed = make_request()
+        assert await guard.attempt_when(allowed, credentials, lambda user: True) is True
+        assert allowed.session[SessionGuard.SESSION_KEY] == 7
+
+        async def gate(user):
+            return user.id == 7
+
+        async_allowed = make_request()
+        assert await guard.attempt_when(async_allowed, credentials, gate) is True
+        assert async_allowed.session[SessionGuard.SESSION_KEY] == 7
