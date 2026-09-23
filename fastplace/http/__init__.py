@@ -6,6 +6,7 @@ lifecycle APIs. Application code imports ``fastplace.http`` and never
 """
 
 from fastplace.http import lifecycle  # noqa: F401  (module-level API)
+from fastplace.http.flash import flash
 from fastplace.http.kernel import AI_PREFIX, API_PREFIX, create_app, get_app
 from fastplace.http.middleware import Middleware
 from fastplace.http.render import render
@@ -42,6 +43,7 @@ __all__ = [
     "Text",
     "WebSocket",
     "create_app",
+    "flash",
     "get_app",
     "lifecycle",
     "render",
