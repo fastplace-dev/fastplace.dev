@@ -174,6 +174,22 @@ class Request:
         """True when no user is authenticated."""
         return not self.is_authenticated
 
+    def token_can(self, ability: str) -> bool:
+        """PAT ability check (spec §4.14/§4.5).
+
+        Session- (and JWT-) authenticated requests always pass — ability
+        middleware only constrains personal-access-token bearers. Anonymous
+        requests never pass.
+        """
+        if not self.is_authenticated:
+            return False
+        from fastplace.auth.tokens import PAT_ABILITIES_SCOPE, VIA_PAT_SCOPE
+
+        if not self._r.scope.get(VIA_PAT_SCOPE):
+            return True
+        abilities = self._r.scope.get(PAT_ABILITIES_SCOPE) or []
+        return "*" in abilities or ability in abilities
+
     def intended(self, default: str = "/dashboard") -> str:
         """The URL parked by ``auth`` middleware before the login redirect.
 
