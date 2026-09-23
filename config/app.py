@@ -31,7 +31,14 @@ SESSION_PATH = "/"
 
 # Per-route middleware aliases: {"alias": "dotted.path.ToMiddleware"}.
 # Parameterized aliases parse as "name:arg1,arg2" at route declaration.
-ROUTE_MIDDLEWARE = {}
+# The credential endpoints (routes/auth.py) name these at declaration time
+# and the kernel resolves them eagerly at mount — the registry must ship in
+# the same commit as any route that names an alias, or boot fails.
+ROUTE_MIDDLEWARE = {
+    "auth": "fastplace.auth.middleware.AuthenticateMiddleware",
+    "guest": "fastplace.auth.middleware.GuestMiddleware",
+    "throttle": "fastplace.ratelimit.ThrottleMiddleware",
+}
 
 # CSRF protection (fastplace.auth.middleware.CsrfMiddleware)
 CSRF_EXCEPT: list[str] = []
