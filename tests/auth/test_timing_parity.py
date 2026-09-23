@@ -76,6 +76,16 @@ async def test_unknown_email_attempt_pays_equal_work(dummy_spy):
     assert dummy_spy == [1]
 
 
+async def test_unknown_email_attempt_when_pays_equal_work(dummy_spy):
+    result = await _guard(_UnknownEmailProvider()).attempt_when(
+        {},
+        {"email": "ghost@example.test", "password": "secret123"},
+        lambda user: True,
+    )
+    assert result is False
+    assert dummy_spy == [1]
+
+
 async def test_wrong_password_once_does_not_use_the_dummy(dummy_spy):
     result = await _guard(_KnownUserProvider()).once(
         {}, {"email": "user@example.test", "password": "wrong-pass"}

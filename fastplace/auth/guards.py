@@ -142,6 +142,7 @@ class SessionGuard:
         """attempt() behind an extra gate — ``callback(user)`` must be truthy."""
         user = await self.provider.retrieve_by_credentials(credentials)
         if user is None:
+            await self._equal_work_for_unknown_user(credentials)
             return False
         outcome = callback(user)
         if inspect.isawaitable(outcome):

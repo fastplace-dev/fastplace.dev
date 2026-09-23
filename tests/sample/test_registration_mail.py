@@ -77,6 +77,26 @@ async def test_registration_mails_the_verification_link(client):
     assert "/email/verify/" in outbox[0].text
 
 
+async def test_registration_without_app_key_skips_the_mail(client, monkeypatch):
+    """Empty APP_KEY is the documented dev default — registration must still
+    land 303 with the mail skipped, not 500 after the account committed."""
+    import app.jobs.mail  # noqa: F401  (registers the listener)
+
+    monkeypatch.delenv("APP_KEY", raising=False)
+    await client.get("/login")
+    response = await client.post(
+        "/register",
+        json={
+            "name": "NoKey",
+            "email": "nokey@example.test",
+            "password": "secret123",
+            "password_confirmation": "secret123",
+        },
+    )
+    assert response.status_code == 303
+    assert mail_outbox() == []
+
+
 def test_mail_send_is_a_registered_job():
     import app.jobs.mail  # noqa: F401
     from fastplace.queue import jobs
