@@ -34,12 +34,15 @@ SESSION_PATH = "/"
 # The credential endpoints (routes/auth.py) name these at declaration time
 # and the kernel resolves them eagerly at mount — the registry must ship in
 # the same commit as any route that names an alias, or boot fails.
+# abilities/ability gate PAT bearers (spec §4.5) — ALL / ANY semantics.
 ROUTE_MIDDLEWARE = {
     "auth": "fastplace.auth.middleware.AuthenticateMiddleware",
     "guest": "fastplace.auth.middleware.GuestMiddleware",
     "verified": "fastplace.auth.middleware.EnsureEmailVerifiedMiddleware",
     "password.confirm": "fastplace.auth.middleware.EnsurePasswordConfirmedMiddleware",
     "throttle": "fastplace.ratelimit.ThrottleMiddleware",
+    "abilities": "fastplace.auth.middleware.AbilitiesMiddleware",
+    "ability": "fastplace.auth.middleware.AbilityMiddleware",
 }
 
 # CSRF protection (fastplace.auth.middleware.CsrfMiddleware)
