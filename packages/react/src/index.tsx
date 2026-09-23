@@ -37,6 +37,8 @@ export interface VisitOptions {
   replace?: boolean;
   /** Keep the current page state (component/props) — only update the URL. */
   preserveState?: boolean;
+  /** Called with the parsed error envelope on a JSON error answer; suppresses the full-page fallback. */
+  onError?: (failure: { message?: string; status: number }) => void;
 }
 
 type Listener = () => void;
@@ -164,6 +166,16 @@ async function visit(url: string, options: VisitOptions = {}): Promise<void> {
   // swap them into the store, or the resolver would throw mid-render and
   // unmount the whole app.
   if (!response.ok || !isBridgePage(payload)) {
+    if (options.onError) {
+      // The caller owns the failure — surface the parsed envelope instead
+      // of taking the full-page fallback.
+      const body = payload as { message?: unknown } | null;
+      options.onError({
+        status: response.status,
+        ...(typeof body?.message === "string" ? { message: body.message } : {}),
+      });
+      return;
+    }
     fallback();
     return;
   }
@@ -493,8 +505,8 @@ export interface FormSubmitOptions {
   headers?: Record<string, string>;
   /** Called for a 2xx response (payload is null when the page swapped). */
   onSuccess?: (payload: unknown) => void;
-  /** Called with the mapped field errors on a 422 (or `{}` on other failures). */
-  onError?: (errors: FormErrors) => void;
+  /** Called with the mapped field errors on a 422 (or `{}` on other failures); the second argument carries the non-422 envelope when there was one. */
+  onError?: (errors: FormErrors, failure?: { message?: string; status?: number }) => void;
   /** Always called once the submission settles. */
   onFinish?: () => void;
 }
@@ -502,7 +514,7 @@ export interface FormSubmitOptions {
 type SubmitOutcome =
   | { kind: "swapped" }
   | { kind: "succeeded"; payload: unknown }
-  | { kind: "errored"; errors: FormErrors }
+  | { kind: "errored"; errors: FormErrors; message?: string; status?: number }
   | { kind: "navigated" };
 
 function isFieldErrorMap(value: unknown): value is FormErrors {
@@ -551,7 +563,15 @@ async function submitBridge(
     return { kind: "errored", errors: (payload as { errors: FormErrors }).errors };
   }
   if (!response.ok) {
-    return { kind: "errored", errors: {} };
+    // Non-422 failure — carry the envelope's message and the status up, so
+    // pages can show WHY it failed, not just that it failed.
+    const body = payload as { message?: unknown } | null;
+    return {
+      kind: "errored",
+      errors: {},
+      status: response.status,
+      ...(typeof body?.message === "string" ? { message: body.message } : {}),
+    };
   }
   if (isBridgePage(payload)) {
     setPage(payload);
@@ -576,6 +596,10 @@ function serializeForm(formData: FormData): Record<string, unknown> {
 export interface FormRenderState {
   processing: boolean;
   errors: FormErrors;
+  /** The server's message from a non-422 failure (401/403/429), when sent. */
+  message?: string;
+  /** The HTTP status behind the current errors/message. */
+  status?: number;
   clearErrors: () => void;
   reset: () => void;
 }
@@ -593,7 +617,7 @@ export interface FormProps extends Omit<
   children: React.ReactNode | ((state: FormRenderState) => React.ReactNode);
   headers?: Record<string, string>;
   onSuccess?: (payload: unknown) => void;
-  onError?: (errors: FormErrors) => void;
+  onError?: (errors: FormErrors, failure?: { message?: string; status?: number }) => void;
   onFinish?: () => void;
 }
 
@@ -616,12 +640,17 @@ export function Form({
 }: FormProps) {
   const [processing, setProcessing] = React.useState(false);
   const [errors, setErrors] = React.useState<FormErrors>({});
+  const [failure, setFailure] = React.useState<{ message?: string; status?: number }>({});
   const formRef = React.useRef<HTMLFormElement | null>(null);
 
-  const clearErrors = React.useCallback(() => setErrors({}), []);
+  const clearErrors = React.useCallback(() => {
+    setErrors({});
+    setFailure({});
+  }, []);
   const reset = React.useCallback(() => {
     formRef.current?.reset();
     setErrors({});
+    setFailure({});
   }, []);
 
   /** Restore only the named controls to their initial DOM values. */
@@ -659,7 +688,8 @@ export function Form({
       );
       if (outcome.kind === "errored") {
         setErrors(outcome.errors);
-        onError?.(outcome.errors);
+        setFailure({ message: outcome.message, status: outcome.status });
+        onError?.(outcome.errors, { message: outcome.message, status: outcome.status });
       } else {
         if (resetOnSuccess) resetFields(resetOnSuccess);
         if (outcome.kind === "succeeded") {
@@ -689,6 +719,8 @@ export function Form({
         ? (children as (state: FormRenderState) => React.ReactNode)({
             processing,
             errors,
+            message: failure.message,
+            status: failure.status,
             clearErrors,
             reset,
           })
@@ -706,6 +738,10 @@ export interface UseFormReturn<TData extends Record<string, unknown>> {
   };
   processing: boolean;
   errors: FormErrors;
+  /** The server's message from a non-422 failure (401/403/429), when sent. */
+  message?: string;
+  /** The HTTP status behind the current errors/message. */
+  status?: number;
   setErrors: (errors: FormErrors) => void;
   clearErrors: () => void;
   /** Restore initial data — all fields, or just the ones named. */
@@ -734,6 +770,7 @@ export function useForm<TData extends Record<string, unknown>>(
   const [data, setDataState] = React.useState<TData>(initialData);
   const [processing, setProcessing] = React.useState(false);
   const [errors, setErrorsState] = React.useState<FormErrors>({});
+  const [failure, setFailure] = React.useState<{ message?: string; status?: number }>({});
   const [wasSuccessful, setWasSuccessful] = React.useState(false);
   const [recentlySuccessful, setRecentlySuccessful] = React.useState(false);
   const transformRef = React.useRef<(data: TData) => TData>((current) => current);
@@ -752,7 +789,10 @@ export function useForm<TData extends Record<string, unknown>>(
   };
 
   const setErrors = React.useCallback((next: FormErrors) => setErrorsState(next), []);
-  const clearErrors = React.useCallback(() => setErrorsState({}), []);
+  const clearErrors = React.useCallback(() => {
+    setErrorsState({});
+    setFailure({});
+  }, []);
   const reset = React.useCallback((...fields: (keyof TData & string)[]) => {
     const seed = initialRef.current;
     const base = typeof seed === "function" ? (seed as () => TData)() : seed;
@@ -783,7 +823,8 @@ export function useForm<TData extends Record<string, unknown>>(
         );
         if (outcome.kind === "errored") {
           setErrorsState(outcome.errors);
-          options.onError?.(outcome.errors);
+          setFailure({ message: outcome.message, status: outcome.status });
+          options.onError?.(outcome.errors, { message: outcome.message, status: outcome.status });
         } else {
           setWasSuccessful(true);
           setRecentlySuccessful(true);
@@ -803,6 +844,8 @@ export function useForm<TData extends Record<string, unknown>>(
     setData,
     processing,
     errors,
+    message: failure.message,
+    status: failure.status,
     setErrors,
     clearErrors,
     reset,
