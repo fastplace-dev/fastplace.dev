@@ -15,8 +15,9 @@ class FakeSession(dict):
 
 
 class FakeRequest:
-    def __init__(self, session, path="/settings/security", method="GET",
-                 headers=None, full_path=None):
+    def __init__(
+        self, session, path="/settings/security", method="GET", headers=None, full_path=None
+    ):
         self.session = session
         self.path = path
         self.method = method
@@ -49,22 +50,19 @@ def _timeout(monkeypatch: pytest.MonkeyPatch):
 class TestEnsurePasswordConfirmedMiddleware:
     async def test_recent_confirmation_passes_through(self):
         session = FakeSession(password_confirmed_at=int(time.time()) - 60)
-        result = await EnsurePasswordConfirmedMiddleware().handle(
-            FakeRequest(session), _next
-        )
+        result = await EnsurePasswordConfirmedMiddleware().handle(FakeRequest(session), _next)
         assert result == "passed-through"
 
     async def test_confirmation_exactly_at_the_timeout_still_passes(self):
         session = FakeSession(password_confirmed_at=int(time.time()) - 10800)
-        assert await EnsurePasswordConfirmedMiddleware().handle(
-            FakeRequest(session), _next
-        ) == "passed-through"
+        assert (
+            await EnsurePasswordConfirmedMiddleware().handle(FakeRequest(session), _next)
+            == "passed-through"
+        )
 
     async def test_one_second_past_the_timeout_redirects_browser(self):
         session = FakeSession(password_confirmed_at=int(time.time()) - 10801)
-        response = await EnsurePasswordConfirmedMiddleware().handle(
-            FakeRequest(session), _next
-        )
+        response = await EnsurePasswordConfirmedMiddleware().handle(FakeRequest(session), _next)
         assert response.status_code == 302
         assert response.headers["location"] == "/user/confirm-password"
         assert session[INTENDED_SESSION_KEY] == "/settings/security"
@@ -79,9 +77,7 @@ class TestEnsurePasswordConfirmedMiddleware:
 
     async def test_non_int_timestamp_is_treated_as_unconfirmed(self):
         session = FakeSession(password_confirmed_at="yesterday")
-        response = await EnsurePasswordConfirmedMiddleware().handle(
-            FakeRequest(session), _next
-        )
+        response = await EnsurePasswordConfirmedMiddleware().handle(FakeRequest(session), _next)
         assert response.status_code == 302
 
     async def test_api_path_raises_authorization_error(self):
@@ -105,7 +101,9 @@ class TestEnsurePasswordConfirmedMiddleware:
     async def test_bridge_request_redirects_so_the_spa_swaps(self):
         session = FakeSession()
         response = await EnsurePasswordConfirmedMiddleware().handle(
-            FakeRequest(session, headers={"Accept": "application/json", "X-Fastplace-Request": "true"}),
+            FakeRequest(
+                session, headers={"Accept": "application/json", "X-Fastplace-Request": "true"}
+            ),
             _next,
         )
         assert response.status_code == 302

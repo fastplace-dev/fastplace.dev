@@ -579,17 +579,13 @@ class TestTwoFactorInterrupt:
             id=11,
             email="2fa@example.test",
             password=Hash.make("secret123"),
-            two_factor_confirmed_at=datetime.datetime(
-                2026, 9, 1, tzinfo=datetime.UTC
-            ),
+            two_factor_confirmed_at=datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC),
         )
         provider.add(two_factor_user)
         guard = SessionGuard(provider)
         request = make_request()
 
-        ok = await guard.attempt(
-            request, {"email": "2fa@example.test", "password": "secret123"}
-        )
+        ok = await guard.attempt(request, {"email": "2fa@example.test", "password": "secret123"})
 
         assert ok is False
         assert request.session.get(SessionGuard.SESSION_KEY) is None  # NOT logged in
@@ -613,9 +609,7 @@ class TestTwoFactorInterrupt:
         guard = SessionGuard(provider)
         request = make_request()
 
-        ok = await guard.attempt(
-            request, {"email": "setup@example.test", "password": "secret123"}
-        )
+        ok = await guard.attempt(request, {"email": "setup@example.test", "password": "secret123"})
 
         assert ok is True
         assert request.session[SessionGuard.SESSION_KEY] == 12
@@ -635,9 +629,7 @@ class TestTwoFactorInterrupt:
                 id=11,
                 email="2fa@example.test",
                 password=Hash.make("secret123"),
-                two_factor_confirmed_at=datetime.datetime(
-                    2026, 9, 1, tzinfo=datetime.UTC
-                ),
+                two_factor_confirmed_at=datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC),
             )
         )
         limiter = RateLimiter()
@@ -662,17 +654,13 @@ class TestTwoFactorInterrupt:
                 id=11,
                 email="2fa@example.test",
                 password=Hash.make("secret123"),
-                two_factor_confirmed_at=datetime.datetime(
-                    2026, 9, 1, tzinfo=datetime.UTC
-                ),
+                two_factor_confirmed_at=datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC),
             )
         )
         guard = SessionGuard(provider)
         request = make_request()
 
-        await guard.attempt(
-            request, {"email": "2fa@example.test", "password": "secret123"}
-        )
+        await guard.attempt(request, {"email": "2fa@example.test", "password": "secret123"})
 
         assert guard.pending_two_factor(request) is True
         request.session.pop("two_factor_challenge")
@@ -691,17 +679,13 @@ class TestTwoFactorInterrupt:
                 id=11,
                 email="2fa@example.test",
                 password=Hash.make("secret123"),
-                two_factor_confirmed_at=datetime.datetime(
-                    2026, 9, 1, tzinfo=datetime.UTC
-                ),
+                two_factor_confirmed_at=datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC),
             )
         )
         guard = SessionGuard(provider)
         request = make_request()
 
-        await guard.attempt(
-            request, {"email": "2fa@example.test", "password": "secret123"}
-        )
+        await guard.attempt(request, {"email": "2fa@example.test", "password": "secret123"})
 
         assert request.session.get(SessionGuard.SESSION_KEY) is None
         assert await guard.user(request) is None

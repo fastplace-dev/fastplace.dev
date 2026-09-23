@@ -120,9 +120,7 @@ class TestChallengeFulfillment:
 
     async def test_recovery_code_completes_login_and_is_consumed(self, client):
         user, secret, codes, totp = await _park_challenge(client)
-        response = await client.post(
-            "/two-factor-challenge", json={"recovery_code": codes[0]}
-        )
+        response = await client.post("/two-factor-challenge", json={"recovery_code": codes[0]})
         assert response.status_code == 303
 
         from app.modules.accounts.repositories.user_repository import UserRepository
@@ -134,9 +132,7 @@ class TestChallengeFulfillment:
 
     async def test_recovery_code_single_use_no_replay(self, client):
         user, secret, codes, totp = await _park_challenge(client)
-        first = await client.post(
-            "/two-factor-challenge", json={"recovery_code": codes[0]}
-        )
+        first = await client.post("/two-factor-challenge", json={"recovery_code": codes[0]})
         assert first.status_code == 303
         # Log back out and into a fresh challenge with the SAME codes list.
         await client.post("/logout")
@@ -145,9 +141,7 @@ class TestChallengeFulfillment:
             "/login",
             json={"email": REGISTER_PAYLOAD["email"], "password": REGISTER_PAYLOAD["password"]},
         )
-        replay = await client.post(
-            "/two-factor-challenge", json={"recovery_code": codes[0]}
-        )
+        replay = await client.post("/two-factor-challenge", json={"recovery_code": codes[0]})
         assert replay.status_code == 422
         assert replay.json()["errors"]["recovery_code"] == [
             "The provided two factor authentication code is invalid."
@@ -155,9 +149,7 @@ class TestChallengeFulfillment:
 
     async def test_unknown_recovery_code_rejected(self, client):
         await _park_challenge(client)
-        response = await client.post(
-            "/two-factor-challenge", json={"recovery_code": "WWWWW-WWWWW"}
-        )
+        response = await client.post("/two-factor-challenge", json={"recovery_code": "WWWWW-WWWWW"})
         assert response.status_code == 422
 
     async def test_no_parked_challenge_redirects_to_login(self, client):

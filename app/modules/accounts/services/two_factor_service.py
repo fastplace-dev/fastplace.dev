@@ -28,19 +28,13 @@ class TwoFactorService:
     def _invalid(self, field: str = "code") -> ValidationError:
         return ValidationError(errors={field: [self.INVALID_CODE_MESSAGE]})
 
-    async def verify_challenge(
-        self, request: Any, *, code: str, recovery_code: str
-    ) -> bool | None:
+    async def verify_challenge(self, request: Any, *, code: str, recovery_code: str) -> bool | None:
         """Fulfill a parked challenge. None = no challenge; False = wrong code."""
         challenge_user = request.session.get(TWO_FACTOR_CHALLENGE_KEY)
         if challenge_user is None:
             return None
         user = await self.users.find_by_id(challenge_user)
-        if (
-            user is None
-            or user.two_factor_secret is None
-            or user.two_factor_confirmed_at is None
-        ):
+        if user is None or user.two_factor_secret is None or user.two_factor_confirmed_at is None:
             return False
 
         ok = False
@@ -48,9 +42,7 @@ class TwoFactorService:
             ok = verify_code(decrypt(user.two_factor_secret), code)
         elif recovery_code and user.two_factor_recovery_codes:
             stored = json.loads(decrypt(user.two_factor_recovery_codes))
-            match = next(
-                (c for c in stored if hmac.compare_digest(c, recovery_code)), None
-            )
+            match = next((c for c in stored if hmac.compare_digest(c, recovery_code)), None)
             if match is not None:
                 # Single-use: the redeemed code leaves the store immediately.
                 stored.remove(match)

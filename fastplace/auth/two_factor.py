@@ -29,10 +29,7 @@ def generate_secret() -> str:
 def generate_recovery_codes(count: int = RECOVERY_CODE_COUNT) -> list[str]:
     """``count`` single-use codes, each ``XXXXX-XXXXX`` (~50 bits of entropy)."""
     return [
-        "-".join(
-            "".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(5))
-            for _ in range(2)
-        )
+        "-".join("".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(5)) for _ in range(2))
         for _ in range(count)
     ]
 

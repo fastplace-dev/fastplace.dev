@@ -106,6 +106,4 @@ class TestTwoFactorLoginInterrupt:
             "/login", json={"email": REGISTER_PAYLOAD["email"], "password": "wrong"}
         )
         assert response.status_code == 422
-        assert response.json()["errors"]["email"] == [
-            "These credentials do not match our records."
-        ]
+        assert response.json()["errors"]["email"] == ["These credentials do not match our records."]

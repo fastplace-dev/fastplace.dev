@@ -16,9 +16,14 @@ class TestUserTwoFactorColumns:
         assert "two_factor_secret" in columns
         assert "two_factor_recovery_codes" in columns
         assert "two_factor_confirmed_at" in columns
-        assert all(columns[name].nullable for name in (
-            "two_factor_secret", "two_factor_recovery_codes", "two_factor_confirmed_at",
-        ))
+        assert all(
+            columns[name].nullable
+            for name in (
+                "two_factor_secret",
+                "two_factor_recovery_codes",
+                "two_factor_confirmed_at",
+            )
+        )
 
     def test_secret_columns_stay_hidden_from_serialization(self):
         from app.modules.accounts.models.user import User
