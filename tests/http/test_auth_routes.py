@@ -72,11 +72,14 @@ class TestKernelDiscovery:
         paths = {route.path for route in router.routes}
         assert "/login" in paths and "/register" in paths and "/logout" in paths
         # Credential endpoints are POSTs; the §4.11 verification fulfill link
-        # is the router's one GET (emailed links redeem with a single click).
+        # is the router's one GET outside the two-factor management surface —
+        # §4.13's /user/two-factor* routes carry their own frozen methods
+        # (GETs for qr/secret/codes fetches, one DELETE to disable).
         assert all(
             route.method == "POST"
             for route in router.routes
             if route.path != "/email/verify/{id}/{hash}"
+            and not route.path.startswith("/user/two-factor")
         )
         assert any(
             route.method == "GET" and route.path == "/email/verify/{id}/{hash}"
