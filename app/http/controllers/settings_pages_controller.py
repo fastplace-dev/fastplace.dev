@@ -22,9 +22,18 @@ class SettingsPagesController(Controller):
     async def security(self, request: Request):
         # The security page has no client-side default for passwordRules
         # (the register page applies one), so the server supplies the
-        # configured policy in the frontend dialect.
+        # configured policy in the frontend dialect. The two-factor props
+        # drive the ManageTwoFactor card (R9).
+        from fastplace.config import config
+
+        user = getattr(request, "user", None)
         return render(
             request,
             component="Settings/Security",
-            props={"passwordRules": frontend_rules()},
+            props={
+                "passwordRules": frontend_rules(),
+                "canManageTwoFactor": bool(config("TWO_FACTOR_ENABLED", default=True)),
+                "requiresConfirmation": True,
+                "twoFactorEnabled": getattr(user, "two_factor_confirmed_at", None) is not None,
+            },
         )

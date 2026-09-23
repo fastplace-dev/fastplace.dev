@@ -80,12 +80,14 @@ router.get(
     AuthPageController,
     "confirm_password",
     name="auth.confirm_password",
+    middleware=["auth"],
 )
 router.get(
     "/two-factor-challenge",
     AuthPageController,
     "two_factor_challenge",
     name="auth.two_factor_challenge",
+    middleware=["guest"],
 )
 
 router.get("/projects", ProjectsController, "index", name="projects.index")

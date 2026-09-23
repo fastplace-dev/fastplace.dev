@@ -12,5 +12,8 @@ class UserRepository:
     async def find_by_email(self, email: str) -> User | None:
         return await User.where(User.email == email).first()
 
+    async def find_by_id(self, user_id) -> User | None:
+        return await User.find(user_id)
+
     async def create_user(self, *, name: str, email: str, password: str) -> User:
         return await User.create(name=name, email=email, password_hash=Hash.make(password))

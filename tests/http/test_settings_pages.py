@@ -66,7 +66,14 @@ async def test_settings_security_serves_the_ported_component_with_password_rules
     assert body["component"] == "Settings/Security"
     # The page has no client-side default for passwordRules (register does),
     # so the server supplies the configured policy in the frontend dialect.
-    assert body["props"] == {"passwordRules": "minlength: 8;"}
+    # The two-factor props drive the ManageTwoFactor card (R9) — auth is
+    # bypassed here, so no user is attached and twoFactorEnabled is False.
+    assert body["props"] == {
+        "passwordRules": "minlength: 8;",
+        "canManageTwoFactor": True,
+        "requiresConfirmation": True,
+        "twoFactorEnabled": False,
+    }
 
 
 async def test_settings_pages_full_document_load():

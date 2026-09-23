@@ -24,6 +24,9 @@ dependencies = [
     "rich>=13.7",
     "itsdangerous>=2.1",
     "pyjwt>=2.9",
+    "pyotp>=2.9",
+    "segno>=1.6",
+    "cryptography>=42",
     "python-multipart>=0.0.18",
 ]
 

@@ -38,6 +38,10 @@ BEARER_SCHEME = "Bearer"
 #: reads it for per-user revocation.
 SESSION_STORE_SCOPE = "fastplace_session_store"
 
+#: Session keys for the in-flight two-factor challenge (spec §4.13).
+TWO_FACTOR_CHALLENGE_KEY = "two_factor_challenge"
+TWO_FACTOR_REMEMBER_KEY = "two_factor_remember"
+
 
 class SessionGuard:
     """Stateful guard backed by the server-side session (spec §4.2/§4.6).
@@ -119,9 +123,22 @@ class SessionGuard:
             await dispatch(DomainEvent("Failed", {"email": email.lower()}))
             return False
 
+        # Valid credentials — but a CONFIRMED two-factor user stops short of
+        # login (spec §4.13): park the challenge, forgive the failure count,
+        # and let the controller steer to the challenge page.
+        if getattr(user, "two_factor_confirmed_at", None) is not None:
+            request.session[TWO_FACTOR_CHALLENGE_KEY] = self.provider.identifier(user)
+            request.session[TWO_FACTOR_REMEMBER_KEY] = remember
+            await limiter.clear(key)
+            return False
+
         await self.login(request, user, remember=remember)
         await limiter.clear(key)  # success forgives the failure count
         return True
+
+    def pending_two_factor(self, request: Any) -> bool:
+        """True when this session carries an unresolved 2FA challenge."""
+        return request.session.get(TWO_FACTOR_CHALLENGE_KEY) is not None
 
     async def _validate_and_rehash(self, user: Any, credentials: dict[str, Any]) -> bool:
         ok = await self.provider.validate_credentials(user, credentials)
