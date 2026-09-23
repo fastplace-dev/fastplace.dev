@@ -78,7 +78,10 @@ def share(callback: SharedPropsCallback) -> None:
     semantics. Later phases register ``auth.user`` and flash/status
     channels here.
     """
-    _shared_props.append(callback)
+    # Identity dedupe — repeated boots (dev reload, create_app in tests)
+    # must not stack the same callback.
+    if callback not in _shared_props:
+        _shared_props.append(callback)
 
 
 def reset_shared_props() -> None:

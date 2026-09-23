@@ -52,5 +52,6 @@ CSRF_EXCEPT: list[str] = []
 MIDDLEWARE = [
     "app.http.middleware.request_timing.RequestTimingMiddleware",
     "fastplace.auth.middleware.ResolveUserMiddleware",
+    "fastplace.auth.middleware.SharedAbilitiesMiddleware",
     "fastplace.auth.middleware.CsrfMiddleware",
 ]

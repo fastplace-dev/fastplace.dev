@@ -185,6 +185,13 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     app.state.fastplace_root = str(root)
     _install_static_mounts(app, root)
     _register_db_lifecycle(root)
+    # Default shared props: every page payload carries the auth snapshot
+    # (spec §4.16). Registered here — the real boot path — never in get_app,
+    # whose test factories pin exact props shapes.
+    from fastplace.auth.middleware import shared_auth_props
+    from fastplace.http.render import share
+
+    share(shared_auth_props)
     return app
 
 
