@@ -5,8 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from fastplace.authz import gate
+from fastplace.errors import ConfigurationError
 from fastplace.http.middleware import Middleware
 
 
@@ -132,6 +134,22 @@ class TestSharedAbilitiesMiddleware:
             make_request(user=None, scope={}), call_next
         )
         assert captured[auth_mw.AUTH_CAN_SCOPE] == {"a": True, "b": True}
+
+    async def test_misconfigured_ability_raises_loudly(self, monkeypatch):
+        # Adjudication 4: an ability named in AUTH_SHARED_ABILITIES with no
+        # gate registration explodes at check time — never a silent empty
+        # can-map on every page.
+        import fastplace.auth.middleware as auth_mw
+
+        monkeypatch.setattr(auth_mw, "config", lambda key, default=None: ["not-defined"])
+
+        async def call_next(request):
+            return None
+
+        with pytest.raises(ConfigurationError, match="not-defined"):
+            await auth_mw.SharedAbilitiesMiddleware().handle(
+                make_request(user=Member(), scope={}), call_next
+            )
 
 
 class TestRegistrationAndMerge:
