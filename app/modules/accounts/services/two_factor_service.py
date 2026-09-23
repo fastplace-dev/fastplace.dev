@@ -117,6 +117,8 @@ class TwoFactorService:
 
     async def qr_code_payload(self, request: Any) -> dict[str, str]:
         self._require_enabled()
+        if not request.user.two_factor_secret:
+            raise self._invalid()
         from fastplace.auth.two_factor import otp_auth_uri, qr_code_svg
 
         uri = otp_auth_uri(decrypt(request.user.two_factor_secret), request.user.email)
@@ -124,4 +126,6 @@ class TwoFactorService:
 
     async def secret_key_payload(self, request: Any) -> dict[str, str]:
         self._require_enabled()
+        if not request.user.two_factor_secret:
+            raise self._invalid()
         return {"secretKey": decrypt(request.user.two_factor_secret)}

@@ -200,6 +200,26 @@ class TestEnableConfirmDisable:
         assert set(first).isdisjoint(set(second))
 
 
+class TestReadBeforeEnable:
+    """A live password-confirmation window does not imply a pending secret."""
+
+    async def test_qr_code_before_enable_is_frozen_422(self, client):
+        await _confirmed_client(client)
+        response = await client.get("/user/two-factor-qr-code")
+        assert response.status_code == 422
+        assert response.json()["errors"]["code"] == [
+            "The provided two factor authentication code is invalid."
+        ]
+
+    async def test_secret_key_before_enable_is_frozen_422(self, client):
+        await _confirmed_client(client)
+        response = await client.get("/user/two-factor-secret-key")
+        assert response.status_code == 422
+        assert response.json()["errors"]["code"] == [
+            "The provided two factor authentication code is invalid."
+        ]
+
+
 class TestFeatureFlag:
     async def test_disabled_flag_hides_every_endpoint(self, client, monkeypatch):
         monkeypatch.setenv("TWO_FACTOR_ENABLED", "false")
