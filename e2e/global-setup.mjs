@@ -1,22 +1,20 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
-
-// The project venv is the normal case locally; CI installs the package into
-// the runner's interpreter instead — resolve whichever exists.
-const FASTPLACE = existsSync(".venv/bin/fastplace") ? ".venv/bin/fastplace" : "fastplace";
 
 // E2E runs against APP_ENV=production, whose shell resolves hashed assets
 // from the build manifest. public/build is gitignored, so a fresh clone has
 // none — build it once here to keep `npx playwright test` self-contained.
 //
-// The suite also gets its own scratch database: a developer's seeded
-// database.sqlite3 must not leak into (or break) the "empty app" smoke
-// assertions. Fresh file + `fastplace migrate` every run. storage/ itself
-// is gitignored runtime output — a fresh clone has no such directory, and
-// sqlite refuses to open a file whose parent does not exist.
-export const E2E_DATABASE = "storage/e2e.sqlite3";
-
+// The scratch database is deliberately NOT prepared here: Playwright boots
+// the webServer before globalSetup, so anything this file does to the
+// database happens under the live server. Deleting a SQLite file out from
+// under a server's connection pool strands every pooled connection on a
+// stale inode — all later writes die with "attempt to write a readonly
+// database". The reset + migrate therefore live in the webServer command
+// itself (see playwright.config.mjs), which runs before uvicorn opens the
+// file; framework-owned tables (sessions, password_reset_tokens) are then
+// created lazily by the running app against that final file.
 export default function globalSetup() {
   const vite6 = path.resolve("public/build/.vite/manifest.json");
   const legacy = path.resolve("public/build/manifest.json");
@@ -24,13 +22,4 @@ export default function globalSetup() {
     console.log("[e2e] no build manifest found — running npm run build…");
     execSync("npm run build", { stdio: "inherit" });
   }
-
-  mkdirSync(path.dirname(E2E_DATABASE), { recursive: true });
-  rmSync(E2E_DATABASE, { force: true });
-  rmSync(`${E2E_DATABASE}-wal`, { force: true });
-  rmSync(`${E2E_DATABASE}-shm`, { force: true });
-  execSync(`${FASTPLACE} migrate`, {
-    stdio: "inherit",
-    env: { ...process.env, DATABASE_URL: `sqlite+aiosqlite:///${E2E_DATABASE}` },
-  });
 }

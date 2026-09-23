@@ -10,6 +10,7 @@ const PORT = Number(process.env.E2E_PORT || 8907);
 // Local runs use the project venv; CI (and any fresh clone without one)
 // falls back to the interpreter the package is installed in.
 const PY = existsSync(".venv/bin/python") ? ".venv/bin/python" : "python";
+const FASTPLACE = existsSync(".venv/bin/fastplace") ? ".venv/bin/fastplace" : "fastplace";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -26,12 +27,23 @@ export default defineConfig({
     // APP_ENV=production → the shell resolves hashed assets from the build
     // manifest instead of the (absent here) Vite dev server. APP_KEY is a
     // throwaway fixture: production apps refuse to boot without one. The
-    // DATABASE_URL points at the scratch DB globalSetup migrated — never a
-    // developer's seeded local database.
+    // DATABASE_URL points at a scratch DB — never a developer's seeded
+    // local database.
+    //
+    // Playwright boots the webServer BEFORE globalSetup, so the scratch DB
+    // is reset + migrated here, ahead of uvicorn: globalSetup cannot do it
+    // without deleting the file out from under the live server's connection
+    // pool (every later write then dies on the stale inode). Framework-
+    // owned tables (sessions, password_reset_tokens) are created lazily by
+    // the app against this final file. storage/ is gitignored runtime
+    // output — sqlite refuses to open a file whose parent does not exist,
+    // so mkdir it for fresh clones/worktrees.
     command:
       `APP_ENV=production APP_KEY=e2e-test-secret-key-0123456789abcdef ` +
       `DATABASE_URL=sqlite+aiosqlite:///storage/e2e.sqlite3 ` +
-      `${PY} -m uvicorn asgi:app --host 127.0.0.1 --port ${PORT}`,
+      `sh -c 'mkdir -p storage && ` +
+      `rm -f storage/e2e.sqlite3 storage/e2e.sqlite3-wal storage/e2e.sqlite3-shm && ` +
+      `${FASTPLACE} migrate && exec ${PY} -m uvicorn asgi:app --host 127.0.0.1 --port ${PORT}'`,
     url: `http://127.0.0.1:${PORT}/api/v1/health`,
     // Always boot a fresh server: globalSetup deletes + re-migrates the
     // scratch DB, and a reused server would keep pooled connections to the
