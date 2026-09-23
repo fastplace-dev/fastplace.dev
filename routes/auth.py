@@ -61,3 +61,13 @@ router.post(
     # Spec §4.19's throttle:6,1 — fastplace's D is SECONDS (R8).
     middleware=["auth", "throttle:6,60"],
 )
+
+# Password confirmation (spec §4.12) — the confirmation window the
+# password.confirm route middleware enforces.
+router.post(
+    "/user/confirm-password",
+    AuthApiController,
+    "confirm_password",
+    name="auth.confirm_password.store",
+    middleware=["auth", "throttle:6,60"],  # spec's 6/min — D is seconds (R8)
+)

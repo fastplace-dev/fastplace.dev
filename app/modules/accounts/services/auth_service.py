@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastplace.auth.guards import guard
@@ -26,3 +27,21 @@ class AuthService:
 
     async def logout(self, request: Any) -> None:
         await guard().logout(request)
+
+    async def confirm_password(self, request: Any, password: str) -> None:
+        """Verify the current password; stamp the confirmation window open.
+
+        The password.confirm route middleware reads the stamp this writes
+        (``password_confirmed_at``, int UNIX seconds) and enforces the
+        PASSWORD_TIMEOUT window around the sensitive pages.
+        """
+        if not password.strip():
+            # R12's frozen contract string — the frontend mock pins it, so
+            # the service raises it (no translation layer exists).
+            raise ValidationError(errors={"password": ["The password field is required."]})
+        user = getattr(request, "user", None)
+        if user is None or not await guard().provider.validate_credentials(
+            user, {"password": password}
+        ):
+            raise ValidationError(errors={"password": ["The password is incorrect."]})
+        request.session["password_confirmed_at"] = int(time.time())

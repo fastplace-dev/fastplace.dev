@@ -80,6 +80,7 @@ router.get(
     AuthPageController,
     "confirm_password",
     name="auth.confirm_password",
+    middleware=["auth"],
 )
 router.get(
     "/two-factor-challenge",

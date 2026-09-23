@@ -18,7 +18,9 @@ if _PROJECT_ROOT not in sys.path:
 EMPTY_PROPS_AUTH_PAGES = [
     ("/login", "Auth/Login"),
     ("/forgot-password", "Auth/ForgotPassword"),
-    ("/user/confirm-password", "Auth/ConfirmPassword"),
+    # /user/confirm-password left this list when it gained middleware=["auth"]
+    # (spec §4.12) — the authenticated render is covered end-to-end by
+    # tests/sample/test_confirm_password_endpoints.py.
     ("/two-factor-challenge", "Auth/TwoFactorChallenge"),
 ]
 

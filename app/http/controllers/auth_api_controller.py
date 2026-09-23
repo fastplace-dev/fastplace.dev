@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.http.requests.confirm_password_request import ConfirmPasswordRequest
 from app.http.requests.forgot_password_request import ForgotPasswordRequest
 from app.http.requests.login_request import LoginRequest
 from app.http.requests.register_request import RegisterRequest
@@ -32,6 +33,11 @@ class AuthApiController(Controller):
     async def logout(self, request: Request):
         await self.auth_service.logout(request)
         return Redirect("/login", status_code=303)
+
+    async def confirm_password(self, request: Request):
+        data = (await request.validate(ConfirmPasswordRequest)).model_dump()
+        await self.auth_service.confirm_password(request, data["password"])
+        return Redirect(request.intended(), status_code=303)
 
     async def forgot_password(self, request: Request):
         data = (await request.validate(ForgotPasswordRequest)).model_dump()
