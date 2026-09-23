@@ -38,7 +38,12 @@ class PersonalAccessTokenService:
             user_id, name, abilities=abilities, expires_at=expires_at
         )
         await dispatch(DomainEvent("TokenIssued", {"user_id": user_id, "name": name}))
-        return {"token": token, "name": name, "abilities": abilities, "expires_at": expires_at}
+        return {
+            "token": token,
+            "name": name,
+            "abilities": abilities,
+            "expires_at": expires_at.isoformat() if expires_at is not None else None,
+        }
 
     async def issue_mobile(self, request: Any, data: dict[str, Any]) -> dict[str, Any]:
         """email+password issuance for machine clients (spec §4.14).

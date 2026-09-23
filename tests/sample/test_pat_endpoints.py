@@ -130,6 +130,13 @@ class TestIssueEndpoint:
         assert response.status_code == 422
         assert "future" in response.json()["errors"]["expires_at"][0]
 
+    async def test_future_expiry_is_returned_as_an_iso_string(self, client):
+        await _login(client)
+        future = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        response = await client.post("/api/tokens", json={"name": "ci", "expires_at": future})
+        assert response.status_code == 201
+        assert response.json()["expires_at"] == future
+
     async def test_expired_bearer_is_a_401(self, client):
         from fastplace.auth.tokens import create_token
 
