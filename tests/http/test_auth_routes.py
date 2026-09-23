@@ -71,7 +71,17 @@ class TestKernelDiscovery:
         assert router is not None
         paths = {route.path for route in router.routes}
         assert "/login" in paths and "/register" in paths and "/logout" in paths
-        assert all(route.method == "POST" for route in router.routes)
+        # Credential endpoints are POSTs; the §4.11 verification fulfill link
+        # is the router's one GET (emailed links redeem with a single click).
+        assert all(
+            route.method == "POST"
+            for route in router.routes
+            if route.path != "/email/verify/{id}/{hash}"
+        )
+        assert any(
+            route.method == "GET" and route.path == "/email/verify/{id}/{hash}"
+            for route in router.routes
+        )
 
     def test_create_app_boots_and_resolves_the_declared_aliases(self):
         # The real boot path (asgi.py, `run dev`, `serve`) resolves every

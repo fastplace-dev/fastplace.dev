@@ -18,7 +18,6 @@ if _PROJECT_ROOT not in sys.path:
 EMPTY_PROPS_AUTH_PAGES = [
     ("/login", "Auth/Login"),
     ("/forgot-password", "Auth/ForgotPassword"),
-    ("/verify-email", "Auth/VerifyEmail"),
     ("/user/confirm-password", "Auth/ConfirmPassword"),
     ("/two-factor-challenge", "Auth/TwoFactorChallenge"),
 ]

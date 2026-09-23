@@ -37,6 +37,7 @@ SESSION_PATH = "/"
 ROUTE_MIDDLEWARE = {
     "auth": "fastplace.auth.middleware.AuthenticateMiddleware",
     "guest": "fastplace.auth.middleware.GuestMiddleware",
+    "verified": "fastplace.auth.middleware.EnsureEmailVerifiedMiddleware",
     "throttle": "fastplace.ratelimit.ThrottleMiddleware",
 }
 
