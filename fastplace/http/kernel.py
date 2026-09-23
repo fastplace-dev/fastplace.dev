@@ -168,6 +168,13 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
 
     import_jobs(root)
 
+    # Gates need the same treatment: app/auth/gates.py registrations must
+    # exist before the first request authorizes — an empty registry would
+    # fail loud (ConfigurationError) on every can:/authorize() check.
+    from fastplace.authz import import_gates
+
+    import_gates(root)
+
     web = _load_router_module(root, "routes.web")
     auth = _load_router_module(root, "routes.auth")
     api = _load_router_module(root, "routes.api")
