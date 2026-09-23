@@ -243,6 +243,7 @@ export function usePage<TProps extends PageProps = PageProps>(): Page<TProps> {
   return page as Page<TProps>;
 }
 
+export { useCan, type CanMap } from "./useCan";
 /* ------------------------------------------------------------------ *
  * Link
  * ------------------------------------------------------------------ */
