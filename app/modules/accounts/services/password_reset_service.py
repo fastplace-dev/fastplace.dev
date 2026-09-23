@@ -12,6 +12,7 @@ from fastplace.auth.guards import SESSION_STORE_SCOPE
 from fastplace.auth.hashing import Hash
 from fastplace.auth.passwords import _dummy_digest, throttle_seconds, token_store
 from fastplace.auth.remember import remember_store
+from fastplace.auth.tokens import pat_store
 from fastplace.errors import ValidationError
 from fastplace.events import DomainEvent, dispatch
 from fastplace.http import build_absolute_url
@@ -84,6 +85,7 @@ class PasswordResetService:
 
         await user.update(password_hash=Hash.make(password))
         await remember_store().revoke_all_for_user(user.id)
+        await pat_store().revoke_all_for_user(user.id)  # spec §6: reset kills tokens too
         store = request.scope.get(SESSION_STORE_SCOPE)
         if store is not None:
             await store.destroy_for_user(user.id)  # every session — no except_session_id

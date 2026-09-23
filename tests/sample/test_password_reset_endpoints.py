@@ -29,6 +29,7 @@ def _isolated_reset_state(monkeypatch):
     """
     from fastplace.auth.passwords import reset_token_store
     from fastplace.auth.remember import reset_remember_store
+    from fastplace.auth.tokens import reset_pat_store
     from fastplace.cache import reset_cache
     from fastplace.events import reset_listeners
     from fastplace.queue import reset_registry
@@ -38,6 +39,7 @@ def _isolated_reset_state(monkeypatch):
     reset_cache()
     reset_remember_store()
     reset_token_store()
+    reset_pat_store()
     reset_listeners()
     reset_registry()
     clear_mail_outbox()
@@ -45,6 +47,7 @@ def _isolated_reset_state(monkeypatch):
     reset_cache()
     reset_remember_store()
     reset_token_store()
+    reset_pat_store()
     reset_listeners()
     reset_registry()
     clear_mail_outbox()
@@ -229,3 +232,26 @@ class TestReset:
         client_b.cookies.clear()
         client_b.cookies.set("fastplace_remember", remember)
         assert (await client_b.get("/settings/profile")).status_code == 302
+
+
+class TestResetRevokesPersonalAccessTokens:
+    async def test_reset_kills_every_pat_for_the_account(self, client):
+        from fastplace.auth.tokens import create_token
+
+        await _register(client)
+        from app.modules.accounts.repositories.user_repository import UserRepository
+
+        user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        plaintext = await create_token(user.id, "ci-runner")
+        assert (await client.get("/settings/profile")).status_code == 302  # anonymous baseline
+
+        token, email = await _request_reset_link(client)
+        response = await _reset(client, token, email, "new-secret-123", "new-secret-123")
+        assert response.status_code == 303
+
+        # The pre-reset PAT must be dead: spec §6 — password change resets
+        # sessions AND tokens.
+        profile = await client.get(
+            "/settings/profile", headers={"Authorization": f"Bearer {plaintext}"}
+        )
+        assert profile.status_code == 401
