@@ -4,7 +4,8 @@ import { existsSync } from "node:fs";
 // E2E smoke against the real ASGI app — the webServer boots uvicorn on a
 // scratch port so `npx playwright test` is self-contained (blueprint §12).
 // globalSetup builds the frontend first when the (gitignored) manifest is
-// absent, e.g. on a fresh clone, and prepares a scratch database.
+// absent, e.g. on a fresh clone — the scratch database is prepared by the
+// webServer command below, not here.
 const PORT = Number(process.env.E2E_PORT || 8907);
 
 // Local runs use the project venv; CI (and any fresh clone without one)
@@ -45,9 +46,10 @@ export default defineConfig({
       `rm -f storage/e2e.sqlite3 storage/e2e.sqlite3-wal storage/e2e.sqlite3-shm && ` +
       `${FASTPLACE} migrate && exec ${PY} -m uvicorn asgi:app --host 127.0.0.1 --port ${PORT}'`,
     url: `http://127.0.0.1:${PORT}/api/v1/health`,
-    // Always boot a fresh server: globalSetup deletes + re-migrates the
-    // scratch DB, and a reused server would keep pooled connections to the
-    // deleted file (stale inode) while the tests expect the fresh one.
+    // Always boot a fresh server: the command above resets + re-migrates the
+    // scratch DB before exec'ing uvicorn, and a reused server would skip
+    // that reset — the tests expect the freshly migrated file, not the
+    // previous run's data.
     reuseExistingServer: false,
     // Surface boot failures in the test log instead of opaque timeouts.
     stdout: "pipe",
