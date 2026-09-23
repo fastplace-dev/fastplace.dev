@@ -37,6 +37,7 @@ Changelog = "https://github.com/firozanam/fastplace.dev/releases"
 postgresql = ["asyncpg>=0.29", "pgvector>=0.3"]
 mysql = ["asyncmy>=0.2.9", "cryptography>=42"]
 mongodb = ["pymongo>=4.9"]
+mail = ["aiosmtplib>=3.0"]
 ai = ["litellm>=1.50", "instructor>=1.6"]
 pwdlib = ["pwdlib[argon2]>=0.2"]
 queue = ["saq>=0.18", "redis>=5.0"]
@@ -44,6 +45,7 @@ all = [
     "asyncpg>=0.29", "pgvector>=0.3",
     "asyncmy>=0.2.9", "cryptography>=42",
     "pymongo>=4.9",
+    "aiosmtplib>=3.0",
     "litellm>=1.50", "instructor>=1.6",
     "saq>=0.18", "redis>=5.0",
 ]
