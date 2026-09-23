@@ -563,3 +563,145 @@ class TestSessionGuardCredentials:
         async_allowed = make_request()
         assert await guard.attempt_when(async_allowed, credentials, gate) is True
         assert async_allowed.session[SessionGuard.SESSION_KEY] == 7
+
+
+# --- Task 6: two-factor interrupt — attempt() parks the challenge ------------
+
+
+class TestTwoFactorInterrupt:
+    async def test_confirmed_two_factor_user_does_not_complete_login(self, fake_remember):
+        import datetime
+
+        from fastplace.auth.hashing import Hash
+
+        provider = DictUserProvider()
+        two_factor_user = SimpleNamespace(
+            id=11,
+            email="2fa@example.test",
+            password=Hash.make("secret123"),
+            two_factor_confirmed_at=datetime.datetime(
+                2026, 9, 1, tzinfo=datetime.timezone.utc
+            ),
+        )
+        provider.add(two_factor_user)
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        ok = await guard.attempt(
+            request, {"email": "2fa@example.test", "password": "secret123"}
+        )
+
+        assert ok is False
+        assert request.session.get(SessionGuard.SESSION_KEY) is None  # NOT logged in
+        assert request.session.get("two_factor_challenge") == 11
+        assert request.session.get("two_factor_remember") in (True, False)
+
+    async def test_unconfirmed_two_factor_secret_logs_in_normally(self, fake_remember):
+        # Secret present but two_factor_confirmed_at is None → the setup is
+        # incomplete; login must not strand the user at a challenge.
+        from fastplace.auth.hashing import Hash
+
+        provider = DictUserProvider()
+        unconfirmed = SimpleNamespace(
+            id=12,
+            email="setup@example.test",
+            password=Hash.make("secret123"),
+            two_factor_secret="JBSWY3DPEHPK3PXP",
+            two_factor_confirmed_at=None,
+        )
+        provider.add(unconfirmed)
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        ok = await guard.attempt(
+            request, {"email": "setup@example.test", "password": "secret123"}
+        )
+
+        assert ok is True
+        assert request.session[SessionGuard.SESSION_KEY] == 12
+        assert "two_factor_challenge" not in request.session
+
+    async def test_interrupt_clears_the_login_limiter(self, fake_remember):
+        # Credentials were VALID — the attempt must not count toward lockout.
+        import datetime
+        import hashlib
+
+        from fastplace.auth.hashing import Hash
+        from fastplace.ratelimit import RateLimiter
+
+        provider = DictUserProvider()
+        provider.add(
+            SimpleNamespace(
+                id=11,
+                email="2fa@example.test",
+                password=Hash.make("secret123"),
+                two_factor_confirmed_at=datetime.datetime(
+                    2026, 9, 1, tzinfo=datetime.timezone.utc
+                ),
+            )
+        )
+        limiter = RateLimiter()
+        guard = SessionGuard(provider, limiter=limiter)
+        key = hashlib.sha1(b"2fa@example.test|10.0.0.1").hexdigest()
+
+        ok = await guard.attempt(
+            make_request(), {"email": "2fa@example.test", "password": "secret123"}
+        )
+
+        assert ok is False
+        assert await limiter.too_many_attempts(key, 5) is False
+
+    async def test_pending_two_factor_reads_the_session(self, fake_remember):
+        import datetime
+
+        from fastplace.auth.hashing import Hash
+
+        provider = DictUserProvider()
+        provider.add(
+            SimpleNamespace(
+                id=11,
+                email="2fa@example.test",
+                password=Hash.make("secret123"),
+                two_factor_confirmed_at=datetime.datetime(
+                    2026, 9, 1, tzinfo=datetime.timezone.utc
+                ),
+            )
+        )
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        await guard.attempt(
+            request, {"email": "2fa@example.test", "password": "secret123"}
+        )
+
+        assert guard.pending_two_factor(request) is True
+        request.session.pop("two_factor_challenge")
+        assert guard.pending_two_factor(request) is False
+
+    async def test_parked_challenge_session_resolves_no_user(self, fake_remember):
+        # A parked session must stay anonymous: no user_id was written, and
+        # the challenge key alone must never authenticate (Review Focus #5).
+        import datetime
+
+        from fastplace.auth.hashing import Hash
+
+        provider = DictUserProvider()
+        provider.add(
+            SimpleNamespace(
+                id=11,
+                email="2fa@example.test",
+                password=Hash.make("secret123"),
+                two_factor_confirmed_at=datetime.datetime(
+                    2026, 9, 1, tzinfo=datetime.timezone.utc
+                ),
+            )
+        )
+        guard = SessionGuard(provider)
+        request = make_request()
+
+        await guard.attempt(
+            request, {"email": "2fa@example.test", "password": "secret123"}
+        )
+
+        assert request.session.get(SessionGuard.SESSION_KEY) is None
+        assert await guard.user(request) is None
