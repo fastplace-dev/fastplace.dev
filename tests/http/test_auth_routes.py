@@ -80,10 +80,18 @@ class TestKernelDiscovery:
             for route in router.routes
             if route.path != "/email/verify/{id}/{hash}"
             and not route.path.startswith("/user/two-factor")
+            and not route.path.startswith("/api/tokens")
         )
         assert any(
             route.method == "GET" and route.path == "/email/verify/{id}/{hash}"
             for route in router.routes
+        )
+        # Personal access tokens (spec §4.19) — literal /api paths on the
+        # root mount; the DELETE revoke is the router's first non-POST API
+        # verb alongside the two-factor management GETs/DELETE.
+        assert "/api/tokens" in paths and "/api/token" in paths
+        assert any(
+            route.method == "DELETE" and route.path == "/api/tokens/{id}" for route in router.routes
         )
 
     def test_create_app_boots_and_resolves_the_declared_aliases(self):
@@ -110,3 +118,6 @@ class TestKernelDiscovery:
         assert app.url_path_for("auth.login.store") == "/login"
         assert app.url_path_for("auth.register.store") == "/register"
         assert app.url_path_for("auth.logout") == "/logout"
+        assert app.url_path_for("auth.tokens.store") == "/api/tokens"
+        assert app.url_path_for("auth.tokens.destroy", id="1") == "/api/tokens/1"
+        assert app.url_path_for("auth.token.mobile") == "/api/token"

@@ -46,7 +46,9 @@ ROUTE_MIDDLEWARE = {
 }
 
 # CSRF protection (fastplace.auth.middleware.CsrfMiddleware)
-CSRF_EXCEPT: list[str] = []
+# /api/token: anonymous email+password exchange (spec §4.14) — no session
+# exists to carry a token, and ThrottleMiddleware is the abuse brake.
+CSRF_EXCEPT: list[str] = ["/api/token"]
 
 # Default HTTP middleware stack (dotted paths, outermost first). App-owned
 # middleware lives in app/http/middleware/ — framework and app entries share
