@@ -40,6 +40,7 @@ ROUTE_MIDDLEWARE = {
     "verified": "fastplace.auth.middleware.EnsureEmailVerifiedMiddleware",
     "password.confirm": "fastplace.auth.middleware.EnsurePasswordConfirmedMiddleware",
     "throttle": "fastplace.ratelimit.ThrottleMiddleware",
+    "can": "fastplace.authz.middleware.CanMiddleware",
 }
 
 # CSRF protection (fastplace.auth.middleware.CsrfMiddleware)
