@@ -68,6 +68,22 @@ class AuthorizationError(FastplaceError):
     status_code = 403
     default_message = "This action is unauthorized."
 
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        status_code: int | None = None,
+        code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        # Instance-level overrides shadow the class defaults, so the kernel's
+        # existing exc.status_code read needs no changes (deny_as_not_found's
+        # 404 flows through untouched).
+        if status_code is not None:
+            self.status_code = status_code
+        if code is not None:
+            self.code = code
+
 
 class ServerError(FastplaceError):
     """Unexpected framework or application failure."""

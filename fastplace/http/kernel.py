@@ -360,6 +360,9 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
     @app.exception_handler(FastplaceError)
     async def fastplace_error_handler(request: Any, exc: FastplaceError) -> Response:
         payload: dict[str, Any] = {"message": exc.message}
+        code = getattr(exc, "code", None)
+        if code:
+            payload["code"] = code
         errors = getattr(exc, "errors", None)
         if errors:
             payload["errors"] = errors
