@@ -71,3 +71,13 @@ router.post(
     name="auth.confirm_password.store",
     middleware=["auth", "throttle:6,60"],  # spec's 6/min — D is seconds (R8)
 )
+
+# Two-factor challenge fulfillment (spec §4.13) — the login interrupt's
+# second half. Guest: the parked session is anonymous by design.
+router.post(
+    "/two-factor-challenge",
+    AuthApiController,
+    "two_factor_challenge",
+    name="auth.two_factor_challenge.store",
+    middleware=["guest", "throttle:5,60"],
+)
