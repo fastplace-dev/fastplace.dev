@@ -29,3 +29,8 @@ AUTH_LOGIN_DECAY = 60
 # (registration validation + the bridge pages' passwordrules translation);
 # richer clauses arrive with the settings UI.
 PASSWORD_RULES = "min:8"
+
+# Password reset + email verification (Phase 3)
+AUTH_PASSWORD_EXPIRE = 60  # minutes a reset token stays live
+AUTH_RESET_THROTTLE = 60  # seconds between reset-link emails per address
+TRUSTED_HOSTS: list[str] = []  # hosts allowed to name the origin when APP_URL is empty

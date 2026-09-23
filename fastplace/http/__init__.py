@@ -23,6 +23,7 @@ from fastplace.http.response import (
     to_response,
 )
 from fastplace.http.router import Controller, Route, Router
+from fastplace.http.urls import build_absolute_url
 from fastplace.http.websocket import WebSocket
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "Redirect",
     "Request",
     "Response",
+    "build_absolute_url",
     "Route",
     "Router",
     "Stream",
