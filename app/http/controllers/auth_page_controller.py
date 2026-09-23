@@ -1,13 +1,15 @@
 """Auth page controller — the guest auth pages.
 
-GET-only page routes: the ported React pages render fully client-side and
-read their optional props with typed defaults, so no service layer is
-consulted yet. The authentication backend itself (sessions, credentials,
-passkeys) is Phase 4; form submits stay unrouted until then.
+GET-only page routes behind the ``guest`` route middleware: the ported
+React pages render fully client-side and read their optional props with
+typed defaults. The credential endpoints live in routes/auth.py; the
+later auth phases (passkeys, two-factor) will wire their remaining form
+targets.
 """
 
 from __future__ import annotations
 
+from app.modules.accounts.services.password_policy import frontend_rules
 from fastplace.http import Controller, Request, render
 
 
@@ -16,7 +18,13 @@ class AuthPageController(Controller):
         return render(request, component="Auth/Login", props={})
 
     async def register(self, request: Request):
-        return render(request, component="Auth/Register", props={})
+        # The register page's client-side default is "minlength: 8;" — the
+        # server prop mirrors the same policy that validates the POST.
+        return render(
+            request,
+            component="Auth/Register",
+            props={"passwordRules": frontend_rules()},
+        )
 
     async def forgot_password(self, request: Request):
         return render(request, component="Auth/ForgotPassword", props={})

@@ -8,17 +8,35 @@ from pathlib import Path
 import httpx
 
 from fastplace.http import get_app
+from fastplace.http.middleware import Middleware
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
+class _AuthBypassed(Middleware):
+    """Rendering-only stand-in for the ``auth`` route middleware.
+
+    The settings pages sit behind ``auth`` now; their rendering payloads are
+    pinned here without the session/DB stack, while the protection contract
+    (park/resume/401) lives in tests/sample/test_auth_endpoints.py.
+    """
+
+    async def handle(self, request, call_next):
+        return await call_next(request)
+
+
 def _sample_app(**config):
     from routes.api import router as api_router
     from routes.web import router as web_router
 
-    return get_app(routes=web_router, api_routes=api_router, config=config)
+    return get_app(
+        routes=web_router,
+        api_routes=api_router,
+        route_middleware={"auth": _AuthBypassed},
+        config=config,
+    )
 
 
 async def test_health_endpoint_via_routes_module():

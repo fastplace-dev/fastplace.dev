@@ -8,10 +8,24 @@ AUTH_GUARDS = {
     "token": {"driver": "jwt", "algorithm": "HS256", "ttl": 3600, "issuer": "fastplace"},
 }
 
-# How guards resolve an identifier back to a user. The default "dict" driver
-# is an in-memory registry (tests/seeders). Point "users" at your model for
-# real apps: {"driver": "orm", "model": "app.modules.accounts.models.User"}.
+# How guards resolve an identifier back to a user. The sample app resolves
+# through the ORM User model; the in-memory "dict" driver stays available for
+# tests/seeders ({"driver": "dict"}).
 AUTH_PROVIDERS = {
-    "users": {"driver": "dict"},
+    "users": {
+        "driver": "orm",
+        "model": "app.modules.accounts.models.User",
+    },
 }
 AUTH_USER_PROVIDER = "users"
+
+# Login lockout (the session guard's attempt limiter): after
+# AUTH_LOGIN_MAX_ATTEMPTS failed attempts for one email|ip pair, the next
+# attempt is locked out until AUTH_LOGIN_DECAY seconds have elapsed.
+AUTH_LOGIN_MAX_ATTEMPTS = 5
+AUTH_LOGIN_DECAY = 60
+
+# Password policy in the server dialect — Phase 2 honors the "min:N" clause
+# (registration validation + the bridge pages' passwordrules translation);
+# richer clauses arrive with the settings UI.
+PASSWORD_RULES = "min:8"

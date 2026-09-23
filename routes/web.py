@@ -20,31 +20,41 @@ router.get("/dashboard", DashboardController, "index", name="dashboard")
 router.get("/about", AboutController, "index", name="about")
 router.get("/assistant", AssistantPageController, "index", name="assistant")
 router.get("/knowledge", KnowledgeController, "index", name="knowledge.index")
+
+# Account settings pages — authenticated GETs (the settings section renders
+# the app's authenticated shell); their form targets ship in later phases.
 router.get(
     "/settings/appearance",
     SettingsAppearanceController,
     "index",
     name="settings.appearance",
+    middleware=["auth"],
 )
-
-# Account settings pages — GET-only bridge renders until the Phase 4 auth
-# backend wires their form targets.
 router.get(
     "/settings/profile",
     SettingsPagesController,
     "profile",
     name="settings.profile",
+    middleware=["auth"],
 )
 router.get(
     "/settings/security",
     SettingsPagesController,
     "security",
     name="settings.security",
+    middleware=["auth"],
 )
 
-# Guest auth pages — GET-only bridge renders until the Phase 4 auth backend.
-router.get("/login", AuthPageController, "login", name="auth.login")
-router.get("/register", AuthPageController, "register", name="auth.register")
+# Guest auth pages — anonymous GET renders behind `guest`; the credential
+# POSTs live in routes/auth.py.
+router.get("/login", AuthPageController, "login", name="auth.login", middleware=["guest"])
+router.get(
+    "/register",
+    AuthPageController,
+    "register",
+    name="auth.register",
+    middleware=["guest"],
+)
 router.get("/forgot-password", AuthPageController, "forgot_password", name="auth.forgot_password")
 router.get("/reset-password", AuthPageController, "reset_password", name="auth.reset_password")
 router.get("/verify-email", AuthPageController, "verify_email", name="auth.verify_email")

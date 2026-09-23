@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from app.modules.accounts.models.user import User
 from app.modules.accounts.repositories.user_repository import UserRepository
+from app.modules.accounts.services.password_policy import min_password_length
 from fastplace.auth.guards import guard
-from fastplace.config import config
 from fastplace.errors import ValidationError
 from fastplace.events import DomainEvent, dispatch
 
@@ -27,9 +26,7 @@ class RegistrationService:
     def _min_password_length(self) -> int:
         # Phase 2 honors the "min:N" clause of PASSWORD_RULES (default min:8);
         # richer clauses arrive with the settings UI.
-        rules = str(config("PASSWORD_RULES", default="min:8"))
-        match = re.search(r"(?:^|,)min:(\d+)", rules)
-        return int(match.group(1)) if match else 8
+        return min_password_length()
 
     async def register(self, request: Any, data: dict[str, Any]) -> User:
         name = str(data.get("name") or "").strip()
