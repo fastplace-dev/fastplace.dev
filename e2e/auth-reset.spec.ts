@@ -49,7 +49,11 @@ test.describe.serial("password reset and email verification", () => {
     await page.getByLabel("Confirm password").fill("secret123");
     await page.getByRole("button", { name: "Create account" }).click();
     await expect(page.getByRole("heading", { name: "Email verification" })).toBeVisible();
-    await expect(page.getByText("Please verify your email address by clicking on the link we just emailed to you.")).toBeVisible();
+    await expect(
+      page.getByText(
+        "Please verify your email address by clicking on the link we just emailed to you.",
+      ),
+    ).toBeVisible();
 
     // Log out through the UI link (raw posts lack CSRF and die 419). The
     // bridge swap above leaves the document's csrf meta stale (login rotated
