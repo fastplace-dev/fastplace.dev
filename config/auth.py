@@ -34,3 +34,9 @@ PASSWORD_RULES = "min:8"
 AUTH_PASSWORD_EXPIRE = 60  # minutes a reset token stays live
 AUTH_RESET_THROTTLE = 60  # seconds between reset-link emails per address
 TRUSTED_HOSTS: list[str] = []  # hosts allowed to name the origin when APP_URL is empty
+
+# Seconds a password confirmation stays valid (spec §4.12) — three hours.
+PASSWORD_TIMEOUT = 10800
+
+# Feature flag: the two-factor management endpoints + UI (Phase 4).
+TWO_FACTOR_ENABLED = True

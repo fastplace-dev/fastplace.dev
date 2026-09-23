@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hmac
 import secrets
+import time
 from typing import Any
 
 from fastplace.auth.guards import guard
@@ -229,3 +230,37 @@ class EnsureEmailVerifiedMiddleware(Middleware):
         # Browser AND bridge: 302 redirect (GuestMiddleware precedent) — a 403
         # envelope would strand the SPA after register → /dashboard.
         return Redirect("/email/verify", status_code=302)
+
+
+class EnsurePasswordConfirmedMiddleware(Middleware):
+    """``password.confirm`` route middleware — re-verify password on sensitive
+    pages when the last confirmation is older than ``PASSWORD_TIMEOUT``
+    (spec §4.5/§4.12). Browsers and bridge GETs get a 302 onto the confirm
+    page (the SPA swaps); API-shaped requests get the 403 envelope.
+    """
+
+    def _confirmed(self, request: Request) -> bool:
+        from fastplace.config import config
+
+        raw = request.session.get("password_confirmed_at")
+        if not isinstance(raw, (int, float)):
+            return False
+        timeout = float(config("PASSWORD_TIMEOUT", default=10800) or 10800)
+        # The stored stamp is an int UNIX-second value (Task 5 writes it), so
+        # the elapsed comparison runs at whole-second granularity — a stamp
+        # recorded exactly timeout seconds ago still counts as confirmed.
+        return (int(time.time()) - int(raw)) <= timeout
+
+    def _wants_json_envelope(self, request: Request) -> bool:
+        if request.path.startswith("/api/"):
+            return True
+        accept = request.header("Accept") or ""
+        return "application/json" in accept and not request.is_bridge
+
+    async def handle(self, request: Request, call_next) -> Response:
+        if self._confirmed(request):
+            return await call_next(request)
+        if self._wants_json_envelope(request):
+            raise AuthorizationError("Password confirmation required.")
+        request.session[INTENDED_SESSION_KEY] = request.full_path
+        return Redirect("/user/confirm-password", status_code=302)

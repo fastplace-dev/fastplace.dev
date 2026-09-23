@@ -38,6 +38,7 @@ ROUTE_MIDDLEWARE = {
     "auth": "fastplace.auth.middleware.AuthenticateMiddleware",
     "guest": "fastplace.auth.middleware.GuestMiddleware",
     "verified": "fastplace.auth.middleware.EnsureEmailVerifiedMiddleware",
+    "password.confirm": "fastplace.auth.middleware.EnsurePasswordConfirmedMiddleware",
     "throttle": "fastplace.ratelimit.ThrottleMiddleware",
 }
 
