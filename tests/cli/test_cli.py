@@ -317,3 +317,16 @@ def test_session_gc_reports_removed_rows(monkeypatch, tmp_path):
     assert result.exit_code == 0
     plain = ANSI_RE.sub("", result.output)
     assert "3" in plain and "session" in plain.lower()
+
+
+def test_auth_clear_resets_reports_purged_tokens(monkeypatch):
+    from typer.testing import CliRunner
+
+    class StubStore:
+        async def purge_expired(self):
+            return 3
+
+    monkeypatch.setattr("fastplace.auth.passwords.token_store", lambda config_get=None: StubStore())
+    result = CliRunner().invoke(cli_app, ["auth:clear-resets"])
+    assert result.exit_code == 0
+    assert ANSI_RE.sub("", result.output).strip() == "Purged 3 expired password-reset token(s)."
