@@ -29,3 +29,10 @@ router.post(
     name="auth.logout",
     middleware=["auth"],
 )
+router.post(
+    "/forgot-password",
+    AuthApiController,
+    "forgot_password",
+    name="auth.forgot_password.store",
+    middleware=["throttle:5,60"],  # NO guest — a logged-in user may reset too
+)
