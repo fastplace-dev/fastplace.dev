@@ -56,7 +56,12 @@ router.get(
     middleware=["guest"],
 )
 router.get("/forgot-password", AuthPageController, "forgot_password", name="auth.forgot_password")
-router.get("/reset-password", AuthPageController, "reset_password", name="auth.reset_password")
+router.get(
+    "/reset-password/{token}",
+    AuthPageController,
+    "reset_password",
+    name="auth.reset_password",
+)
 router.get("/verify-email", AuthPageController, "verify_email", name="auth.verify_email")
 router.get(
     "/user/confirm-password",

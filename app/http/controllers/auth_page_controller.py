@@ -30,14 +30,15 @@ class AuthPageController(Controller):
         return render(request, component="Auth/ForgotPassword", props={})
 
     async def reset_password(self, request: Request):
-        # The reset link arrives as /reset-password?token=...&email=... —
-        # the page reads both from props, not from the query string.
+        # The email link lands on /reset-password/{token}?email=... — the
+        # page reads token/email from props, never from the URL directly.
         return render(
             request,
             component="Auth/ResetPassword",
             props={
-                "token": request.query("token", ""),
+                "token": request.param("token"),
                 "email": request.query("email", ""),
+                "passwordRules": frontend_rules(),
             },
         )
 
