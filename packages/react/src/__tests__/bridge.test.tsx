@@ -422,12 +422,16 @@ describe("CSRF protection", () => {
       url,
       version: "v1",
     });
-    const respondWith = (token: string) => ({
-      ok: true,
-      headers: new Headers({ "content-type": "application/json", "X-Fastplace-CSRF-Token": token }),
-      redirected: false,
-      json: () => Promise.resolve(page("/dashboard")),
-    }) as unknown as Response;
+    const respondWith = (token: string) =>
+      ({
+        ok: true,
+        headers: new Headers({
+          "content-type": "application/json",
+          "X-Fastplace-CSRF-Token": token,
+        }),
+        redirected: false,
+        json: () => Promise.resolve(page("/dashboard")),
+      }) as unknown as Response;
 
     const fetchMock = vi
       .fn()
@@ -494,12 +498,14 @@ describe("CSRF protection", () => {
         redirected: false,
         json: () => Promise.resolve({ message: "CSRF token mismatch." }),
       } as unknown as Response)
-      .mockResolvedValueOnce(mockBridgeResponse({
-        component: "Dashboard/Index",
-        props: {},
-        url: "/dashboard",
-        version: "v1",
-      }));
+      .mockResolvedValueOnce(
+        mockBridgeResponse({
+          component: "Dashboard/Index",
+          props: {},
+          url: "/dashboard",
+          version: "v1",
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     await router.visit("/logout", { method: "POST" });
