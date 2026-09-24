@@ -935,6 +935,42 @@ def make_hook(
 
 
 # ---------------------------------------------------------------------------
+# make:* — project CLI scaffolding (spec #56)
+# ---------------------------------------------------------------------------
+
+# Written verbatim per the spec — the bootstrap loader (load_app_commands)
+# expects exactly this module-level `command_app` Typer.
+_COMMAND_TEMPLATE = '''import typer
+
+command_app = typer.Typer(help="{doc_name} commands.")
+
+
+@command_app.command("{snake}:run")
+def run() -> None:
+    """Run the {doc_name} command."""
+'''
+
+
+@generators_app.command("make:command")
+def make_command(
+    name: str = typer.Argument(..., help="Command name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a CLI command module in app/commands/ (mounted at bootstrap)."""
+    root = _project_root()
+    clean = _clean_name(name, "command")
+    # Package markers so load_app_commands() imports the module at boot.
+    for marker in (root / "app" / "__init__.py", root / "app" / "commands" / "__init__.py"):
+        _write(marker, "", root)
+    _write(
+        root / "app" / "commands" / f"{clean}_command.py",
+        _COMMAND_TEMPLATE.format(doc_name=clean.replace("_", " ").title(), snake=clean),
+        root,
+        force=force,
+    )
+
+
+# ---------------------------------------------------------------------------
 # fastplace new — the modular-monolith project scaffolder (blueprint §3)
 # ---------------------------------------------------------------------------
 

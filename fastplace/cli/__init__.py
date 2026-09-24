@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from fastplace import __version__
@@ -123,6 +125,57 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
 
 _register_phase_commands()
 app.add_typer(shell_app, name="")
+
+
+def load_app_commands(app: typer.Typer, root: Path) -> list[str]:
+    """Mount project CLI commands from ``<root>/app/commands/*_command.py``.
+
+    Each module must expose a module-level ``command_app: typer.Typer``; its
+    commands attach directly onto the root CLI (spec #56). An absent
+    directory — the framework repo itself ships no ``app/commands/`` — is a
+    clean no-op, and a malformed module is skipped with a warning so one bad
+    file can never take the whole CLI down.
+    """
+    import importlib
+    import sys
+
+    from fastplace.console import console
+
+    commands_dir = root / "app" / "commands"
+    if not commands_dir.is_dir():
+        return []
+
+    # The modules import as ``app.commands.<stem>``, so the project root must
+    # be importable — a console-script run does not put the cwd on sys.path.
+    # Stays inserted: mounted command callbacks may import more project
+    # modules when invoked.
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+    mounted: list[str] = []
+    for path in sorted(commands_dir.glob("*_command.py")):
+        try:
+            module = importlib.import_module(f"app.commands.{path.stem}")
+            command_app = getattr(module, "command_app", None)
+            if not isinstance(command_app, typer.Typer):
+                console.print(
+                    f"[yellow]warning[/] app/commands/{path.name} defines no "
+                    "command_app Typer — skipped"
+                )
+                continue
+            app.add_typer(command_app, name="")
+            for cmd in command_app.registered_commands:
+                if cmd.callback is None:  # pragma: no cover - Typer always sets one
+                    continue
+                mounted.append(cmd.name or cmd.callback.__name__.replace("_", "-"))
+        except Exception as exc:  # noqa: BLE001 — one bad module never kills the CLI
+            console.print(f"[yellow]warning[/] could not load app/commands/{path.name}: {exc}")
+    return mounted
+
+
+# Project-defined commands mount at CLI bootstrap. Outside a project (the
+# framework repo itself) the directory is absent and this is a clean no-op.
+load_app_commands(app, Path.cwd())
 
 
 if __name__ == "__main__":  # pragma: no cover
