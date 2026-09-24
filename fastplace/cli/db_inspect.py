@@ -1,17 +1,18 @@
-"""Database inspection commands — db:show and db:table.
+"""Database inspection & ops commands — db:show, db:table, db:cli, db:documents.
 
 Thin printers over ``fastplace.db_inspection`` (the queue_failures split:
 the CLI owns options, Rich output, and exit codes; the framework module
-owns the SQLAlchemy round-trips).
+owns the SQLAlchemy/Mongo round-trips).
 """
 
 from __future__ import annotations
 
 import asyncio
+import subprocess
 
 import typer
 
-from fastplace.config import load_env
+from fastplace.config import config, load_env
 
 db_inspect_app = typer.Typer(help="Live database inspection and native shell.")
 
@@ -93,3 +94,54 @@ def db_table(
         console.print(indexes)
     else:
         console.print("[dim]no indexes[/]")
+
+
+@db_inspect_app.command("db:cli")
+def db_cli() -> None:
+    """Open the database's native interactive shell (sqlite3 / psql / mysql)."""
+    load_env()
+    from fastplace.console import console
+    from fastplace.db_inspection import native_shell_argv
+
+    try:
+        argv = native_shell_argv()
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[dim]$[/] {' '.join(argv)}")
+    # os.execvp semantics via subprocess: the shell inherits this terminal
+    # and its exit code becomes ours. A missing client (psql not installed,
+    # say) is a friendly 127, not a traceback.
+    try:
+        completed = subprocess.run(argv, check=False)
+    except FileNotFoundError:
+        console.print(f"[red]'{argv[0]}' not found[/] — install the client or add it to PATH")
+        raise typer.Exit(code=127) from None
+    raise typer.Exit(code=completed.returncode)
+
+
+@db_inspect_app.command("db:documents")
+def db_documents() -> None:
+    """Document-adapter status: Mongo collections and estimated counts."""
+    load_env()
+    from rich.table import Table
+
+    from fastplace.console import console
+    from fastplace.db_inspection import documents_status
+
+    if not config("MONGODB_URL", default=None):
+        console.print("[dim]documents adapter disabled — set MONGODB_URL in .env to enable it[/]")
+        return
+
+    stats = asyncio.run(documents_status())
+    if not stats:
+        console.print("[dim]no collections[/]")
+        return
+
+    table = Table(box=None, header_style="bold")
+    table.add_column("collection", style="bold", no_wrap=True)
+    table.add_column("documents", justify="right")
+    for stat in stats:
+        table.add_row(stat.name, str(stat.documents))
+    console.print(table)

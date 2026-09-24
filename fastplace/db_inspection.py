@@ -1,9 +1,9 @@
-"""Live database inspection — behind the db:show / db:table CLI.
+"""Live database inspection and native-shell resolution — behind the db:* CLI.
 
 The CLI layer (``fastplace/cli/db_inspect.py``) stays a thin printer; these
-helpers own the SQLAlchemy inspector round-trips: the overview (driver,
-database, pool, tables, optional row counts) and the per-table describe
-(columns, types, nullability, keys, indexes).
+helpers own the real work: the SQLAlchemy inspector round-trips (overview
+with optional row counts, per-table describes), the argv for shelling into
+the database's native client, and the Mongo document-adapter status.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import inspect
+from sqlalchemy.engine import make_url
 
 # ---------------------------------------------------------------------------
 # Relational overview (db:show) and describe (db:table)
@@ -139,3 +140,85 @@ async def describe_table(name: str) -> TableDetail | None:
     async with db.connection() as session:
         conn = await session.connection()
         return await conn.run_sync(_describe)
+
+
+# ---------------------------------------------------------------------------
+# Native interactive shell (db:cli)
+# ---------------------------------------------------------------------------
+
+#: Relational driver → its interactive client binary.
+_SHELL_BINARIES = {"sqlite": "sqlite3", "postgresql": "psql", "mysql": "mysql"}
+
+
+def native_shell_argv() -> list[str]:
+    """Argv that opens the configured database's native interactive client.
+
+    The CLI runs it with subprocess (os.execvp semantics: the shell owns the
+    terminal) and forwards its exit code. Raises ``ValueError`` for drivers
+    without a mapped binary, or a sqlite target with no file to open.
+    Credentials are deliberately never placed on the command line — argv is
+    visible to every process on the host via ``ps`` — so psql and mysql
+    prompt for the password instead.
+    """
+    from fastplace.db import db
+    from fastplace.orm.capabilities import driver_from_url
+
+    cfg = db.manager.config_for("default")
+    url_text = str(cfg["url"])
+    url = make_url(url_text)
+    driver = str(cfg.get("driver") or driver_from_url(url_text))
+
+    if driver not in _SHELL_BINARIES:
+        known = ", ".join(sorted(_SHELL_BINARIES))
+        raise ValueError(f"no interactive client for driver '{driver}' — supported: {known}")
+
+    if driver == "sqlite":
+        path = url.database
+        if not path or path == ":memory:":
+            raise ValueError("the sqlite database is in-memory — no file for the sqlite3 shell")
+        return ["sqlite3", path]
+
+    if driver == "postgresql":
+        # psql speaks libpq connection URIs natively; strip the async driver
+        # suffix (+asyncpg) it would choke on. Password stays out (see above).
+        uri = url.set(drivername="postgresql").render_as_string(hide_password=True)
+        return ["psql", uri]
+
+    # mysql has no URI form — explicit flags; the client prompts for the password.
+    argv = ["mysql"]
+    if url.host:
+        argv.append(f"--host={url.host}")
+    if url.port:
+        argv.append(f"--port={url.port}")
+    if url.username:
+        argv.append(f"--user={url.username}")
+    if url.database:
+        argv.append(url.database)
+    return argv
+
+
+# ---------------------------------------------------------------------------
+# Document adapter status (db:documents)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CollectionStat:
+    """One Mongo collection in the db:documents status list."""
+
+    name: str
+    documents: int
+
+
+async def documents_status() -> list[CollectionStat]:
+    """Collections (sorted) with estimated document counts from the adapter."""
+    # Imported here so tests can monkeypatch the factory symbol (the
+    # session:gc convention) — no pymongo client is built unless asked for.
+    from fastplace.orm.documents import documents_database
+
+    database = documents_database()
+    stats: list[CollectionStat] = []
+    for name in sorted(await database.list_collection_names()):
+        count = await database[name].estimated_document_count()
+        stats.append(CollectionStat(name=name, documents=int(count)))
+    return stats
