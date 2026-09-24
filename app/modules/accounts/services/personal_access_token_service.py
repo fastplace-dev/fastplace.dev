@@ -10,8 +10,8 @@ from app.modules.accounts.repositories.personal_access_token_repository import (
 )
 from fastplace.auth.guards import guard
 from fastplace.auth.hashing import Hash
-from fastplace.auth.tokens import _ensure_aware
-from fastplace.errors import NotFoundError, ValidationError
+from fastplace.auth.tokens import VIA_PAT_SCOPE, _ensure_aware
+from fastplace.errors import AuthorizationError, NotFoundError, ValidationError
 from fastplace.events import DomainEvent, dispatch
 
 UTC = datetime.UTC
@@ -22,12 +22,25 @@ class PersonalAccessTokenService:
     TWO_FACTOR_REQUIRED = "Two-factor authentication is enabled on this account."
     EXPIRY_MESSAGE = "The expiry date must be in the future."
     NOT_FOUND = "No such token."
+    SESSION_ONLY = "Personal access tokens may only be managed from a browser session."
 
     def __init__(self, repository: PersonalAccessTokenRepository | None = None) -> None:
         self.repository = repository if repository is not None else PersonalAccessTokenRepository()
 
+    def _require_session_edge(self, request: Any) -> None:
+        """Token management is session-only (audit T2).
+
+        A PAT — however narrowly scoped — must never be able to mint
+        further tokens (privilege escalation to "*") or revoke the
+        account's other credentials. The token guard stamps
+        VIA_PAT_SCOPE; refuse that edge outright.
+        """
+        if request.scope.get(VIA_PAT_SCOPE):
+            raise AuthorizationError(self.SESSION_ONLY)
+
     async def issue(self, request: Any, data: dict[str, Any]) -> dict[str, Any]:
         """Mint a PAT for the authenticated user; plaintext shown once."""
+        self._require_session_edge(request)
         name = str(data.get("name"))
         abilities = [str(a) for a in (data.get("abilities") or ["*"])]
         expires_at = data.get("expires_at")
@@ -75,6 +88,7 @@ class PersonalAccessTokenService:
 
     async def revoke(self, request: Any, token_id: Any) -> None:
         """Owner-scoped revoke — unknown id and foreign id are both a 404."""
+        self._require_session_edge(request)
         raw = str(token_id or "").strip()
         if not raw.isdigit():
             raise NotFoundError(self.NOT_FOUND)
