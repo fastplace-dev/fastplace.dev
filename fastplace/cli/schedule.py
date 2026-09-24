@@ -1,13 +1,17 @@
-"""Scheduler commands — `fastplace schedule:list`, `schedule:run` (spec #57, #59)."""
+"""Scheduler commands — `schedule:list`/`run`/`work`/`test` (spec #57-#60)."""
 
 from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from fastplace.console import console
+
+if TYPE_CHECKING:  # annotations stay lazy; the runtime imports are function-local
+    from fastplace.schedule import TaskResult
 
 schedule_app = typer.Typer(help="Scheduled task registry.")
 
@@ -67,6 +71,19 @@ def schedule_list(
     console.print(table)
 
 
+def _print_results(results: list[TaskResult]) -> bool:
+    """One line per result — `ran`/`failed` — and whether anything failed."""
+    failed = False
+    for result in results:
+        if result.ok:
+            detail = f" — {result.value}" if result.value is not None else ""
+            console.print(f"[green]ran[/] {result.task.name}{detail}")
+        else:
+            failed = True
+            console.print(f"[red]failed[/] {result.task.name} — {result.error}")
+    return failed
+
+
 @schedule_app.command("schedule:run")
 def schedule_run(
     now: str | None = typer.Option(
@@ -87,13 +104,57 @@ def schedule_run(
         console.print("[dim]no scheduled tasks due[/]")
         return
 
-    failed = False
-    for result in results:
-        if result.ok:
-            detail = f" — {result.value}" if result.value is not None else ""
-            console.print(f"[green]ran[/] {result.task.name}{detail}")
+    if _print_results(results):
+        raise typer.Exit(code=1)
+
+
+@schedule_app.command("schedule:work")
+def schedule_work() -> None:
+    """Run due tasks every minute in the foreground until Ctrl+C."""
+    import asyncio
+
+    from fastplace.schedule import load_schedule, run_worker
+
+    schedule = load_schedule(_project_root())
+    tasks = schedule.tasks()
+    if not tasks:
+        console.print("[dim]no scheduled tasks — define some in app/schedule.py[/]")
+        return
+
+    console.print(
+        f"schedule worker started — {len(tasks)} task(s); ticking on the minute, Ctrl+C to stop"
+    )
+    try:
+        asyncio.run(run_worker(schedule, on_tick=_print_results))
+    except KeyboardInterrupt:
+        console.print("\n[dim]worker stopped — goodbye[/]")
+
+
+@schedule_app.command("schedule:test")
+def schedule_test(
+    name: str = typer.Argument(..., help="The task name as registered in app/schedule.py."),
+) -> None:
+    """Run one named task immediately, ignoring its schedule."""
+    import asyncio
+
+    from fastplace.schedule import TaskResult, load_schedule
+
+    schedule = load_schedule(_project_root())
+    task = schedule.find(name)
+    if task is None:
+        tasks = schedule.tasks()
+        if tasks:
+            known = ", ".join(sorted(candidate.name for candidate in tasks))
+            console.print(f"[red]unknown task[/] {name!r} — known tasks: {known}")
         else:
-            failed = True
-            console.print(f"[red]failed[/] {result.task.name} — {result.error}")
-    if failed:
+            console.print(f"[red]unknown task[/] {name!r} — no tasks defined in app/schedule.py")
+        raise typer.Exit(code=1)
+
+    console.print(f"[dim]testing {task.name} ({task.expression}) — due-ness ignored[/]")
+    try:
+        result = TaskResult(task, ok=True, value=asyncio.run(task.execute()))
+    except Exception as exc:
+        result = TaskResult(task, ok=False, error=exc)
+    _print_results([result])
+    if not result.ok:
         raise typer.Exit(code=1)

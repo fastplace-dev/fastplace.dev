@@ -8,6 +8,7 @@ cron subset is matched by a small self-written parser, no new dependency.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import importlib
 import importlib.util
@@ -442,6 +443,42 @@ class Schedule:
             except Exception as exc:  # recorded per task — one failure never stops the rest
                 results.append(TaskResult(task, ok=False, error=exc))
         return results
+
+
+async def run_worker(
+    schedule: Schedule,
+    *,
+    clock: Callable[[], dt.datetime] | None = None,
+    sleep_fn: Callable[[float], Awaitable[None]] | None = None,
+    stop_after: int | None = None,
+    on_tick: Callable[[list[TaskResult]], Any] | None = None,
+) -> None:
+    """Tick every minute and run whatever is due — the foreground worker loop.
+
+    Each iteration reads ``clock`` (real wall time by default), fires the
+    tasks due that minute through ``Schedule.run_due`` — a failing task is
+    isolated there and never stops the loop — hands the tick's results to
+    ``on_tick``, then waits via ``sleep_fn`` exactly to the next minute
+    boundary (``asyncio.sleep`` by default). ``stop_after`` caps the tick
+    count: a hook for tests and embedders, never a CLI option. Cancellation
+    and KeyboardInterrupt during the wait propagate, so ``asyncio.run`` shuts
+    the loop down cleanly with no traceback.
+    """
+    now_fn = clock if clock is not None else dt.datetime.now
+    sleep = sleep_fn if sleep_fn is not None else asyncio.sleep
+    ticks = 0
+    while stop_after is None or ticks < stop_after:
+        now = now_fn()
+        results = await schedule.run_due(now)
+        if on_tick is not None:
+            on_tick(results)
+        ticks += 1
+        if stop_after is not None and ticks >= stop_after:
+            return
+        # Sleep to the next minute boundary — the worker's whole cadence.
+        # ``max`` guards a slow tick that already ran past the boundary.
+        next_minute = (now + dt.timedelta(minutes=1)).replace(second=0, microsecond=0)
+        await sleep(max(0.0, (next_minute - now).total_seconds()))
 
 
 # ---------------------------------------------------------------------------
