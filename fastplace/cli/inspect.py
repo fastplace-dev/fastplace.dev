@@ -251,6 +251,91 @@ def model_show(
     console.print(rels)
 
 
+@inspect_app.command("event:list")
+def event_list() -> None:
+    """List the domain-event listeners registered in this process."""
+    from fastplace.events import registered_listeners
+
+    _project_root()
+    listeners = registered_listeners()
+    if not listeners:
+        console.print("[dim]no event listeners registered in this process[/]")
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Domain event listeners")
+    table.add_column("event", style="bold cyan", no_wrap=True)
+    table.add_column("handlers")
+    for event in sorted(listeners):
+        table.add_row(event, "\n".join(listeners[event]))
+    console.print(table)
+
+
+def _layer_mark(module_path: Path, layer: str) -> str:
+    """A check for the CSR layer directory the module carries, — otherwise."""
+    return "✓" if (module_path / layer).is_dir() else "—"
+
+
+@inspect_app.command("module:list")
+def module_list() -> None:
+    """List bounded modules under app/modules and their CSR layer coverage."""
+    from fastplace.modules import discover_modules
+
+    modules = discover_modules(_project_root())
+    if not modules:
+        console.print("[dim]no bounded modules under app/modules/[/]")
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Bounded modules")
+    table.add_column("module", style="bold cyan", no_wrap=True)
+    table.add_column("models", justify="center")
+    table.add_column("repositories", justify="center")
+    table.add_column("services", justify="center")
+    for name in sorted(modules):
+        path = modules[name].path
+        table.add_row(
+            name,
+            _layer_mark(path, "models"),
+            _layer_mark(path, "repositories"),
+            _layer_mark(path, "services"),
+        )
+    console.print(table)
+
+
+@inspect_app.command("gate:list")
+def gate_list() -> None:
+    """List registered gate abilities and explicitly bound policies."""
+    from fastplace.authz.gate import gate
+    from fastplace.authz.loader import import_gates
+
+    root = _project_root()
+    import_gates(root)  # pulls in app/auth/gates.py when the project has one
+    abilities = gate.registered_abilities()
+    policies = gate.registered_policies()
+    if not abilities and not policies:
+        console.print("[dim]no gate abilities or policies registered[/]")
+        return
+
+    from rich.table import Table
+
+    abilities_table = Table(title="Gate abilities")
+    abilities_table.add_column("ability", style="bold cyan")
+    for ability in abilities:
+        abilities_table.add_row(ability)
+    console.print(abilities_table)
+
+    if policies:
+        policies_table = Table(title="Policies (explicitly bound)")
+        policies_table.add_column("model", style="bold")
+        policies_table.add_column("policy")
+        for model_name, policy_name in policies.items():
+            policies_table.add_row(model_name, policy_name)
+        console.print(policies_table)
+
+
 #: A key whose uppercased name contains any of these substrings is secret.
 MASK_PATTERNS = ("KEY", "SECRET", "PASSWORD", "TOKEN")
 
