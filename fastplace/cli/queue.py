@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+from typing import Any
 
 import typer
 
@@ -10,27 +12,123 @@ from fastplace.config import config, load_env
 
 queue_app = typer.Typer(help="Background queue operations.")
 
+#: saq burst mode refuses to construct without a positive dequeue timeout
+#: (``Worker.__init__`` raises), so every burst worker gets this default.
+_BURST_DEQUEUE_TIMEOUT = 1.0
+
+#: CLI option → the saq ``Worker`` parameter it would map to. Whether it
+#: actually maps is decided against the INSTALLED saq's ``Worker.__init__``
+#: signature — an option absent there is reported as a no-op instead of
+#: crashing the worker build or silently pretending to work.
+_OPTION_TO_SAQ_KWARG = {
+    "tries": "tries",
+    "timeout": "timeout",
+    "sleep": "sleep",
+    "max_jobs": "max_burst_jobs",
+}
+
+
+def _installed_saq_worker_params() -> set[str]:
+    """Keyword parameter names of the installed saq ``Worker.__init__``."""
+    from saq import Worker
+
+    return set(inspect.signature(Worker.__init__).parameters)
+
+
+def _translate_worker_options(
+    options: dict[str, Any], params: set[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """Split runtime options into (worker kwargs, no-op warning lines).
+
+    An option becomes a worker kwarg only when the installed saq Worker
+    accepts it; otherwise it comes back as a warning naming the installed
+    version, so one invocation behaves predictably across saq upgrades.
+    """
+    import saq
+
+    version = getattr(saq, "__version__", "unknown")
+    kwargs: dict[str, Any] = {}
+    warnings: list[str] = []
+    for option, kwarg in _OPTION_TO_SAQ_KWARG.items():
+        value = options.get(option)
+        if value is None:
+            continue
+        if kwarg in params:
+            kwargs[kwarg] = value
+        else:
+            flag = option.replace("_", "-")
+            warnings.append(
+                f"[yellow]!--{flag}={value}:[/] no-op — saq {version} "
+                f"Worker has no '{kwarg}' parameter"
+            )
+    return kwargs, warnings
+
 
 @queue_app.command("queue:work")
 def queue_work(
     once: bool = typer.Option(
         False, "--once", help="Process what is queued, then exit (memory driver always does)."
     ),
+    tries: int | None = typer.Option(
+        None,
+        "--tries",
+        help="Retry attempts per job — no-op: retries are set per job at dispatch.",
+    ),
+    timeout: float | None = typer.Option(
+        None,
+        "--timeout",
+        help="Per-job timeout in seconds — no-op: timeout is set per job at dispatch.",
+    ),
+    sleep: float | None = typer.Option(
+        None,
+        "--sleep",
+        help="Seconds to idle between empty polls — no-op: installed saq has no worker sleep.",
+    ),
+    max_jobs: int | None = typer.Option(
+        None,
+        "--max-jobs",
+        help="Stop after this many jobs (saq burst mode: caps max_burst_jobs).",
+    ),
+    queue_name: str | None = typer.Option(
+        None,
+        "--queue",
+        help="Work this queue name instead of QUEUE_NAME (saq driver).",
+    ),
+    stop_when_empty: bool = typer.Option(
+        False,
+        "--stop-when-empty",
+        help="Exit once the queue drains (saq burst mode; the memory driver always does).",
+    ),
 ) -> None:
     """Process queued background jobs from app/jobs/."""
     load_env()
     from fastplace.console import console
-    from fastplace.queue import MemoryQueue, import_jobs, queue
+    from fastplace.queue import MemoryQueue, SaqQueue, import_jobs, queue
 
     names = import_jobs()
     driver_name = str(config("QUEUE_DRIVER", default="memory"))
 
     if driver_name == "saq":
-        driver = queue()
-        worker = driver.build_worker(burst=once)  # type: ignore[attr-defined]
+        params = _installed_saq_worker_params()
+        kwargs, warnings = _translate_worker_options(
+            {"tries": tries, "timeout": timeout, "sleep": sleep, "max_jobs": max_jobs},
+            params,
+        )
+        for warning in warnings:
+            console.print(warning)
+        burst = once or stop_when_empty
+        if burst:
+            kwargs["burst"] = True
+            if "dequeue_timeout" in params and "dequeue_timeout" not in kwargs:
+                # Burst mode is the one place saq demands a positive
+                # dequeue timeout, or Worker.__init__ refuses to build.
+                kwargs["dequeue_timeout"] = _BURST_DEQUEUE_TIMEOUT
+        driver = SaqQueue(name=queue_name) if queue_name else queue()
+        worker = driver.build_worker(**kwargs)  # type: ignore[attr-defined]
+        label = queue_name or config("QUEUE_NAME", default="fastplace")
         console.print(
-            f"[green]▸[/] saq worker started ({len(names)} job(s) registered) "
-            f"{'— burst mode' if once else ''}"
+            f"[green]▸[/] saq worker started ({len(names)} job(s) registered, "
+            f"queue '{label}')" + (" — burst mode" if burst else "")
         )
         asyncio.run(worker.start())
         return
@@ -41,6 +139,21 @@ def queue_work(
     if not isinstance(q, MemoryQueue):  # pragma: no cover — factory contract
         console.print(f"[red]✗[/] driver '{driver_name}' has no worker loop")
         raise typer.Exit(code=1)
+
+    # Worker-loop tuning cannot apply to a drain-once driver; say so per
+    # option instead of accepting the flags silently.
+    for option, value in (
+        ("tries", tries),
+        ("timeout", timeout),
+        ("sleep", sleep),
+        ("max-jobs", max_jobs),
+        ("queue", queue_name),
+    ):
+        if value is not None:
+            console.print(
+                f"[yellow]!--{option}={value}:[/] no-op on the memory driver — "
+                "it drains what was dispatched and exits"
+            )
 
     executed = asyncio.run(q.run_pending())
     if executed:
