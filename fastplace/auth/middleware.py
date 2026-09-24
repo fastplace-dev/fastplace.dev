@@ -23,6 +23,8 @@ from fastplace.auth.remember import (
     REMEMBER_COOKIE_SCOPE,
     REMEMBER_COOKIE_TTL,
 )
+from fastplace.authz.gate import gate
+from fastplace.config import config
 from fastplace.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -42,6 +44,56 @@ AUTH_EDGE_KEY = "fastplace_auth_edge"
 _UNSET = object()
 
 INTENDED_SESSION_KEY = "url.intended"
+
+#: Scope key carrying the precomputed `{ability: bool}` map (spec §4.16).
+AUTH_CAN_SCOPE = "fastplace_auth_can"
+
+
+def _shared_abilities() -> list[str]:
+    """AUTH_SHARED_ABILITIES as a clean list — env strings arrive unsplit."""
+    raw = config("AUTH_SHARED_ABILITIES", default=[])
+    if isinstance(raw, str):
+        return [ability.strip() for ability in raw.split(",") if ability.strip()]
+    return list(raw or [])
+
+
+class SharedAbilitiesMiddleware(Middleware):
+    """Precompute the shared can-map before the handler runs (spec §4.16).
+
+    ``page_payload`` and ``render`` are sync, so share callbacks cannot
+    await gate checks — the async work lives here instead, one layer out,
+    stashing ``{ability: bool}`` in the request scope for the sync
+    ``shared_auth_props`` callback to read. Declared after
+    ``ResolveUserMiddleware`` so ``request.user`` is already resolved; a
+    ``before()`` hook may deliberately allow guests, so guests flow through
+    the gate like anyone else. With the default empty list this is a no-op
+    stash of ``{}``.
+    """
+
+    async def handle(self, request: Request, call_next: Any) -> Any:
+        abilities = _shared_abilities()
+        if abilities:
+            bound = gate.for_user(request.user)
+            request.scope[AUTH_CAN_SCOPE] = {
+                ability: await bound.allows(ability) for ability in abilities
+            }
+        else:
+            request.scope[AUTH_CAN_SCOPE] = {}
+        return await call_next(request)
+
+
+def shared_auth_props(request: Request) -> dict[str, Any] | None:
+    """Sync share callback — the auth snapshot every page payload carries.
+
+    The can-map was precomputed by ``SharedAbilitiesMiddleware``; a request
+    that never crossed it simply renders an empty map. Lookups stay
+    defensive because a registered share runs for EVERY render() call
+    site, and edge/test stubs may not carry the full Request surface.
+    """
+    user = getattr(request, "user", None)
+    scope = getattr(request, "scope", None) or {}
+    serialized = user.to_dict() if user is not None and hasattr(user, "to_dict") else user
+    return {"auth": {"user": serialized, "can": scope.get(AUTH_CAN_SCOPE, {})}}
 
 
 def _remember_cookie_header(value: str | None, request: Request) -> str:

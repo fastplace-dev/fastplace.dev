@@ -65,6 +65,10 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
         from fastplace.cli.generators import generators_app
 
         app.add_typer(generators_app, name="")
+
+        # Attaches make:auth onto the generators group (the command
+        # decorator runs at import time).
+        import fastplace.cli.auth_scaffold  # noqa: F401
     except ImportError:
         pass
     try:

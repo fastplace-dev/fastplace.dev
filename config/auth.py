@@ -40,3 +40,8 @@ PASSWORD_TIMEOUT = 10800
 
 # Feature flag: the two-factor management endpoints + UI (Phase 4).
 TWO_FACTOR_ENABLED = True
+
+# Abilities precomputed into every page payload's shared auth props (§4.16).
+# Zero-extra-arg abilities only — no model instance exists at props time.
+# Env override is comma-separated: AUTH_SHARED_ABILITIES=view-posts,view-profile
+AUTH_SHARED_ABILITIES: list[str] = []
