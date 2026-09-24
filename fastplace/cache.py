@@ -480,12 +480,38 @@ class DatabaseCache:
 _default_cache: CacheStore | None = None
 
 
+def _refuse_memory_in_production() -> None:
+    """Fail fast when production would silently drift onto ``memory``.
+
+    Memory counters live per process, so a multi-worker serve under-counts
+    every rate limit built on the cache (login lockouts, throttles) — each
+    worker keeps its own tally. Production must pick a shared driver, or
+    explicitly acknowledge a single-worker deployment.
+    """
+    if str(config("APP_ENV", default="local")).strip().lower() != "production":
+        return
+    if config("CACHE_ALLOW_MEMORY_IN_PRODUCTION", default=False):
+        return
+    raise ConfigurationError(
+        "production refuses CACHE_DRIVER=memory — per-process counters "
+        "under-count rate limits under multi-worker serve; set CACHE_DRIVER "
+        "to 'redis' or 'database', or acknowledge a single-worker deployment "
+        "with CACHE_ALLOW_MEMORY_IN_PRODUCTION=1"
+    )
+
+
 def cache() -> CacheStore:
-    """The process-wide cache store (``CACHE_DRIVER``, default ``memory``)."""
+    """The process-wide cache store (``CACHE_DRIVER``, default ``memory``).
+
+    The memory default is for local development; production refuses it
+    (see :func:`_refuse_memory_in_production`) unless a single-worker
+    deployment is explicitly acknowledged.
+    """
     global _default_cache
     if _default_cache is None:
         driver = config("CACHE_DRIVER", default="memory")
         if driver == "memory":
+            _refuse_memory_in_production()
             _default_cache = MemoryCache()
         elif driver == "redis":
             if not _redis_available():

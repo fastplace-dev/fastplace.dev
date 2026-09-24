@@ -184,3 +184,147 @@ class TestChallengeFulfillment:
         page = await client.get("/two-factor-challenge")
         assert page.status_code == 200
         assert "TwoFactorChallenge" in page.text
+
+
+class TestRememberCookieBoundary:
+    """A remember cookie must not satisfy a confirmed 2FA challenge.
+
+    The attack: the cookie was issued BEFORE two-factor was enabled (or was
+    lifted from a pre-2FA device) and outlives the session. The remember
+    fallback used to authenticate straight past the challenge — it must park
+    one instead, exactly like a password login would.
+    """
+
+    async def _remember_cookie_with_2fa_confirmed(self, client):
+        """Register + remember-login (2FA off), enable 2FA in the DB, then
+        drop the session cookie — only the remember cookie survives."""
+        import pyotp
+
+        from app.modules.accounts.repositories.user_repository import UserRepository
+
+        await client.get("/login")
+        created = await client.post("/register", json=REGISTER_PAYLOAD)
+        assert created.status_code == 303
+        await client.post("/logout")  # register auto-logs-in; start clean
+
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={
+                "email": REGISTER_PAYLOAD["email"],
+                "password": REGISTER_PAYLOAD["password"],
+                "remember": "on",
+            },
+        )
+        assert login.status_code == 303
+        assert client.cookies.get("fastplace_remember"), "remember cookie not issued"
+
+        # Two-factor is switched on elsewhere while this device still holds
+        # a perfectly valid remember cookie.
+        user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        secret = generate_secret()
+        user.two_factor_secret = encrypt(secret)
+        user.two_factor_recovery_codes = encrypt(json.dumps(generate_recovery_codes()))
+        user.two_factor_confirmed_at = datetime.datetime.now(datetime.UTC)
+        await user.save()
+
+        # The server-side session expires; the cookie is all that remains.
+        client.cookies.delete("fastplace_session")
+        return pyotp.TOTP(secret)
+
+    async def test_remember_cookie_alone_cannot_skip_the_challenge(self, client):
+        totp = await self._remember_cookie_with_2fa_confirmed(client)
+        profile = await client.get("/settings/profile")
+        # NOT 200: the fallback must not authenticate past a confirmed 2FA.
+        assert profile.status_code == 302
+        assert profile.headers["location"] == "/two-factor-challenge"
+        # The parked challenge is real: it completes with a valid TOTP code
+        # and the remember preference survives (a fresh cookie is re-issued).
+        fulfilled = await client.post("/two-factor-challenge", json={"code": totp.now()})
+        assert fulfilled.status_code == 303
+        assert (await client.get("/settings/profile")).status_code == 200
+
+    async def test_a_challenge_parked_by_the_fallback_is_not_re_parked_forever(self, client):
+        # Hitting authed routes repeatedly while unchallenged must keep
+        # steering to the challenge page (the rotated cookie survives each
+        # fallback run — it must not be burned by the parking).
+        await self._remember_cookie_with_2fa_confirmed(client)
+        for _ in range(3):
+            bounced = await client.get("/settings/profile")
+            assert bounced.status_code == 302
+            assert bounced.headers["location"] == "/two-factor-challenge"
+        assert client.cookies.get("fastplace_remember"), "rotation must keep the cookie alive"
+
+
+class TestCodeSingleUse:
+    """A TOTP code is one-time: replaying the code that just worked must not
+    complete a second challenge while it is still inside the window."""
+
+    async def _relogin_into_a_fresh_challenge(self, client):
+        await client.post("/logout")
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={"email": REGISTER_PAYLOAD["email"], "password": REGISTER_PAYLOAD["password"]},
+        )
+        assert login.status_code == 303  # challenge parked again
+
+    async def test_the_same_code_cannot_complete_two_challenges(self, client):
+        import time
+
+        user, secret, codes, totp = await _park_challenge(client)
+        code = totp.now()
+        first = await client.post("/two-factor-challenge", json={"code": code})
+        assert first.status_code == 303
+
+        await self._relogin_into_a_fresh_challenge(client)
+        replay = await client.post("/two-factor-challenge", json={"code": code})
+        assert replay.status_code == 422
+
+        # Not over-tightened: the NEXT timestep's code still completes —
+        # pyotp's ±1 window accepts it immediately after.
+        later = totp.at(int(time.time()) + 30)
+        third = await client.post("/two-factor-challenge", json={"code": later})
+        assert third.status_code == 303
+        assert (await client.get("/settings/profile")).status_code == 200
+
+
+class TestChallengeThrottle:
+    """The fulfillment POST rides throttle:5,60 (spec §4.19) — code brute
+    force gets the same brake as password brute force."""
+
+    async def test_sixth_wrong_code_is_locked_out_with_retry_after(self, client):
+        await _park_challenge(client)
+
+        for _ in range(5):
+            resp = await client.post("/two-factor-challenge", json={"code": "000000"})
+            assert resp.status_code == 422
+        sixth = await client.post("/two-factor-challenge", json={"code": "000000"})
+        assert sixth.status_code == 429
+        assert int(sixth.headers["Retry-After"]) >= 1
+
+    async def test_the_lock_decays_and_a_valid_code_still_completes(self, client):
+        """Per-IP with a decay, not a brick on the challenge.
+
+        Someone sharing the victim's IP can burn the window, but once it
+        decays the victim's valid code completes — the throttle must never
+        strand a parked challenge permanently.
+        """
+        import hashlib
+
+        from fastplace.ratelimit import RateLimiter
+
+        user, secret, codes, totp = await _park_challenge(client)
+        for _ in range(5):
+            await client.post("/two-factor-challenge", json={"code": "000000"})
+        blocked = await client.post("/two-factor-challenge", json={"code": "000000"})
+        assert blocked.status_code == 429
+
+        # Window elapsed: drop the per-IP counter exactly as expiry would
+        # (ThrottleMiddleware keys on sha1(f"{ip}|{path}")).
+        key = hashlib.sha1(b"127.0.0.1|/two-factor-challenge").hexdigest()
+        await RateLimiter().clear(key)
+
+        done = await client.post("/two-factor-challenge", json={"code": totp.now()})
+        assert done.status_code == 303
+        assert (await client.get("/settings/profile")).status_code == 200

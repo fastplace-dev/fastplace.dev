@@ -14,10 +14,26 @@ router.get("/health", HealthController, "index", name="api.health")
 router.get("/dashboard", DashboardApiController, "index", name="api.dashboard")
 
 router.get("/projects", ProjectsApiController, "index", name="api.projects.index")
-router.post("/projects", ProjectsApiController, "store", name="api.projects.store")
+# Mirrors of the web writes: authenticated too (audit T6). Reads stay the
+# public demo surface.
+router.post(
+    "/projects", ProjectsApiController, "store", name="api.projects.store", middleware=["auth"]
+)
 router.get("/projects/{id}", ProjectsApiController, "show", name="api.projects.show")
-router.post("/projects/{id}/tasks", ProjectsApiController, "store_task", name="api.projects.tasks")
-router.patch("/tasks/{id}/toggle", ProjectsApiController, "toggle_task", name="api.tasks.toggle")
+router.post(
+    "/projects/{id}/tasks",
+    ProjectsApiController,
+    "store_task",
+    name="api.projects.tasks",
+    middleware=["auth"],
+)
+router.patch(
+    "/tasks/{id}/toggle",
+    ProjectsApiController,
+    "toggle_task",
+    name="api.tasks.toggle",
+    middleware=["auth"],
+)
 
 router.post("/knowledge", KnowledgeApiController, "store", name="api.knowledge.store")
 router.get("/knowledge/search", KnowledgeApiController, "search", name="api.knowledge.search")

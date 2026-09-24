@@ -8,8 +8,10 @@ unambiguous alphabet so a hand-copied code survives fat fingers.
 
 from __future__ import annotations
 
+import datetime
 import io
 import secrets
+import time
 
 import pyotp
 import segno
@@ -44,7 +46,29 @@ def otp_auth_uri(secret: str, account_name: str) -> str:
 
 def verify_code(secret: str, code: str) -> bool:
     """True when ``code`` is a current-window TOTP for ``secret`` (±30s)."""
-    return bool(pyotp.TOTP(secret).verify(str(code or ""), valid_window=1))
+    return verify_code_step(secret, code) is not None
+
+
+def verify_code_step(secret: str, code: str, *, now: int | None = None) -> int | None:
+    """The timestep ``code`` matched, or None when it does not verify.
+
+    Single-use bookkeeping needs WHICH window accepted the code, not just
+    that one did: callers persist the step as a high-water mark and refuse
+    steps at or below it on the next challenge. Candidates resolve oldest
+    first, so a code valid across a step boundary is charged to the earlier
+    step — the mark can never move backwards. ``now`` (unix seconds) is
+    injectable for deterministic tests.
+    """
+    totp = pyotp.TOTP(secret)
+    code = str(code or "")
+    moment = now if now is not None else int(time.time())
+    for candidate in (moment - 30, moment, moment + 30):
+        # pyotp accepts a unix timestamp at runtime but types for_time as
+        # datetime — hand it the epoch as an aware UTC datetime.
+        at = datetime.datetime.fromtimestamp(candidate, tz=datetime.UTC)
+        if totp.verify(code, for_time=at):
+            return candidate // 30
+    return None
 
 
 def qr_code_svg(uri: str) -> str:

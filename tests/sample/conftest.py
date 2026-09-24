@@ -91,17 +91,27 @@ async def sample_client(sample_app):
     transport = httpx.ASGITransport(app=sample_app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         # The app stack now includes CSRF (config/app.py MIDDLEWARE). Play
-        # the browser's part: first page load mints the session token, and
-        # every unsafe-method request carries it back. The middleware's own
+        # the browser's part: first page load mints the session token, every
+        # unsafe-method request carries it back, and every response updates
+        # it — privilege boundaries (login, logout, reset) rotate the token,
+        # so a frozen copy would 419 the next POST. The middleware's own
         # acceptance/rejection matrix lives in tests/auth/test_csrf.py.
-        page = await client.get("/", headers={"X-Fastplace-Request": "true"})
-        token = page.headers.get("X-Fastplace-CSRF-Token")
+        token: list[str | None] = [None]
 
         async def attach_csrf(request: httpx.Request) -> None:
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and token:
-                request.headers.setdefault("X-Fastplace-CSRF-Token", token)
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and token[0]:
+                request.headers.setdefault("X-Fastplace-CSRF-Token", token[0])
+
+        async def capture_csrf(response: httpx.Response) -> None:
+            fresh = response.headers.get("X-Fastplace-CSRF-Token")
+            if fresh:
+                token[0] = fresh
+
+        page = await client.get("/", headers={"X-Fastplace-Request": "true"})
+        await capture_csrf(page)
 
         client.event_hooks["request"].append(attach_csrf)
+        client.event_hooks["response"].append(capture_csrf)
         yield client
 
 

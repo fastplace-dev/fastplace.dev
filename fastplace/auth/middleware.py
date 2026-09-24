@@ -17,7 +17,7 @@ import secrets
 import time
 from typing import Any
 
-from fastplace.auth.guards import guard
+from fastplace.auth.guards import TWO_FACTOR_CHALLENGE_KEY, guard
 from fastplace.auth.remember import (
     REMEMBER_COOKIE_NAME,
     REMEMBER_COOKIE_SCOPE,
@@ -247,16 +247,24 @@ class AuthenticateMiddleware(Middleware):
     """``auth`` route middleware — reject anonymous requests (spec §4.5).
 
     Route middleware runs inside the endpoint (after ResolveUserMiddleware),
-    so ``request.user`` is already resolved here. Bridge/API requests get the
-    401 JSON envelope; browser navigations are redirected to /login with the
-    intended URL parked in the session for ``request.intended()`` to resume.
+    so ``request.user`` is already resolved here. Programmatic surfaces —
+    bridge payloads, /api/v1, and the /ai streams — get the 401 JSON
+    envelope (the SPA's fetch() follows a redirect silently and would
+    SSE-parse the login page as event data); browser navigations are
+    redirected to /login with the intended URL parked in the session for
+    ``request.intended()`` to resume.
     """
 
     async def handle(self, request: Request, call_next) -> Response:
         if request.user is not None:
             return await call_next(request)
-        if request.is_bridge or request.path.startswith("/api/"):
+        if request.is_bridge or request.path.startswith(("/api/", "/ai/")):
             raise AuthenticationError()
+        # Credentials were already proven but the challenge is outstanding
+        # (password login or the remember fallback parked it) — steer to the
+        # challenge page, not /login, which would ask for a password again.
+        if request.session.get(TWO_FACTOR_CHALLENGE_KEY) is not None:
+            return Redirect("/two-factor-challenge", status_code=302)
         request.session[INTENDED_SESSION_KEY] = request.full_path
         return Redirect("/login", status_code=302)
 

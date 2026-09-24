@@ -7,4 +7,12 @@ from fastplace.http import Router
 
 router = Router()
 
-router.post("/assistant", AssistantController, "stream", name="ai.assistant")
+# The agent drives a provider-backed LLM per request — authenticated and
+# throttled so anonymous or runaway traffic cannot spend real money (audit T6).
+router.post(
+    "/assistant",
+    AssistantController,
+    "stream",
+    name="ai.assistant",
+    middleware=["auth", "throttle:10,60"],
+)

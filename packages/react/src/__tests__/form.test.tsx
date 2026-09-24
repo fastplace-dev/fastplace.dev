@@ -74,6 +74,7 @@ afterEach(() => {
   cleanup();
   router.reset();
   vi.unstubAllGlobals();
+  document.head.querySelectorAll("meta[name='csrf-token']").forEach((m) => m.remove());
 });
 
 /* ------------------------------------------------------------------ *
@@ -89,6 +90,43 @@ describe("Form", () => {
       </Form>,
     );
     expect(screen.getByRole("button", { name: "Save" })).toHaveAttribute("type", "submit");
+  });
+
+  it("adopts the rotated CSRF token advertised on the submit response", async () => {
+    const user = userEvent.setup();
+    const meta = document.createElement("meta");
+    meta.name = "csrf-token";
+    meta.content = "stale-token";
+    document.head.appendChild(meta);
+    const page = { component: "Projects/Index", props: {}, url: "/projects" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({
+          "content-type": "application/json",
+          "X-Fastplace-CSRF-Token": "rotated-token",
+        }),
+        redirected: false,
+        json: () => Promise.resolve(page),
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProvider(
+      <Form action="/projects">
+        <input type="text" name="name" defaultValue="Apollo" />
+        <button type="submit">Save</button>
+      </Form>,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(fetchMock.mock.calls[0][1].headers["X-Fastplace-CSRF-Token"]).toBe("stale-token");
+    expect(meta.content).toBe("rotated-token");
+
+    // A second unsafe action on the swapped page must send the fresh token.
+    await router.visit("/logout", { method: "POST" });
+    expect(fetchMock.mock.calls[1][1].headers["X-Fastplace-CSRF-Token"]).toBe("rotated-token");
   });
 
   it("submits the form fields as JSON to the action with bridge headers", async () => {

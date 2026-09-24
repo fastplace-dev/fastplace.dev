@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from app.modules.accounts.repositories.user_repository import UserRepository
 from app.modules.accounts.services.password_policy import min_password_length
-from fastplace.auth.guards import SESSION_STORE_SCOPE
+from fastplace.auth.guards import SESSION_STORE_SCOPE, _queue_remember_cookie
 from fastplace.auth.hashing import Hash
 from fastplace.auth.passwords import _dummy_digest, throttle_seconds, token_store
 from fastplace.auth.remember import remember_store
@@ -89,4 +89,23 @@ class PasswordResetService:
         store = request.scope.get(SESSION_STORE_SCOPE)
         if store is not None:
             await store.destroy_for_user(user.id)  # every session — no except_session_id
+        # The performing browser must not stay logged in either: its live
+        # session would be rewritten by the response-time persist (the flash
+        # marks it dirty) and resurrect the auth state destroy_for_user just
+        # killed. Drop the payload and mint a fresh id — logout semantics
+        # that still let the one-shot flash ride the new anonymous row. The
+        # CSRF token rotates with the boundary (the _authenticate_session
+        # precedent) so the next unsafe request validates against what the
+        # response advertises, not against a token the clear just erased.
+        import secrets as _secrets
+
+        from fastplace.auth.middleware import CSRF_SESSION_KEY
+
+        session = request.session
+        session.clear()
+        session[CSRF_SESSION_KEY] = _secrets.token_urlsafe(32)
+        regenerate = getattr(session, "regenerate", None)
+        if callable(regenerate):
+            regenerate()
+        _queue_remember_cookie(request, None)  # revoked server-side; clear it client-side
         await dispatch(DomainEvent("PasswordReset", {"user_id": user.id, "email": user.email}))

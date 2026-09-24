@@ -164,6 +164,35 @@ class TestEnableConfirmDisable:
         refreshed = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
         assert refreshed.two_factor_confirmed_at is not None
 
+    async def test_confirming_consumes_the_confirming_code(self, client):
+        # The setup confirm is itself a TOTP acceptance: replaying the very
+        # code that confirmed the setup must not complete the next login's
+        # challenge while it is still inside the window.
+        import pyotp
+
+        from app.modules.accounts.repositories.user_repository import UserRepository
+
+        await _confirmed_client(client)
+        await client.post("/user/two-factor-authentication")
+        user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        totp = pyotp.TOTP(decrypt(user.two_factor_secret))
+        code = totp.now()
+
+        confirmed = await client.post(
+            "/user/confirmed-two-factor-authentication", json={"code": code}
+        )
+        assert confirmed.status_code == 200
+
+        await client.post("/logout")
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={"email": REGISTER_PAYLOAD["email"], "password": REGISTER_PAYLOAD["password"]},
+        )
+        assert login.status_code == 303
+        replay = await client.post("/two-factor-challenge", json={"code": code})
+        assert replay.status_code == 422
+
     async def test_confirm_with_invalid_code_is_frozen_422(self, client):
         await _confirmed_client(client)
         await client.post("/user/two-factor-authentication")
@@ -241,3 +270,38 @@ class TestFeatureFlag:
                 assert response.status_code == 404, (method, path)
         finally:
             reset_config()
+
+
+class TestEnableRevokesRememberCookies:
+    async def test_enabling_two_factor_revokes_existing_remember_cookies(self, client):
+        # A cookie issued before 2FA existed must not outlive enablement —
+        # otherwise it would ride straight past the challenge the setup adds.
+        await client.get("/login")
+        await client.post("/register", json=REGISTER_PAYLOAD)
+        await client.post("/logout")
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={
+                "email": REGISTER_PAYLOAD["email"],
+                "password": REGISTER_PAYLOAD["password"],
+                "remember": "on",
+            },
+        )
+        assert login.status_code == 303
+        assert client.cookies.get("fastplace_remember")
+
+        confirmed = await client.post(
+            "/user/confirm-password", json={"password": REGISTER_PAYLOAD["password"]}
+        )
+        assert confirmed.status_code == 303
+        enabled = await client.post("/user/two-factor-authentication")
+        assert enabled.status_code == 200
+
+        # Session expires; the once-valid remember cookie must now be dead —
+        # the fallback fails and the request bounces to /login (no challenge
+        # is parked: 2FA is only pending, never confirmed).
+        client.cookies.delete("fastplace_session")
+        profile = await client.get("/settings/profile")
+        assert profile.status_code == 302
+        assert profile.headers["location"] == "/login"

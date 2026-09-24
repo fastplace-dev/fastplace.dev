@@ -28,7 +28,7 @@ list):
 | `APP_ENV` | `production` |
 | `APP_KEY` | a fresh generated secret (never commit it) |
 | `DATABASE_URL` / `DATABASE_DRIVER` | PostgreSQL recommended (`fastplace db:configure postgresql` writes the pair) |
-| `CACHE_DRIVER` / `QUEUE_DRIVER` | `redis` when you outgrow in-process defaults |
+| `CACHE_DRIVER` / `QUEUE_DRIVER` | `redis` (production refuses `CACHE_DRIVER=memory` — per-process rate-limit counters — unless `CACHE_ALLOW_MEMORY_IN_PRODUCTION=1` acknowledges a single-worker deploy) |
 | `REDIS_URL` | your Redis instance |
 | `QUERY_SLOW_MS` / `QUERY_N1_THRESHOLD` | tune to your SLO |
 

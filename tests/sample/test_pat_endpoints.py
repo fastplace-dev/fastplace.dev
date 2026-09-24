@@ -123,6 +123,33 @@ class TestIssueEndpoint:
         profile = await client.get("/settings/profile", headers=_auth(issued["token"]))
         assert profile.status_code == 200
 
+    async def test_a_pat_cannot_mint_another_pat(self, client):
+        # Token management is session-only: a leaked or scoped PAT must not
+        # be able to escalate by minting further tokens for the account.
+        await _login(client)
+        issued = (await client.post("/api/tokens", json={"name": "ci"})).json()
+        response = await client.post(
+            "/api/tokens", json={"name": "child"}, headers=_auth(issued["token"])
+        )
+        assert response.status_code == 403
+
+    async def test_a_scoped_pat_cannot_escalate_to_wildcard_abilities(self, client):
+        await _login(client)
+        scoped = (
+            await client.post("/api/tokens", json={"name": "scoped", "abilities": ["orders"]})
+        ).json()
+        response = await client.post(
+            "/api/tokens",
+            json={"name": "escalated", "abilities": ["*"]},
+            headers=_auth(scoped["token"]),
+        )
+        assert response.status_code == 403
+        # Nothing was minted — the store still holds only the scoped row.
+        from app.modules.accounts.models.personal_access_token import PersonalAccessToken
+
+        rows = await PersonalAccessToken.all()
+        assert [r.abilities for r in rows] == [["orders"]]
+
     async def test_past_expiry_is_a_422(self, client):
         await _login(client)
         past = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
@@ -182,6 +209,17 @@ class TestDestroyEndpoint:
         await _login(client)
         destroyed = await client.delete("/api/tokens/not-a-number")
         assert destroyed.status_code == 404
+
+    async def test_a_pat_cannot_revoke_another_pat(self, client):
+        await _login(client)
+        keeper = (await client.post("/api/tokens", json={"name": "keeper"})).json()
+        victim = (await client.post("/api/tokens", json={"name": "victim"})).json()
+        victim_id = victim["token"].partition("|")[0]
+        destroyed = await client.delete(f"/api/tokens/{victim_id}", headers=_auth(keeper["token"]))
+        assert destroyed.status_code == 403
+        # The victim row was untouched — it still authenticates.
+        profile = await client.get("/settings/profile", headers=_auth(victim["token"]))
+        assert profile.status_code == 200
 
 
 class TestMobileEndpoint:
