@@ -44,13 +44,25 @@ def _plural(word: str) -> str:
     return word + "s"
 
 
-def _write(path: Path, content: str, root: Path) -> None:
+def _clean_name(name: str, what: str) -> str:
+    """Validate a maker NAME into its snake_case form (rejects path shapes)."""
+    clean = _snake(name.strip().strip("/"))
+    if not clean or not re.fullmatch(r"[a-z][a-z0-9_]*", clean):
+        console.print(
+            f"[red]invalid {what} name[/] — use letters/digits starting with a letter"
+        )
+        raise typer.Exit(code=1)
+    return clean
+
+
+def _write(path: Path, content: str, root: Path, *, force: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
+    if path.exists() and not force:
         console.print(f"[yellow]exists[/] {path.relative_to(root)}")
         return
+    verb = "overwritten" if path.exists() else "created"
     path.write_text(content)
-    console.print(f"[green]created[/] {path.relative_to(root)}")
+    console.print(f"[green]{verb}[/] {path.relative_to(root)}")
 
 
 _MODEL_TEMPLATE = '''"""{doc_name} model."""
@@ -313,6 +325,273 @@ def make_agent(
         tools_dir / f"{clean}_tools.py",
         _TOOLS_TEMPLATE.format(doc_name=doc_name, snake=clean),
         root,
+    )
+
+
+# ---------------------------------------------------------------------------
+# make:* — backend scaffolding (spec #10–#18)
+# ---------------------------------------------------------------------------
+
+_SEEDER_TEMPLATE = '''"""{name} seeder — insert fixture rows."""
+
+from __future__ import annotations
+
+
+async def run() -> None:
+    """Seed {name} data."""
+    # TODO: insert fixture rows via the ORM.
+'''
+
+
+@generators_app.command("make:seeder")
+def make_seeder(
+    name: str = typer.Argument(..., help="Seeder name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a seeder stub in database/seeders/."""
+    root = _project_root()
+    clean = _clean_name(name, "seeder")
+    _write(
+        root / "database" / "seeders" / f"{clean}_seeder.py",
+        _SEEDER_TEMPLATE.format(name=name.strip()),
+        root,
+        force=force,
+    )
+
+
+_JOB_TEMPLATE = '''"""{name} job — a queued background handler."""
+
+from __future__ import annotations
+
+from fastplace.queue import Job
+
+
+@Job()
+async def {snake}(**kwargs: object) -> None:
+    """Background job {name}."""
+    # TODO: perform the work — kwargs arrive verbatim from queue().dispatch().
+'''
+
+
+@generators_app.command("make:job")
+def make_job(
+    name: str = typer.Argument(..., help="Job name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a queue job stub in app/jobs/."""
+    root = _project_root()
+    clean = _clean_name(name, "job")
+    # Package marker so queue.import_jobs() finds the handler at boot.
+    _write(root / "app" / "jobs" / "__init__.py", "", root)
+    _write(
+        root / "app" / "jobs" / f"{clean}_job.py",
+        _JOB_TEMPLATE.format(name=name.strip(), snake=clean),
+        root,
+        force=force,
+    )
+
+
+_REQUEST_TEMPLATE = '''"""{name} form request — validated input via request.validate({name}Request)."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class {name}Request(BaseModel):
+    # TODO: declare fields with Field(...) constraints — cross-field rules
+    # belong in the service layer (see make:auth's request modules).
+    name: str = Field(min_length=1, max_length=255)
+'''
+
+
+@generators_app.command("make:request")
+def make_request(
+    name: str = typer.Argument(..., help="Request name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a form request stub in app/http/requests/."""
+    root = _project_root()
+    clean = _clean_name(name, "request")
+    _write(
+        root / "app" / "http" / "requests" / f"{clean}_request.py",
+        _REQUEST_TEMPLATE.format(name=name.strip()),
+        root,
+        force=force,
+    )
+
+
+_MIDDLEWARE_TEMPLATE = '''"""{name} middleware — wraps the HTTP stack."""
+
+from __future__ import annotations
+
+from fastplace.http import Middleware, Request, Response
+
+
+class {name}Middleware(Middleware):
+    async def handle(self, request: Request, call_next) -> Response:
+        # TODO: run logic before/after the rest of the stack.
+        return await call_next(request)
+'''
+
+
+@generators_app.command("make:middleware")
+def make_middleware(
+    name: str = typer.Argument(..., help="Middleware name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create an HTTP middleware stub in app/http/middleware/."""
+    root = _project_root()
+    clean = _clean_name(name, "middleware")
+    _write(
+        root / "app" / "http" / "middleware" / f"{clean}_middleware.py",
+        _MIDDLEWARE_TEMPLATE.format(name=name.strip()),
+        root,
+        force=force,
+    )
+
+
+_POLICY_TEMPLATE = '''"""{name} policy — ability methods follow the (user, resource) -> bool contract."""
+
+from __future__ import annotations
+
+
+class {name}Policy:
+    """Authorization policy for {name}."""
+
+    # Bind to a model with gate.policy(Model, {name}Policy) in app/auth/gates.py.
+    async def view_any(self, user) -> bool:
+        return True
+
+    async def view(self, user, resource) -> bool:
+        return True
+'''
+
+
+@generators_app.command("make:policy")
+def make_policy(
+    name: str = typer.Argument(..., help="Policy name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create an authorization policy stub in app/authz/."""
+    root = _project_root()
+    clean = _clean_name(name, "policy")
+    _write(root / "app" / "authz" / "__init__.py", "", root)
+    _write(
+        root / "app" / "authz" / f"{clean}_policy.py",
+        _POLICY_TEMPLATE.format(name=name.strip()),
+        root,
+        force=force,
+    )
+
+
+_TEST_TEMPLATE = '''"""{name} test."""
+
+from __future__ import annotations
+
+
+async def test_{snake}() -> None:
+    assert True
+'''
+
+
+@generators_app.command("make:test")
+def make_test(
+    name: str = typer.Argument(..., help="Test subject name in PascalCase"),
+    feature: bool = typer.Option(
+        False, "--feature", help="Scaffold under tests/http/ instead of tests/unit/."
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a test stub under tests/unit/ (or tests/http/ with --feature)."""
+    root = _project_root()
+    clean = _clean_name(name, "test")
+    folder = "http" if feature else "unit"
+    _write(
+        root / "tests" / folder / f"test_{clean}.py",
+        _TEST_TEMPLATE.format(name=name.strip(), snake=clean),
+        root,
+        force=force,
+    )
+
+
+_SCOPE_TEMPLATE = '''"""{name} scope — composable query filters ({module} module)."""
+
+from __future__ import annotations
+
+
+class {name}Scope:
+    def apply(self, query, **filters):
+        # TODO: narrow the query from the filters.
+        return query
+'''
+
+
+@generators_app.command("make:scope")
+def make_scope(
+    name: str = typer.Argument(..., help="Scope name in PascalCase"),
+    module: str = typer.Option(..., "--module", "-m", help="Bounded module name"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a query scope stub in app/modules/<module>/models/scopes/."""
+    root = _project_root()
+    clean = _clean_name(name, "scope")
+    _write(
+        root / "app" / "modules" / module / "models" / "scopes" / f"{clean}_scope.py",
+        _SCOPE_TEMPLATE.format(name=name.strip(), module=module),
+        root,
+        force=force,
+    )
+
+
+_CONFIG_TEMPLATE = '''"""{name} configuration defaults (env vars always win)."""
+
+{const} = None  # TODO: document each setting — the default's type guides env coercion.
+'''
+
+
+@generators_app.command("make:config")
+def make_config(
+    name: str = typer.Argument(..., help="Config module name, e.g. Billing or billing"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a configuration defaults module in config/."""
+    root = _project_root()
+    clean = _clean_name(name, "config")
+    _write(
+        root / "config" / f"{clean}.py",
+        _CONFIG_TEMPLATE.format(name=name.strip(), const=clean.upper()),
+        root,
+        force=force,
+    )
+
+
+_MAIL_TEMPLATE = '''"""{name} mail — build the MailMessage, send via Mail.to(...).send(...)."""
+
+from __future__ import annotations
+
+from fastplace.mail import MailMessage
+
+
+def {snake}_mail(to: str) -> MailMessage:
+    return MailMessage(subject="{name}", text="...", to=to)
+'''
+
+
+@generators_app.command("make:mail")
+def make_mail(
+    name: str = typer.Argument(..., help="Mail name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a mail message builder stub in app/mail/."""
+    root = _project_root()
+    clean = _clean_name(name, "mail")
+    _write(root / "app" / "mail" / "__init__.py", "", root)
+    _write(
+        root / "app" / "mail" / f"{clean}.py",
+        _MAIL_TEMPLATE.format(name=name.strip(), snake=clean),
+        root,
+        force=force,
     )
 
 
