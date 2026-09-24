@@ -56,6 +56,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     except ImportError:
         pass
     try:
+        from fastplace.cli.cache_cmd import cache_app
+
+        app.add_typer(cache_app, name="")
+    except ImportError:
+        pass
+    try:
         from fastplace.cli.database import database_app
 
         app.add_typer(database_app, name="")
