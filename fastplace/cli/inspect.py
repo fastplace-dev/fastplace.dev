@@ -336,6 +336,65 @@ def gate_list() -> None:
         console.print(policies_table)
 
 
+@inspect_app.command("ai:tools")
+def ai_tools() -> None:
+    """List the @Tool functions registered in this process."""
+    from fastplace.ai.tool import registered_tools, tool_registry
+
+    _project_root()
+    names = registered_tools()
+    if not names:
+        console.print(
+            "[dim]no tools registered in this process — @Tool registers at import time[/]"
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(title="AI tools")
+    table.add_column("name", style="bold cyan", no_wrap=True)
+    table.add_column("description")
+    table.add_column("params", justify="right")
+    for name in names:
+        spec = tool_registry[name]
+        properties = spec.parameters.get("properties", {})
+        table.add_row(spec.name, spec.description or "—", str(len(properties)))
+    console.print(table)
+
+
+@inspect_app.command("ai:vectors")
+def ai_vectors() -> None:
+    """List registered vector stores and mark the active one."""
+    from fastplace.ai.vectors import import_vector_stores, vector_registry
+
+    root = _project_root()
+    import_vector_stores(root)  # pulls in app/ai/vectors/* when present
+    if not vector_registry:
+        console.print("[dim]no vector stores registered[/]")
+        return
+
+    from fastplace.config import config, load_env, reset_config
+
+    load_env()
+    reset_config().load()  # bind the config registry to this project
+    active = config("AI_VECTOR_STORE", default="pgvector")
+    if active not in vector_registry:
+        console.print(
+            f"[red]unknown vector store[/] {active!r} — AI_VECTOR_STORE must name a "
+            f"registered store: {', '.join(sorted(vector_registry))}"
+        )
+        raise typer.Exit(code=1)
+
+    from rich.table import Table
+
+    table = Table(title="Vector stores")
+    table.add_column("store", style="bold cyan", no_wrap=True)
+    table.add_column("status")
+    for name in sorted(vector_registry):
+        table.add_row(name, "active" if name == active else "—")
+    console.print(table)
+
+
 #: A key whose uppercased name contains any of these substrings is secret.
 MASK_PATTERNS = ("KEY", "SECRET", "PASSWORD", "TOKEN")
 
