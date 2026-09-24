@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import time
+from pathlib import Path
+
 import typer
 
 from fastplace.console import console
@@ -65,3 +69,88 @@ def env() -> None:
 
     load_env()
     console.print(f"APP_ENV={config('APP_ENV', default='production')}")
+
+
+#: Backfill shown before the live follow starts (and the default cap of the
+#: single-pass `--lines` mode's bigger sibling — `tail`'s familiar 20).
+_DEFAULT_BACKFILL = 20
+_FOLLOW_POLL_SECONDS = 0.5
+
+
+def _project_root() -> Path:
+    """The cwd when it is a Fastplace project; a friendly exit otherwise."""
+    root = Path.cwd()
+    if not (root / "asgi.py").is_file():
+        console.print(
+            "[red]not inside a Fastplace project[/] — run this from a project root "
+            "(the directory containing asgi.py)."
+        )
+        raise typer.Exit(code=1)
+    return root
+
+
+def _newest_log(logs_dir: Path) -> Path | None:
+    """The most recently modified ``*.log`` in storage/logs, if any."""
+    return max(
+        logs_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, default=None
+    )
+
+
+def _level_matches(line: str, level: str | None) -> bool:
+    """Case-insensitive level filter — the level name appears in the line."""
+    return level is None or level.upper() in line.upper()
+
+
+@system_app.command("log:tail")
+def log_tail(
+    level: str | None = typer.Option(
+        None, "--level", help="Show only lines carrying this level name (e.g. ERROR, INFO)."
+    ),
+    file: Path | None = typer.Option(
+        None, "--file", help="Tail this file instead of the newest storage/logs/*.log."
+    ),
+    lines: int | None = typer.Option(
+        None,
+        "--lines",
+        "-n",
+        help="Print the last N matching lines and exit — no live follow.",
+    ),
+) -> None:
+    """Tail the newest storage/logs/*.log live (--level filters; --lines N prints and exits)."""
+    root = _project_root()
+    path = file if file is not None else _newest_log(root / "storage" / "logs")
+    if path is None or not path.is_file():
+        console.print(
+            "[red]no log file found[/] — expected storage/logs/*.log "
+            "(or pass [cyan]--file[/])"
+        )
+        raise typer.Exit(code=1)
+
+    matching = [
+        line
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if _level_matches(line, level)
+    ]
+    backfill = _DEFAULT_BACKFILL if lines is None else max(lines, 0)
+    for line in matching[-backfill:] if backfill > 0 else []:
+        # Raw log lines: markup off so bracketed content prints verbatim.
+        console.print(line, markup=False, highlight=False)
+    if lines is not None:
+        return
+
+    # Live follow: block on the file, printing matching lines as they land.
+    # An empty read is EOF-for-now — the writer may append more — so poll
+    # rather than exit; Ctrl+C ends the follow cleanly (the backfill above
+    # already printed).
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(0, os.SEEK_END)
+            while True:
+                raw = handle.readline()
+                if not raw:
+                    time.sleep(_FOLLOW_POLL_SECONDS)
+                    continue
+                if _level_matches(raw, level):
+                    console.print(raw.rstrip("\n"), markup=False, highlight=False)
+    except KeyboardInterrupt:  # pragma: no cover - interactive Ctrl+C
+        pass

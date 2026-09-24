@@ -78,6 +78,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     except ImportError:
         pass
     try:
+        from fastplace.cli.keys import keys_app
+
+        app.add_typer(keys_app, name="")
+    except ImportError:
+        pass
+    try:
         from fastplace.cli.lint import lint_app
 
         app.add_typer(lint_app, name="")
