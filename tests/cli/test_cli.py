@@ -1,12 +1,32 @@
 """CLI smoke tests — command wiring via Typer's CliRunner."""
 
+import os
 import re
+
+import pytest
 
 from fastplace.cli import app as cli_app
 
 # Rich colorizes help panels when the environment forces color (e.g. CI);
 # style codes can split option names, so assertions match on plain text.
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_environ():
+    """Confine os.environ changes to the test that caused them.
+
+    session:gc / auth:clear-resets / auth:prune-tokens run from the repo
+    root here, and their config bootstrap loads the developer's real .env
+    into os.environ — a mutation no monkeypatch undoes. Snapshot before,
+    restore after (same pattern as test_cache_cmds and the project
+    fixture in test_env_crypt), so a leaked empty APP_KEY cannot make
+    later files' env:encrypt tests refuse.
+    """
+    env_before = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(env_before)
 
 
 def test_about_runs(monkeypatch):
