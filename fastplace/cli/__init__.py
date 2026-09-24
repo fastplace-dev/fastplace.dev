@@ -110,6 +110,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     except ImportError:
         pass
     try:
+        from fastplace.cli.schedule import schedule_app
+
+        app.add_typer(schedule_app, name="")
+    except ImportError:
+        pass
+    try:
         from fastplace.cli.system import system_app
 
         app.add_typer(system_app, name="")
