@@ -131,3 +131,56 @@ def route_list(
     for row in rows:
         table.add_row(row["method"], row["path"], row["name"])
     console.print(table)
+
+
+#: A key whose uppercased name contains any of these substrings is secret.
+MASK_PATTERNS = ("KEY", "SECRET", "PASSWORD", "TOKEN")
+
+_MASK = "****"
+
+
+def mask(key: str, value: str) -> str:
+    """``****`` when the key looks secret; the value unchanged otherwise.
+
+    Full mask, never a partial hint — a two-character prefix still narrows
+    a brute-force search space.
+    """
+    upper = key.upper()
+    if any(pattern in upper for pattern in MASK_PATTERNS):
+        return _MASK
+    return value
+
+
+@inspect_app.command("config:show")
+def config_show(
+    key: str = typer.Argument(None, help="Show only this key's effective value."),
+) -> None:
+    """Show effective configuration (environment wins over config/*.py defaults)."""
+    from fastplace.config import config, load_env, reset_config
+
+    _project_root()
+    load_env()
+    registry = reset_config()  # bind the config registry to this project
+    registry.load()
+
+    if key is not None:
+        value = config(key)
+        if value is None:
+            console.print(
+                f"[red]unknown config key[/] {key!r} — not set in the environment "
+                "or any config/*.py module."
+            )
+            raise typer.Exit(code=1)
+        console.print(mask(key, str(value)))
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Effective configuration")
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    # _defaults carries both ``KEY`` and ``namespace.KEY`` aliases; the plain
+    # form is the surface users know, the dotted ones stay lookup handles.
+    for name in sorted(k for k in registry._defaults if "." not in k):
+        table.add_row(name, mask(name, str(config(name))))
+    console.print(table)
