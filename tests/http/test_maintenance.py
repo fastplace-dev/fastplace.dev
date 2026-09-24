@@ -114,6 +114,16 @@ async def test_retry_state_sets_retry_after_header(client, tmp_path):
     assert resp.headers.get("retry-after") == "60"
 
 
+async def test_non_int_retry_omits_the_header_and_still_serves_503(client, tmp_path):
+    """A hand-edited state file can carry any JSON value; a non-int retry
+    must degrade to "no Retry-After" (final review T27b), never crash the
+    response with a header-encoding error."""
+    _write_state(tmp_path, {"retry": "tröten siebzig"})
+    resp = await client.get("/ping")
+    assert resp.status_code == 503
+    assert "retry-after" not in resp.headers
+
+
 async def test_state_without_retry_omits_retry_after(client, tmp_path):
     _write_state(tmp_path, {})
     resp = await client.get("/ping")
@@ -155,6 +165,21 @@ async def test_wrong_secret_still_gets_503(client, tmp_path):
     _write_state(tmp_path, {"secret": "letmein"})
     resp = await client.get("/ping?secret=nope")
     assert resp.status_code == 503
+
+
+async def test_non_ascii_secret_bypasses_and_mismatches_cleanly(client, tmp_path):
+    """hmac.compare_digest rejects non-ASCII str operands with TypeError —
+    encode both sides (final review T27a): a matching non-ASCII secret
+    bypasses with 200, a wrong one gets the 503, and neither is a 500."""
+    secret = "çécurité-🔓"
+    _write_state(tmp_path, {"secret": secret})
+
+    matched = await client.get("/ping", params={"secret": secret})
+    assert matched.status_code == 200
+    assert matched.json() == {"ok": True}
+
+    wrong = await client.get("/ping", params={"secret": "nope"})
+    assert wrong.status_code == 503
 
 
 async def test_secret_cookie_bypasses_the_503(client, tmp_path):

@@ -75,9 +75,7 @@ def _invoke(monkeypatch, tmp_path, *args: str):
 
 class TestBackendScaffolds:
     @pytest.mark.parametrize(("argv", "rel", "markers"), _CASES)
-    def test_creates_stub_with_protocol_markers(
-        self, tmp_path, monkeypatch, argv, rel, markers
-    ):
+    def test_creates_stub_with_protocol_markers(self, tmp_path, monkeypatch, argv, rel, markers):
         result = _invoke(monkeypatch, tmp_path, *argv)
         assert result.exit_code == 0, result.output
 
@@ -92,9 +90,7 @@ class TestBackendScaffolds:
         assert rel in result.output
 
     @pytest.mark.parametrize(("argv", "rel", "markers"), _CASES)
-    def test_refuses_to_overwrite_without_force(
-        self, tmp_path, monkeypatch, argv, rel, markers
-    ):
+    def test_refuses_to_overwrite_without_force(self, tmp_path, monkeypatch, argv, rel, markers):
         result = _invoke(monkeypatch, tmp_path, *argv)
         assert result.exit_code == 0, result.output
 
@@ -106,9 +102,7 @@ class TestBackendScaffolds:
         assert "SENTINEL" in path.read_text()
 
     @pytest.mark.parametrize(("argv", "rel", "markers"), _CASES)
-    def test_force_overwrites_the_stub(
-        self, tmp_path, monkeypatch, argv, rel, markers
-    ):
+    def test_force_overwrites_the_stub(self, tmp_path, monkeypatch, argv, rel, markers):
         path = tmp_path / rel
         path.parent.mkdir(parents=True)
         path.write_text("# SENTINEL — replaced under --force\n")
@@ -121,7 +115,11 @@ class TestBackendScaffolds:
             assert marker in source, f"{rel} lacks {marker!r}"
 
     def test_job_policy_and_mail_write_package_markers(self, tmp_path, monkeypatch):
-        for argv in (["make:job", "SendInvoice"], ["make:policy", "Invoice"], ["make:mail", "InvoicePaid"]):
+        for argv in (
+            ["make:job", "SendInvoice"],
+            ["make:policy", "Invoice"],
+            ["make:mail", "InvoicePaid"],
+        ):
             result = _invoke(monkeypatch, tmp_path, *argv)
             assert result.exit_code == 0, result.output
         for marker in ("app/jobs/__init__.py", "app/authz/__init__.py", "app/mail/__init__.py"):
@@ -144,3 +142,49 @@ class TestBackendScaffolds:
         result = _invoke(monkeypatch, tmp_path, "make:seeder", "../evil")
         assert result.exit_code == 1
         assert not (tmp_path / "database").exists()
+
+
+# ---------------------------------------------------------------------------
+# --module path traversal (final review I-2) — a --module (or a make:model
+# name) that escapes app/modules must be rejected, not written.
+# ---------------------------------------------------------------------------
+
+#: Commands taking --module directly, plus make:model whose module segment is
+#: derived verbatim from the NAME argument (traversal shapes reach it that
+#: way: name "../evil" → module "../evil").
+_MODULE_COMMANDS = [
+    ("make:scope", lambda module: ["make:scope", "Invoice", "--module", module]),
+    ("make:service", lambda module: ["make:service", "Invoice", "--module", module]),
+    ("make:repository", lambda module: ["make:repository", "Invoice", "--module", module]),
+    ("make:model", lambda module: ["make:model", module]),
+]
+
+_TRAVERSAL_MODULES = ["../evil", "/etc", "a/../../b"]
+
+
+class TestModuleTraversalRejected:
+    @pytest.mark.parametrize("command,argv_for", _MODULE_COMMANDS)
+    @pytest.mark.parametrize("module", _TRAVERSAL_MODULES)
+    def test_rejects_traversal_modules(self, tmp_path, monkeypatch, command, argv_for, module):
+        result = _invoke(monkeypatch, tmp_path, *argv_for(module))
+        assert result.exit_code == 1, result.output
+        assert "invalid module" in result.output
+        # Nothing may be created outside (or inside) app/modules.
+        assert not (tmp_path / "app").exists()
+        assert not (tmp_path / "evil").exists()
+
+    @pytest.mark.parametrize(
+        ("module", "expected_rel"),
+        [
+            ("blog", "app/modules/blog/services/invoice_service.py"),
+            ("shop/billing", "app/modules/shop/billing/services/invoice_service.py"),
+            ("shop.billing", "app/modules/shop.billing/services/invoice_service.py"),
+        ],
+        ids=["single", "multi-segment", "dotted"],
+    )
+    def test_legitimate_module_names_still_generate(
+        self, tmp_path, monkeypatch, module, expected_rel
+    ):
+        result = _invoke(monkeypatch, tmp_path, "make:service", "Invoice", "--module", module)
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / expected_rel).is_file(), f"missing {expected_rel}"

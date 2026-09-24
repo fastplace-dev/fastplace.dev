@@ -215,7 +215,7 @@ class MemoryQueue:
             raise ValueError(f"unknown job '{name}' — is it registered with @Job?")
         self.pending.append(_Pending(name=name, kwargs=kwargs))
 
-    async def run_pending(self) -> int:
+    async def run_pending(self, honor_sentinel: bool = True) -> int:
         """Execute the queued jobs; a failing handler is recorded, not raised.
 
         Only the batch present at entry is drained: a job whose side effect
@@ -230,14 +230,18 @@ class MemoryQueue:
         each job: when one is pending, the drain stops, the un-run jobs go
         back to the front of the deque for the replacement worker, and the
         sentinel is left untouched — consuming it is the exiting worker's
-        job (the CLI does it for this driver).
+        job (the CLI does it for this driver). The sentinel carries no TTL —
+        it stays latched until a worker consumes it — so a caller that will
+        never consume it (the kernel's shutdown drain: the web process is
+        not a restartable worker) must pass ``honor_sentinel=False`` or a
+        single latched sentinel silently disables every drain it observes.
         """
         self.failures = []
         batch = list(self.pending)
         self.pending.clear()
         executed = 0
         for index, item in enumerate(batch):
-            if await restart_requested_at() is not None:
+            if honor_sentinel and await restart_requested_at() is not None:
                 # extendleft(reversed(...)) keeps the block's dispatch order.
                 self.pending.extendleft(reversed(batch[index:]))
                 return executed

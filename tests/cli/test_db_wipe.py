@@ -144,3 +144,76 @@ def test_db_wipe_drops_tables_and_views_outside_migration_history(migrated_and_s
     assert result.exit_code == 0, result.output
     assert _tables(migrated_and_seeded) == set()
     assert _views(migrated_and_seeded) == set()
+
+
+# ---------------------------------------------------------------------------
+# migrate:reset / db:reset — the same production guard db:wipe carries
+# (final review I-1): both drop the whole schema, so both confirm in
+# production unless --force.
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_reset_refuses_in_production_without_force(migrated_and_seeded, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+
+    result = runner.invoke(cli_app, ["migrate:reset"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "Reset the production database?" in result.output
+    assert "posts" in _tables(migrated_and_seeded)  # schema untouched
+
+
+def test_migrate_reset_production_force_proceeds(migrated_and_seeded, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+
+    result = runner.invoke(cli_app, ["migrate:reset", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert "Reset the production database?" not in result.output  # no prompt
+    assert "posts" not in _tables(migrated_and_seeded)
+
+
+def test_migrate_reset_in_testing_env_needs_no_prompt(migrated_and_seeded, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "testing")
+
+    result = runner.invoke(cli_app, ["migrate:reset"])
+
+    assert result.exit_code == 0, result.output
+    assert "Reset the production database?" not in result.output
+    assert "posts" not in _tables(migrated_and_seeded)
+
+
+def test_db_reset_refuses_in_production_without_force(migrated_and_seeded, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+
+    result = runner.invoke(cli_app, ["db:reset"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "Reset the production database?" in result.output
+    assert "posts" in _tables(migrated_and_seeded)  # schema untouched
+
+
+def test_db_reset_production_force_proceeds_and_reseeds(migrated_and_seeded, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+
+    result = runner.invoke(cli_app, ["db:reset", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert "Reset the production database?" not in result.output  # no prompt
+    assert "posts" in _tables(migrated_and_seeded)  # rebuilt…
+    seeded = sqlite3.connect(migrated_and_seeded / "test.sqlite3")
+    try:
+        titles = {row[0] for row in seeded.execute("SELECT title FROM posts")}
+    finally:
+        seeded.close()
+    assert titles == {"seeded"}  # …and re-seeded
+
+
+def test_db_reset_in_testing_env_needs_no_prompt(migrated_and_seeded, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "testing")
+
+    result = runner.invoke(cli_app, ["db:reset"])
+
+    assert result.exit_code == 0, result.output
+    assert "Reset the production database?" not in result.output
+    assert "posts" in _tables(migrated_and_seeded)

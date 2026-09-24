@@ -90,6 +90,22 @@ def test_queue_failed_lists_recorded_rows(project):
     assert "invoice_id" in plain  # the dispatch payload is visible for retry decisions
 
 
+@pytest.mark.parametrize(
+    "option", ["--limit", "--offset"], ids=["negative-limit", "negative-offset"]
+)
+def test_queue_failed_rejects_negative_paging_options(project, option):
+    """A negative --limit/--offset must be a usage error (exit 2) before any
+    store query runs — SQLite reads LIMIT -1 as "no limit", so silently
+    accepting it would dump the whole ledger (final review)."""
+    _record(project, "billing.reconcile")
+
+    result = runner.invoke(cli_app, ["queue:failed", option, "-1"])
+    assert result.exit_code == 2
+    plain = ANSI_RE.sub("", result.output)
+    assert "billing.reconcile" not in plain  # nothing was listed
+    assert "no failed jobs" not in plain  # the command never reached the store
+
+
 # ---------------------------------------------------------------------------
 # queue:forget
 # ---------------------------------------------------------------------------
@@ -172,3 +188,16 @@ def test_queue_prune_failed_removes_only_old_rows(project):
     rows = _rows(project)
     assert [row.name for row in rows] == ["new_job"]
     assert "1" in ANSI_RE.sub("", result.output)
+
+
+def test_queue_failed_table_renders_markup_rows_literally(project):
+    """Failed-job names/errors are persisted data, not Rich markup — bracket
+    tags must survive to the terminal literally (final review), never style
+    the table cells."""
+    _record(project, "billing.[bold]reconcile[/]", error="RuntimeError: [red]kaput[/]")
+
+    result = runner.invoke(cli_app, ["queue:failed"])
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "billing.[bold]reconcile[/]" in plain
+    assert "[red]kaput[/]" in plain

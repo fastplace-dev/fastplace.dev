@@ -245,3 +245,23 @@ def test_queue_monitor_help_documents_the_threshold(project):
     result = runner.invoke(cli_app, ["queue:monitor", "--help"])
     assert result.exit_code == 0, result.output
     assert "--max" in result.output
+
+
+def test_queue_work_failure_line_renders_markup_literally(project):
+    """Job names and handler errors are data, not Rich markup — a `[bold]`
+    name / `[red]` error must print literally (final review), never styled."""
+    from fastplace.queue import Job, queue
+
+    @Job(name="t31-[bold]boom[/]")
+    async def explode() -> None:
+        raise RuntimeError("detonated [red]now[/]")
+
+    async def _dispatch() -> None:
+        await queue().dispatch("t31-[bold]boom[/]")
+
+    asyncio.run(_dispatch())
+
+    result = runner.invoke(cli_app, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "t31-[bold]boom[/] failed: detonated [red]now[/]" in plain

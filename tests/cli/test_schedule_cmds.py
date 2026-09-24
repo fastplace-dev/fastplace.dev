@@ -162,3 +162,26 @@ def test_schedule_commands_outside_a_project_fail_friendly(tmp_path, monkeypatch
     result = runner.invoke(cli_app, command)
     assert result.exit_code == 1
     assert "not inside a Fastplace project" in ANSI_RE.sub("", result.output)
+
+
+def test_schedule_run_renders_markup_names_and_errors_literally(fresh_project, monkeypatch):
+    """Task names and runner errors are data, not Rich markup — bracket tags
+    in either must print literally on the ran/failed lines (final review)."""
+
+    def runner(command: str) -> int:
+        if "boom" in command:
+            raise RuntimeError("exit [red]137[/]")
+        return 0
+
+    monkeypatch.setattr("fastplace.schedule._subprocess_runner", runner)
+    _define_schedule(
+        fresh_project,
+        "def schedule(s):\n"
+        "    s.command('deploy [bold]ok[/]').every_minutes(5)\n"
+        "    s.command('deploy [bold]boom[/]').every_minutes(5)\n",
+    )
+
+    code, out = _run("schedule:run", "--now", FROZEN_NOW)
+    assert code == 1, out  # the failing task sets the exit code
+    assert "ran deploy [bold]ok[/]" in out
+    assert "failed deploy [bold]boom[/] — exit [red]137[/]" in out

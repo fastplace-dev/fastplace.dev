@@ -73,14 +73,19 @@ def schedule_list(
 
 def _print_results(results: list[TaskResult]) -> bool:
     """One line per result — `ran`/`failed` — and whether anything failed."""
+    from rich.markup import escape
+
     failed = False
     for result in results:
+        # Task names and outcomes are data, not markup — render literally.
         if result.ok:
             detail = f" — {result.value}" if result.value is not None else ""
-            console.print(f"[green]ran[/] {result.task.name}{detail}")
+            console.print(f"[green]ran[/] {escape(result.task.name)}{escape(detail)}")
         else:
             failed = True
-            console.print(f"[red]failed[/] {result.task.name} — {result.error}")
+            console.print(
+                f"[red]failed[/] {escape(result.task.name)} — {escape(str(result.error))}"
+            )
     return failed
 
 

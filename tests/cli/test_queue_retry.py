@@ -174,3 +174,21 @@ def test_retry_all_keeps_records_whose_dispatch_failed(project, monkeypatch):
     assert result.exit_code == 1
     assert fake.dispatched == [("t16_ok", {"n": 1})]  # the healthy one still went out
     assert _get(project, stuck_id) is not None  # the stuck one stayed on the ledger
+
+
+def test_retry_error_line_renders_markup_literally(project, monkeypatch):
+    """A failed-job name and its dispatch error are data, not Rich markup —
+    both must render literally on the retry error line (final review)."""
+
+    class _MarkupFailingQueue:
+        async def dispatch(self, name, **kwargs):
+            raise RuntimeError("broker [bold]down[/]")
+
+    job_id = _record(project, "t16-[bold]stuck[/]", {"n": 1})
+    monkeypatch.setattr("fastplace.queue.queue", lambda: _MarkupFailingQueue())
+
+    result = runner.invoke(cli_app, ["queue:retry", str(job_id)])
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "t16-[bold]stuck[/]" in plain
+    assert "broker [bold]down[/]" in plain

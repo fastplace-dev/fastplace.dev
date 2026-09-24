@@ -51,10 +51,7 @@ def mail_test(
         console.print(f"[red]✗[/] mail test failed via the '{driver}' transport: {exc}")
         raise typer.Exit(code=1) from None
 
-    queued = (
-        driver == "smtp"
-        and str(config("QUEUE_DRIVER", default="memory") or "memory") == "saq"
-    )
+    queued = driver == "smtp" and str(config("QUEUE_DRIVER", default="memory") or "memory") == "saq"
     if queued:
         console.print(
             f"[green]✓[/] test mail to {address} queued for delivery "
@@ -213,5 +210,14 @@ def user_create(
         console.print(f"[red]a user with email {email} already exists[/]")
         raise typer.Exit(code=1)
 
-    user = asyncio.run(repository.create_user(name=name, email=email, password=password))
+    # The duplicate check above can lose a race: a rival insert committing
+    # between find_by_email and create_user surfaces as the UNIQUE
+    # constraint. Answer with the same friendly message either way.
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        user = asyncio.run(repository.create_user(name=name, email=email, password=password))
+    except IntegrityError:
+        console.print(f"[red]a user with email {email} already exists[/]")
+        raise typer.Exit(code=1) from None
     console.print(f"[green]✓[/] user created: {user.name} <{user.email}> (id {user.id})")

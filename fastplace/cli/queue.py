@@ -102,6 +102,8 @@ def queue_work(
 ) -> None:
     """Process queued background jobs from app/jobs/."""
     load_env()
+    from rich.markup import escape
+
     from fastplace.console import console
     from fastplace.queue import (
         MemoryQueue,
@@ -135,7 +137,7 @@ def queue_work(
         label = queue_name or config("QUEUE_NAME", default="fastplace")
         console.print(
             f"[green]▸[/] saq worker started ({len(names)} job(s) registered, "
-            f"queue '{label}')" + (" — burst mode" if burst else "")
+            f"queue '{escape(label)}')" + (" — burst mode" if burst else "")
         )
 
         async def _run_saq_worker() -> None:
@@ -193,7 +195,8 @@ def queue_work(
         # chained jobs stay silent exactly as they did before restarts.
         console.print(f"[cyan]▸[/] {len(q.pending)} job(s) left for the replacement worker")
     for failure in q.failures:
-        console.print(f"[red]✗[/] {failure.name} failed: {failure.error}")
+        # Names and errors are job data, not markup — render them literally.
+        console.print(f"[red]✗[/] {escape(failure.name)} failed: {escape(str(failure.error))}")
 
 
 @queue_app.command("queue:clear")
@@ -226,13 +229,16 @@ def queue_clear(
 
 @queue_app.command("queue:failed")
 def queue_failed(
-    limit: int = typer.Option(50, "--limit", help="Rows to show (newest first)."),
-    offset: int = typer.Option(0, "--offset", help="Skip the newest N rows."),
+    # min=0 keeps negative values a usage error before any query runs —
+    # SQLite reads LIMIT -1 as "no limit", which would dump the whole ledger.
+    limit: int = typer.Option(50, "--limit", min=0, help="Rows to show (newest first)."),
+    offset: int = typer.Option(0, "--offset", min=0, help="Skip the newest N rows."),
 ) -> None:
     """List failed jobs recorded by the workers (see also queue:retry)."""
     load_env()
     import json
 
+    from rich.markup import escape
     from rich.table import Table
 
     from fastplace.console import console
@@ -251,7 +257,9 @@ def queue_failed(
     for row in rows:
         args = json.dumps(row.kwargs, sort_keys=True, default=str)
         failed_at = row.failed_at.isoformat(sep=" ", timespec="seconds")
-        table.add_row(str(row.id), row.name, args, failed_at, row.error)
+        # Job data renders literally — a bracket tag in a name or error must
+        # never style the table cell it lands in.
+        table.add_row(str(row.id), escape(row.name), escape(args), failed_at, escape(row.error))
     console.print(table)
 
 
@@ -333,10 +341,13 @@ def queue_retry(
     store = failed_job_store()
 
     async def _retry(row) -> bool:
+        from rich.markup import escape
+
         try:
             await queue().dispatch(row.name, **dict(row.kwargs))
         except Exception as exc:  # noqa: BLE001 — the record stays for the next attempt
-            console.print(f"[red]✗[/] failed job {row.id} ({row.name}): {exc}")
+            # The name and error are persisted data — render both literally.
+            console.print(f"[red]✗[/] failed job {row.id} ({escape(row.name)}): {escape(str(exc))}")
             return False
         await store.delete(row.id)
         console.print(f"[green]✓[/] retried {row.name} (failed job {row.id})")

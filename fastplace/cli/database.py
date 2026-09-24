@@ -273,8 +273,21 @@ def _print_migration_status() -> None:
 
 
 @database_app.command("migrate:reset")
-def migrate_reset() -> None:
+def migrate_reset(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
     """Revert every migration (downgrade to base — no rebuild, no seed)."""
+    from fastplace.config import config, load_env
+
+    load_env()
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force
+        or typer.confirm("Reset the production database? This drops and rebuilds the whole schema.")
+    ):
+        console.print("[red]aborted[/] — the database was left untouched")
+        raise typer.Exit(code=1)
+
     manager = _manager()
     if not manager.configured:
         console.print(_MIGRATIONS_NOT_CONFIGURED)
@@ -307,8 +320,21 @@ def db_seed(
 
 
 @database_app.command("db:reset")
-def db_reset() -> None:
+def db_reset(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
     """Drop everything through migrations, rebuild, and re-seed."""
+    from fastplace.config import config, load_env
+
+    load_env()
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force
+        or typer.confirm("Reset the production database? This drops and rebuilds the whole schema.")
+    ):
+        console.print("[red]aborted[/] — the database was left untouched")
+        raise typer.Exit(code=1)
+
     manager = _manager()
     if not manager.configured:
         console.print(_MIGRATIONS_NOT_CONFIGURED)
@@ -325,9 +351,7 @@ def db_reset() -> None:
 
 @database_app.command("db:wipe")
 def db_wipe(
-    force: bool = typer.Option(
-        False, "--force", help="Skip the production confirmation prompt."
-    ),
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
 ) -> None:
     """Drop every table and view, migration state included (no rebuild, no seed)."""
     from fastplace.config import config, load_env

@@ -484,7 +484,11 @@ async def _drain_memory_queue_on_shutdown() -> None:
     memory = queue()
     if not isinstance(memory, MemoryQueue) or not memory.pending:
         return
-    executed = await memory.run_pending()
+    # honor_sentinel=False: this process is not a restartable queue worker —
+    # nothing on the web path ever consumes the sentinel, so honoring one
+    # (e.g. latched on a shared cache by `queue:restart` for saq workers)
+    # would silently skip the very jobs this drain exists to run.
+    executed = await memory.run_pending(honor_sentinel=False)
     if memory.failures:
         logging.getLogger("fastplace.queue").error(
             "%d/%d shutdown-drained job(s) failed: %s",

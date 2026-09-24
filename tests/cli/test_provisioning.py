@@ -295,13 +295,53 @@ def test_user_create_with_flags_creates_via_repository(project, fake_repo):
 
 
 def test_user_create_duplicate_email_exits_one(project, fake_repo):
-    args = ["user:create", "--name", "Ada", "--email", "ada@example.com", "--password", "s3cret-pass"]
+    args = [
+        "user:create",
+        "--name",
+        "Ada",
+        "--email",
+        "ada@example.com",
+        "--password",
+        "s3cret-pass",
+    ]
     assert runner.invoke(cli_app, args).exit_code == 0
 
     result = runner.invoke(cli_app, args)
     assert result.exit_code == 1
     assert "already exists" in ANSI_RE.sub("", result.output)
     assert len(fake_repo.created) == 1  # the second create never ran
+
+
+def test_user_create_loses_the_duplicate_race_gracefully(project, monkeypatch):
+    """Check-then-insert race (final review): another process inserts the row
+    between find_by_email and create_user, so the UNIQUE constraint fires.
+    The command must answer with the SAME friendly duplicate-email message and
+    exit 1 — never surface a raw IntegrityError traceback."""
+    from sqlalchemy.exc import IntegrityError
+
+    import fastplace.cli.provisioning as provisioning
+
+    class RacingRepository(FakeUserRepository):
+        """find_by_email misses (the rival's insert is uncommitted), then the
+        insert itself loses the race at the flush."""
+
+        async def create_user(self, *, name, email, password):
+            raise IntegrityError(
+                "INSERT INTO users ...", {}, Exception("UNIQUE constraint failed: users.email")
+            )
+
+    repository = RacingRepository()
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: repository)
+
+    result = runner.invoke(
+        cli_app,
+        ["user:create", "--name", "Ada", "--email", "ada@example.com", "--password", "s3cret-pass"],
+    )
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, IntegrityError)
+    plain = ANSI_RE.sub("", result.output)
+    assert "a user with email ada@example.com already exists" in plain
+    assert "IntegrityError" not in plain  # the raw race never leaks to the console
 
 
 def test_user_create_prompts_for_missing_fields(project, fake_repo):
@@ -320,7 +360,8 @@ def test_user_create_prompts_for_missing_fields(project, fake_repo):
 
 def test_user_create_rejects_invalid_email(project, fake_repo):
     result = runner.invoke(
-        cli_app, ["user:create", "--name", "X", "--email", "not-an-email", "--password", "pw-123456"]
+        cli_app,
+        ["user:create", "--name", "X", "--email", "not-an-email", "--password", "pw-123456"],
     )
     assert result.exit_code == 1
     assert fake_repo.created == []

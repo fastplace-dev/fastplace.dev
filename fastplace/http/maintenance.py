@@ -131,7 +131,10 @@ class MaintenanceMiddleware:
         if not secret:
             return False  # no secret configured -> nothing bypasses
         supplied = self._query_secret(scope) or self._cookie_secret(scope)
-        return bool(supplied) and hmac.compare_digest(str(supplied), str(secret))
+        # compare_digest rejects non-ASCII str operands with TypeError, and a
+        # hand-chosen bypass secret has every right to be non-ASCII — compare
+        # the UTF-8 bytes instead.
+        return bool(supplied) and hmac.compare_digest(str(supplied).encode(), str(secret).encode())
 
     def _query_secret(self, scope: dict) -> str | None:
         query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
@@ -156,7 +159,10 @@ class MaintenanceMiddleware:
             *_HARDENING_HEADERS,
         ]
         retry = state.get("retry")
-        if retry is not None:
+        # Only an int retry becomes a header: the state file is operator-
+        # hand-edited JSON, and any other value ("soon", 1.5) must degrade
+        # to "no Retry-After", not crash on a header-encoding error.
+        if isinstance(retry, int):
             headers.append((b"retry-after", str(retry).encode("latin-1")))
         await send({"type": "http.response.start", "status": 503, "headers": headers})
         await send({"type": "http.response.body", "body": body})

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import typer
 
@@ -48,11 +48,35 @@ def _clean_name(name: str, what: str) -> str:
     """Validate a maker NAME into its snake_case form (rejects path shapes)."""
     clean = _snake(name.strip().strip("/"))
     if not clean or not re.fullmatch(r"[a-z][a-z0-9_]*", clean):
-        console.print(
-            f"[red]invalid {what} name[/] — use letters/digits starting with a letter"
-        )
+        console.print(f"[red]invalid {what} name[/] — use letters/digits starting with a letter")
         raise typer.Exit(code=1)
     return clean
+
+
+def _clean_module(module: str) -> str:
+    """Validate a ``--module`` (or a make:model's derived module segment).
+
+    The value is joined into ``root / "app" / "modules" / module / ...`` and
+    written, so anything that escapes ``app/modules`` — an absolute path, a
+    ``..`` segment, an empty segment — is an arbitrary-write primitive, not a
+    module name. Normal single- (``blog``) and multi-segment names
+    (``shop/billing``, ``shop.billing``) pass through unchanged.
+    """
+    candidate = module.strip()
+    segments = candidate.split("/") if candidate else []
+    if (
+        not candidate
+        or candidate.startswith("/")
+        or "\\" in candidate
+        or PureWindowsPath(candidate).is_absolute()
+        or any(segment in ("", ".", "..") for segment in segments)
+    ):
+        console.print(
+            "[red]invalid module name[/] — must stay inside app/modules "
+            "(no absolute paths, '..', or empty segments)"
+        )
+        raise typer.Exit(code=1)
+    return candidate
 
 
 def _write(path: Path, content: str, root: Path, *, force: bool = False) -> None:
@@ -105,7 +129,7 @@ def make_model(
     from fastplace.orm.fields import resolve_annotation  # noqa: F401 — import sanity
 
     root = _project_root()
-    module = name[0].lower() + name[1:]
+    module = _clean_module(name[0].lower() + name[1:])
     model_path = root / "app" / "modules" / module / "models" / f"{module}.py"
 
     _write(
@@ -126,9 +150,7 @@ def make_model(
     # Companions reuse the sibling makers directly — same templates, same
     # no-clobber rules, one convention (spec E3).
     if controller or all:
-        make_controller(
-            name=name if name.endswith("Controller") else f"{name}Controller"
-        )
+        make_controller(name=name if name.endswith("Controller") else f"{name}Controller")
     if service or all:
         make_service(name=name, module=module)
     if repository or all:
@@ -178,8 +200,7 @@ class {name}(Controller):
 
 def _resource_controller_source(name: str, *, api: bool) -> str:
     methods = "\n\n".join(
-        f"    async def {action}(self, request: Request):\n"
-        f"        return Json({payload})"
+        f"    async def {action}(self, request: Request):\n        return Json({payload})"
         for action, payload in _RESOURCE_ACTIONS
         if not (api and action in _FORM_ACTIONS)
     )
@@ -228,6 +249,7 @@ def make_service(
 ) -> None:
     """Create a service stub in app/modules/<module>/services/."""
     root = _project_root()
+    module = _clean_module(module)
     path = root / "app" / "modules" / module / "services" / f"{_snake(name)}_service.py"
     _write(path, _SERVICE_TEMPLATE.format(doc_name=name, name=name), root)
 
@@ -253,6 +275,7 @@ def make_repository(
 ) -> None:
     """Create a repository stub in app/modules/<module>/repositories/."""
     root = _project_root()
+    module = _clean_module(module)
     path = root / "app" / "modules" / module / "repositories" / f"{_snake(name)}_repository.py"
     _write(path, _REPOSITORY_TEMPLATE.format(doc_name=name, name=name), root)
 
@@ -610,6 +633,7 @@ def make_scope(
 ) -> None:
     """Create a query scope stub in app/modules/<module>/models/scopes/."""
     root = _project_root()
+    module = _clean_module(module)
     clean = _clean_name(name, "scope")
     _write(
         root / "app" / "modules" / module / "models" / "scopes" / f"{clean}_scope.py",
@@ -716,9 +740,7 @@ class {name}(Protocol):
 '''
 
 
-def _write_support_stub(
-    name: str, what: str, template: str, root: Path, force: bool
-) -> None:
+def _write_support_stub(name: str, what: str, template: str, root: Path, force: bool) -> None:
     """Create a generic stub in app/support/ (the package is made on demand)."""
     clean = _clean_name(name, what)
     _write(root / "app" / "support" / "__init__.py", "", root)
@@ -736,9 +758,7 @@ def make_class(
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
     """Create a plain class stub in app/support/."""
-    _write_support_stub(
-        name, "class", _SUPPORT_CLASS_TEMPLATE, _project_root(), force
-    )
+    _write_support_stub(name, "class", _SUPPORT_CLASS_TEMPLATE, _project_root(), force)
 
 
 @generators_app.command("make:enum")
@@ -747,9 +767,7 @@ def make_enum(
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
     """Create a str-Enum stub in app/support/."""
-    _write_support_stub(
-        name, "enum", _SUPPORT_ENUM_TEMPLATE, _project_root(), force
-    )
+    _write_support_stub(name, "enum", _SUPPORT_ENUM_TEMPLATE, _project_root(), force)
 
 
 @generators_app.command("make:exception")
@@ -758,9 +776,7 @@ def make_exception(
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
     """Create an exception stub in app/support/."""
-    _write_support_stub(
-        name, "exception", _SUPPORT_EXCEPTION_TEMPLATE, _project_root(), force
-    )
+    _write_support_stub(name, "exception", _SUPPORT_EXCEPTION_TEMPLATE, _project_root(), force)
 
 
 @generators_app.command("make:interface")
@@ -769,9 +785,7 @@ def make_interface(
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
     """Create a Protocol interface stub in app/support/."""
-    _write_support_stub(
-        name, "interface", _SUPPORT_INTERFACE_TEMPLATE, _project_root(), force
-    )
+    _write_support_stub(name, "interface", _SUPPORT_INTERFACE_TEMPLATE, _project_root(), force)
 
 
 # ---------------------------------------------------------------------------
@@ -794,9 +808,7 @@ class {class_name}:
 
 @generators_app.command("make:vector-store")
 def make_vector_store(
-    name: str = typer.Argument(
-        ..., help="Vector store name (snake_case or PascalCase), e.g. docs"
-    ),
+    name: str = typer.Argument(..., help="Vector store name (snake_case or PascalCase), e.g. docs"),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
     """Create a vector store registration in app/ai/vectors/."""
@@ -824,9 +836,7 @@ def _frontend_component_name(name: str, what: str) -> str:
     """Validate a React scaffold name into its PascalCase identifier."""
     clean = name.strip().strip("/")
     if not clean or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", clean):
-        console.print(
-            f"[red]invalid {what} name[/] — use letters/digits starting with a letter"
-        )
+        console.print(f"[red]invalid {what} name[/] — use letters/digits starting with a letter")
         raise typer.Exit(code=1)
     return _page_component_name(clean)
 
@@ -911,9 +921,7 @@ export function {name}(initial = null) {{
 
 @generators_app.command("make:hook")
 def make_hook(
-    name: str = typer.Argument(
-        ..., help="Hook name in camelCase, e.g. useDebounce"
-    ),
+    name: str = typer.Argument(..., help="Hook name in camelCase, e.g. useDebounce"),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
     """Create a React hook stub in resources/js/hooks/."""
@@ -922,9 +930,7 @@ def make_hook(
     # valid JS — the kebab-case file style of the exemplars cannot be imported.
     clean = name.strip().strip("/")
     if not clean or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", clean):
-        console.print(
-            "[red]invalid hook name[/] — use a camelCase identifier like useDebounce"
-        )
+        console.print("[red]invalid hook name[/] — use a camelCase identifier like useDebounce")
         raise typer.Exit(code=1)
     _write(
         root / "resources" / "js" / "hooks" / f"{clean}.js",

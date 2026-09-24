@@ -211,3 +211,17 @@ def test_queue_work_help_lists_every_runtime_option():
         "--stop-when-empty",
     ):
         assert flag in plain, flag
+
+
+def test_saq_start_label_renders_markup_queue_name_literally(
+    tmp_path, monkeypatch, capture_build_worker
+):
+    """A queue name is deployment config, not Rich markup — `[bold]` in it must
+    render literally (final review), never as styling on the start line."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+
+    result = runner.invoke(cli_app, ["queue:work", "--queue", "[bold]evil[/]-queue"])
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "queue '[bold]evil[/]-queue'" in plain

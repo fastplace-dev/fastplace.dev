@@ -182,6 +182,61 @@ async def test_memory_drain_restores_jobs_in_order():
 
 
 # ---------------------------------------------------------------------------
+# honor_sentinel=False — consumers that never consume the sentinel
+# (the kernel's shutdown drain is the canonical case: the web process is
+# not a restartable worker, so a latched sentinel must not eat its jobs)
+# ---------------------------------------------------------------------------
+
+
+async def test_run_pending_can_ignore_the_sentinel():
+    """A caller that will never consume the sentinel (the kernel shutdown
+    drain) drains right through one: jobs run, none are restored, and the
+    sentinel itself is left latched."""
+    from fastplace.queue import Job, MemoryQueue, restart_requested_at, set_restart_sentinel
+
+    ran: list[int] = []
+
+    @Job(name="t28_ignore_sentinel")
+    async def probe(n: int) -> None:
+        ran.append(n)
+
+    await set_restart_sentinel()
+    mem = MemoryQueue()
+    await mem.dispatch("t28_ignore_sentinel", n=1)
+    await mem.dispatch("t28_ignore_sentinel", n=2)
+
+    executed = await mem.run_pending(honor_sentinel=False)
+    assert executed == 2
+    assert ran == [1, 2]
+    assert not mem.pending  # nothing restored for a replacement that never comes
+    assert await restart_requested_at() is not None  # still latched
+
+
+async def test_kernel_shutdown_drain_ignores_a_latched_sentinel():
+    """The third sentinel consumer (final review I-3): a shared-cache sentinel
+    latched by `queue:restart` must not silently disable the web process's
+    shutdown drain — pending jobs still run, sentinel untouched."""
+    from fastplace.http.kernel import _drain_memory_queue_on_shutdown
+    from fastplace.queue import Job, queue, restart_requested_at, set_restart_sentinel
+
+    ran: list[bool] = []
+
+    @Job(name="t28_kernel_drain_job")
+    async def probe() -> None:
+        ran.append(True)
+
+    q = queue()  # the same singleton the kernel drain runs
+    await q.dispatch("t28_kernel_drain_job")
+    await set_restart_sentinel()
+
+    await _drain_memory_queue_on_shutdown()
+
+    assert ran == [True]  # the job ran despite the sentinel
+    assert not q.pending
+    assert await restart_requested_at() is not None  # the drain only observes
+
+
+# ---------------------------------------------------------------------------
 # queue_depth — the waiting-jobs count on every driver
 # ---------------------------------------------------------------------------
 
