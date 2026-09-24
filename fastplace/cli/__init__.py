@@ -83,6 +83,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
         app.add_typer(queue_app, name="")
     except ImportError:
         pass
+    try:
+        from fastplace.cli.system import system_app
+
+        app.add_typer(system_app, name="")
+    except ImportError:
+        pass
 
 
 _register_phase_commands()
