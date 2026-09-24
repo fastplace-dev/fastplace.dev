@@ -189,6 +189,10 @@ class QueueDriver(Protocol):
 
     async def dispatch(self, name: str, **kwargs: Any) -> None: ...
 
+    async def clear(self) -> int:
+        """Drop every pending job without running it; return how many."""
+        ...
+
 
 class MemoryQueue:
     """In-process driver: dispatch validates + queues, run_pending drains."""
@@ -225,6 +229,16 @@ class MemoryQueue:
                 await record_failure(item.name, item.kwargs, format_error(exc))
             executed += 1
         return executed
+
+    async def clear(self) -> int:
+        """Discard the pending jobs without executing any; return the count.
+
+        The failure ledger is left alone — it describes runs that already
+        happened (see ``queue:failed``), not runs that never will.
+        """
+        cleared = len(self.pending)
+        self.pending.clear()
+        return cleared
 
 
 async def _record_saq_failure(ctx: dict[str, Any]) -> None:
@@ -282,6 +296,30 @@ class SaqQueue:
         # its Job dataclass fields (timeout, ttl, kwargs…) into job
         # properties, which would silently drop handler arguments.
         await self.queue.enqueue(name, kwargs=kwargs)
+
+    async def clear(self) -> int:
+        """Delete queued and scheduled jobs; running jobs are left alone.
+
+        Installed saq (0.26.4) has no ``flush()`` — the delete pattern below
+        works off the queue's public redis surface. Job payloads live at
+        their job-id keys and every unfinished id is tracked in the
+        ``incomplete`` sorted set; ids sitting in the ``active`` list belong
+        to jobs a worker is running right now, so those (and their
+        bookkeeping) stay untouched.
+        """
+        q = self.queue
+        redis = q.redis
+        active = set(await redis.lrange(q.namespace("active"), 0, -1))
+        tracked = await redis.zrange(q.namespace("incomplete"), 0, -1)
+        stale = [job_id for job_id in tracked if job_id not in active]
+        async with redis.pipeline(transaction=True) as pipe:
+            for job_id in stale:
+                pipe.delete(job_id)
+            if stale:
+                pipe.zrem(q.namespace("incomplete"), *stale)
+            pipe.delete(q.namespace("queued"))
+            await pipe.execute()
+        return len(stale)
 
     def build_worker(self, **kwargs: Any) -> Any:
         """Assemble a saq Worker over the registry (no network until start).

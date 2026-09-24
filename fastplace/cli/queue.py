@@ -164,6 +164,29 @@ def queue_work(
         console.print(f"[red]✗[/] {failure.name} failed: {failure.error}")
 
 
+@queue_app.command("queue:clear")
+def queue_clear(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Delete every pending job without running it."""
+    load_env()
+    from fastplace.console import console
+    from fastplace.queue import queue
+
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Delete every pending job from the production queue?")
+    ):
+        console.print("[red]aborted[/] — the pending jobs were left untouched")
+        raise typer.Exit(code=1)
+
+    cleared = asyncio.run(queue().clear())
+    if cleared:
+        console.print(f"[green]cleared[/] {cleared} pending job(s)")
+    else:
+        console.print("no pending jobs")
+
+
 # ---------------------------------------------------------------------------
 # failed-job inspection — the persisted FailedJobStore (queue_failures.py)
 # ---------------------------------------------------------------------------
