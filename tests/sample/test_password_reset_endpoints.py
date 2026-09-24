@@ -137,6 +137,32 @@ async def _request_reset_link(client) -> tuple[str, str]:
     return _token_and_email(_reset_link())
 
 
+class TestResetInvalidatesThePerformingBrowser:
+    async def test_reset_from_a_logged_in_browser_ends_that_session(self, client):
+        # destroy_for_user kills every row for the user — but the performing
+        # request's LIVE session is rewritten by the flash persist, coming
+        # back authenticated on the old cookie. The reset must log its own
+        # browser out too, while the one-shot flash still renders.
+        await _register(client)
+        token, email = await _request_reset_link(client)
+        login = await client.post(
+            "/login",
+            json={"email": email, "password": REGISTER_PAYLOAD["password"]},
+        )
+        assert login.status_code == 303
+        assert (await client.get("/settings/profile")).status_code == 200
+
+        response = await _reset(client, token, email, "new-secret-123", "new-secret-123")
+        assert response.status_code == 303
+
+        profile = await client.get("/settings/profile")
+        assert profile.status_code == 302  # NOT 200 — the session died with the reset
+
+        # The flash survives the logout semantics and renders exactly once.
+        page = await client.get("/login", headers={"X-Fastplace-Request": "true"})
+        assert page.json()["props"]["status"] == "Your password has been reset."
+
+
 class TestReset:
     async def test_happy_path_resets_the_password(self, client):
         await _register(client)
