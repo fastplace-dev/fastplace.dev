@@ -265,6 +265,16 @@ class SessionGuard:
         user = await self.provider.resolve(user_id)
         if user is None:
             return None
+        # A CONFIRMED two-factor user stops short of login here too (spec
+        # §4.13): the cookie proves a past login, not the second factor. Park
+        # the challenge exactly like attempt() would and stay anonymous. The
+        # rotated cookie is still queued — consume() already burned the old
+        # token, and dropping the fresh one would log every device out.
+        if getattr(user, "two_factor_confirmed_at", None) is not None:
+            request.session[TWO_FACTOR_CHALLENGE_KEY] = user_id
+            request.session[TWO_FACTOR_REMEMBER_KEY] = True
+            _queue_remember_cookie(request, fresh_cookie)
+            return None
         # The fallback IS a login for fixation purposes: fresh session id.
         self._authenticate_session(request, user_id)
         _queue_remember_cookie(request, fresh_cookie)

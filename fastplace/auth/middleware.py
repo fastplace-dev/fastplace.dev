@@ -17,7 +17,7 @@ import secrets
 import time
 from typing import Any
 
-from fastplace.auth.guards import guard
+from fastplace.auth.guards import TWO_FACTOR_CHALLENGE_KEY, guard
 from fastplace.auth.remember import (
     REMEMBER_COOKIE_NAME,
     REMEMBER_COOKIE_SCOPE,
@@ -257,6 +257,11 @@ class AuthenticateMiddleware(Middleware):
             return await call_next(request)
         if request.is_bridge or request.path.startswith("/api/"):
             raise AuthenticationError()
+        # Credentials were already proven but the challenge is outstanding
+        # (password login or the remember fallback parked it) — steer to the
+        # challenge page, not /login, which would ask for a password again.
+        if request.session.get(TWO_FACTOR_CHALLENGE_KEY) is not None:
+            return Redirect("/two-factor-challenge", status_code=302)
         request.session[INTENDED_SESSION_KEY] = request.full_path
         return Redirect("/login", status_code=302)
 

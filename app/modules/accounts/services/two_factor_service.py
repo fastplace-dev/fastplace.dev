@@ -77,6 +77,12 @@ class TwoFactorService:
         user.two_factor_recovery_codes = encrypt(json.dumps(generate_recovery_codes()))
         user.two_factor_confirmed_at = None
         await user.save()
+        # Cookies issued before 2FA existed must not outlive the setup —
+        # they would ride straight past the challenge being added (the
+        # logout_other_devices precedent).
+        from fastplace.auth.remember import remember_store
+
+        await remember_store().revoke_all_for_user(user.id)
 
     async def confirm(self, request: Any, code: str) -> None:
         """Complete the setup: a valid TOTP code stamps confirmed_at.

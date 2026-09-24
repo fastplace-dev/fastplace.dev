@@ -241,3 +241,38 @@ class TestFeatureFlag:
                 assert response.status_code == 404, (method, path)
         finally:
             reset_config()
+
+
+class TestEnableRevokesRememberCookies:
+    async def test_enabling_two_factor_revokes_existing_remember_cookies(self, client):
+        # A cookie issued before 2FA existed must not outlive enablement —
+        # otherwise it would ride straight past the challenge the setup adds.
+        await client.get("/login")
+        await client.post("/register", json=REGISTER_PAYLOAD)
+        await client.post("/logout")
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={
+                "email": REGISTER_PAYLOAD["email"],
+                "password": REGISTER_PAYLOAD["password"],
+                "remember": "on",
+            },
+        )
+        assert login.status_code == 303
+        assert client.cookies.get("fastplace_remember")
+
+        confirmed = await client.post(
+            "/user/confirm-password", json={"password": REGISTER_PAYLOAD["password"]}
+        )
+        assert confirmed.status_code == 303
+        enabled = await client.post("/user/two-factor-authentication")
+        assert enabled.status_code == 200
+
+        # Session expires; the once-valid remember cookie must now be dead —
+        # the fallback fails and the request bounces to /login (no challenge
+        # is parked: 2FA is only pending, never confirmed).
+        client.cookies.delete("fastplace_session")
+        profile = await client.get("/settings/profile")
+        assert profile.status_code == 302
+        assert profile.headers["location"] == "/login"

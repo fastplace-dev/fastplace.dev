@@ -184,3 +184,73 @@ class TestChallengeFulfillment:
         page = await client.get("/two-factor-challenge")
         assert page.status_code == 200
         assert "TwoFactorChallenge" in page.text
+
+
+class TestRememberCookieBoundary:
+    """A remember cookie must not satisfy a confirmed 2FA challenge.
+
+    The attack: the cookie was issued BEFORE two-factor was enabled (or was
+    lifted from a pre-2FA device) and outlives the session. The remember
+    fallback used to authenticate straight past the challenge — it must park
+    one instead, exactly like a password login would.
+    """
+
+    async def _remember_cookie_with_2fa_confirmed(self, client):
+        """Register + remember-login (2FA off), enable 2FA in the DB, then
+        drop the session cookie — only the remember cookie survives."""
+        import pyotp
+
+        from app.modules.accounts.repositories.user_repository import UserRepository
+
+        await client.get("/login")
+        created = await client.post("/register", json=REGISTER_PAYLOAD)
+        assert created.status_code == 303
+        await client.post("/logout")  # register auto-logs-in; start clean
+
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={
+                "email": REGISTER_PAYLOAD["email"],
+                "password": REGISTER_PAYLOAD["password"],
+                "remember": "on",
+            },
+        )
+        assert login.status_code == 303
+        assert client.cookies.get("fastplace_remember"), "remember cookie not issued"
+
+        # Two-factor is switched on elsewhere while this device still holds
+        # a perfectly valid remember cookie.
+        user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        secret = generate_secret()
+        user.two_factor_secret = encrypt(secret)
+        user.two_factor_recovery_codes = encrypt(json.dumps(generate_recovery_codes()))
+        user.two_factor_confirmed_at = datetime.datetime.now(datetime.UTC)
+        await user.save()
+
+        # The server-side session expires; the cookie is all that remains.
+        client.cookies.delete("fastplace_session")
+        return pyotp.TOTP(secret)
+
+    async def test_remember_cookie_alone_cannot_skip_the_challenge(self, client):
+        totp = await self._remember_cookie_with_2fa_confirmed(client)
+        profile = await client.get("/settings/profile")
+        # NOT 200: the fallback must not authenticate past a confirmed 2FA.
+        assert profile.status_code == 302
+        assert profile.headers["location"] == "/two-factor-challenge"
+        # The parked challenge is real: it completes with a valid TOTP code
+        # and the remember preference survives (a fresh cookie is re-issued).
+        fulfilled = await client.post("/two-factor-challenge", json={"code": totp.now()})
+        assert fulfilled.status_code == 303
+        assert (await client.get("/settings/profile")).status_code == 200
+
+    async def test_a_challenge_parked_by_the_fallback_is_not_re_parked_forever(self, client):
+        # Hitting authed routes repeatedly while unchallenged must keep
+        # steering to the challenge page (the rotated cookie survives each
+        # fallback run — it must not be burned by the parking).
+        await self._remember_cookie_with_2fa_confirmed(client)
+        for _ in range(3):
+            bounced = await client.get("/settings/profile")
+            assert bounced.status_code == 302
+            assert bounced.headers["location"] == "/two-factor-challenge"
+        assert client.cookies.get("fastplace_remember"), "rotation must keep the cookie alive"
