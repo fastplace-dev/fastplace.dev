@@ -162,3 +162,98 @@ def queue_work(
         console.print("no pending jobs")
     for failure in q.failures:
         console.print(f"[red]✗[/] {failure.name} failed: {failure.error}")
+
+
+# ---------------------------------------------------------------------------
+# failed-job inspection — the persisted FailedJobStore (queue_failures.py)
+# ---------------------------------------------------------------------------
+
+
+@queue_app.command("queue:failed")
+def queue_failed(
+    limit: int = typer.Option(50, "--limit", help="Rows to show (newest first)."),
+    offset: int = typer.Option(0, "--offset", help="Skip the newest N rows."),
+) -> None:
+    """List failed jobs recorded by the workers (see also queue:retry)."""
+    load_env()
+    import json
+
+    from rich.table import Table
+
+    from fastplace.console import console
+    from fastplace.queue_failures import failed_job_store
+
+    rows = asyncio.run(failed_job_store().list(offset=offset, limit=limit))
+    if not rows:
+        console.print("[dim]no failed jobs[/]")
+        return
+    table = Table(box=None, header_style="bold")
+    table.add_column("id", justify="right", style="cyan", no_wrap=True)
+    table.add_column("job", style="bold", no_wrap=True)  # identifiers never wrap
+    table.add_column("args", style="dim")
+    table.add_column("failed at (UTC)", no_wrap=True)
+    table.add_column("error")
+    for row in rows:
+        args = json.dumps(row.kwargs, sort_keys=True, default=str)
+        failed_at = row.failed_at.isoformat(sep=" ", timespec="seconds")
+        table.add_row(str(row.id), row.name, args, failed_at, row.error)
+    console.print(table)
+
+
+@queue_app.command("queue:forget")
+def queue_forget(
+    job_id: str = typer.Argument(..., help="ID of the failed-job record to delete."),
+) -> None:
+    """Delete one failed-job record by ID."""
+    load_env()
+    from fastplace.console import console
+    from fastplace.queue_failures import failed_job_store
+
+    try:
+        parsed = int(job_id)
+    except ValueError:
+        console.print(f"[red]'{job_id}' is not a failed-job id (a number)[/]")
+        raise typer.Exit(code=1) from None
+    deleted = asyncio.run(failed_job_store().delete(parsed))
+    if not deleted:
+        console.print(f"[red]no failed job with id {parsed}[/]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/] forgot failed job {parsed}")
+
+
+@queue_app.command("queue:flush")
+def queue_flush(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Delete every failed-job record."""
+    load_env()
+    from fastplace.console import console
+    from fastplace.queue_failures import failed_job_store
+
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Delete every failed-job record from production?")
+    ):
+        console.print("[red]aborted[/] — the failed-job records were left untouched")
+        raise typer.Exit(code=1)
+
+    removed = asyncio.run(failed_job_store().flush())
+    console.print(f"[green]flushed[/] {removed} failed-job record(s)")
+
+
+@queue_app.command("queue:prune-failed")
+def queue_prune_failed(
+    hours: int = typer.Option(
+        24, "--hours", min=0, help="Delete records older than this many hours."
+    ),
+) -> None:
+    """Delete failed-job records older than --hours (default: 24)."""
+    load_env()
+    from datetime import timedelta
+
+    from fastplace.console import console
+    from fastplace.queue_failures import failed_job_store, utcnow
+
+    before = utcnow() - timedelta(hours=hours)
+    removed = asyncio.run(failed_job_store().prune(before))
+    console.print(f"[green]pruned[/] {removed} failed-job record(s) older than {hours}h")

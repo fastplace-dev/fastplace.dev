@@ -32,6 +32,7 @@ from typing import Any, Protocol
 
 from fastplace.config import config
 from fastplace.errors import ConfigurationError
+from fastplace.queue_failures import format_error, record_failure
 
 #: A job handler — always async; kwargs arrive from dispatch.
 JobFn = Callable[..., Awaitable[Any]]
@@ -208,7 +209,9 @@ class MemoryQueue:
         enqueues more work (a domain event → another job) chains to the *next*
         drain instead of looping this one forever. The failure ledger is
         scoped to the batch — a long-lived process draining repeatedly must
-        not accumulate exception objects forever.
+        not accumulate exception objects forever. Each failure is also
+        persisted to the failed-job store (best-effort — a broken store never
+        breaks the drain) for ``queue:failed`` / ``queue:retry``.
         """
         self.failures = []
         batch = list(self.pending)
@@ -219,8 +222,31 @@ class MemoryQueue:
                 await registry[item.name].fn(**item.kwargs)
             except Exception as exc:  # noqa: BLE001 — isolation is the contract
                 self.failures.append(_Failure(name=item.name, error=exc))
+                await record_failure(item.name, item.kwargs, format_error(exc))
             executed += 1
         return executed
+
+
+async def _record_saq_failure(ctx: dict[str, Any]) -> None:
+    """``after_process`` hook — persist terminal saq failures to the store.
+
+    Installed saq (0.26.4) has no ``Worker(on_failure=...)`` parameter; the
+    after_process context is the failure signal: the worker sets
+    ``ctx["exception"]`` on any processing error, then finishes the job FAILED
+    or re-queues it depending on retryability — and after_process always runs
+    afterwards with that ctx. Only terminal failures are recorded: a
+    retryable attempt gets another chance first (its final failure, if any,
+    is what lands here).
+    """
+    job = ctx.get("job")
+    exc = ctx.get("exception")
+    if job is None or exc is None:
+        return
+    from saq import Status
+
+    if getattr(job, "status", None) != Status.FAILED:
+        return
+    await record_failure(str(job.function), dict(job.kwargs or {}), format_error(exc))
 
 
 class SaqQueue:
@@ -258,11 +284,16 @@ class SaqQueue:
         await self.queue.enqueue(name, kwargs=kwargs)
 
     def build_worker(self, **kwargs: Any) -> Any:
-        """Assemble a saq Worker over the registry (no network until start)."""
+        """Assemble a saq Worker over the registry (no network until start).
+
+        The worker always carries the failure-recording after_process hook
+        (see :func:`_record_saq_failure`); caller kwargs pass through
+        untouched, so the CLI's translated options keep working.
+        """
         from saq import Worker
 
         functions = [(entry.name, entry.fn) for entry in registry.values()]
-        return Worker(self.queue, functions=functions, **kwargs)
+        return Worker(self.queue, functions=functions, after_process=_record_saq_failure, **kwargs)
 
 
 # ---------------------------------------------------------------------------
