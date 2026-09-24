@@ -98,6 +98,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     except ImportError:
         pass
     try:
+        from fastplace.cli.maintenance import maintenance_app
+
+        app.add_typer(maintenance_app, name="")
+    except ImportError:
+        pass
+    try:
         from fastplace.cli.provisioning import provisioning_app
 
         app.add_typer(provisioning_app, name="")
