@@ -108,19 +108,43 @@ class MigrationsManager:
         self._sync_tracking()
         return True
 
-    def downgrade(self, steps: int | None = None) -> bool:
-        """Revert migrations.
+    def pretend(self) -> str:
+        """Render the SQL for the pending migrations without applying them.
 
-        ``steps=None`` (the CLI default) reverts the *last batch* — every
-        revision applied by the most recent ``migrate`` invocation. An integer
-        reverts that many individual revisions.
+        Alembic offline mode (``upgrade --sql``). Offline mode cannot see
+        the database, so the range is seeded from the live ``alembic_version``
+        — the script covers exactly what ``migrate`` would run (``head``
+        alone would re-render already-applied revisions from base).
         """
         from alembic import command
 
         self.require_configured()
-        count = steps if steps is not None else self._last_batch_size()
+        heads = _run_async(self._current_heads_async())
+        revision = f"{heads[0]}:head" if len(heads) == 1 else "head"
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            command.upgrade(self._config(), revision, sql=True)
+        return buffer.getvalue().strip()
+
+    def downgrade(self, steps: int | str | None = None) -> bool:
+        """Revert migrations.
+
+        ``steps=None`` (the CLI default) reverts the *last batch* — every
+        revision applied by the most recent ``migrate`` invocation. An integer
+        reverts that many individual revisions. A string is a named target:
+        ``"base"`` reverts the whole history (what ``migrate:reset`` and
+        ``db:wipe`` build on — no rebuild, no seed).
+        """
+        from alembic import command
+
+        self.require_configured()
+        if isinstance(steps, str):
+            target = steps
+        else:
+            count = steps if steps is not None else self._last_batch_size()
+            target = f"-{max(1, count)}"
         with redirect_stdout(io.StringIO()):
-            command.downgrade(self._config(), f"-{max(1, count)}")
+            command.downgrade(self._config(), target)
         self._sync_tracking()
         return True
 
@@ -129,8 +153,8 @@ class MigrationsManager:
         from alembic import command
 
         self.require_configured()
+        self.downgrade("base")
         with redirect_stdout(io.StringIO()):
-            command.downgrade(self._config(), "base")
             command.upgrade(self._config(), "head")
         # The rebuild applied the whole history in this one invocation.
         self._sync_tracking()
@@ -161,20 +185,11 @@ class MigrationsManager:
         revision is applied iff it is an ancestor of a stored version, so we
         walk the script graph down from each stored version.
         """
-        from alembic.runtime.migration import MigrationContext
-        from alembic.script import ScriptDirectory
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        engine = create_async_engine(self._database_url())
-        try:
-            async with engine.connect() as conn:
-                heads = set(
-                    await conn.run_sync(lambda c: MigrationContext.configure(c).get_current_heads())
-                )
-        finally:
-            await engine.dispose()
+        heads = await self._current_heads_async()
         if not heads:
             return set()
+        from alembic.script import ScriptDirectory
+
         script = ScriptDirectory.from_config(self._config())
         applied: set[str] = set()
         for head in heads:
@@ -182,6 +197,22 @@ class MigrationsManager:
             for rev in script.walk_revisions(base="base", head=head):
                 applied.add(rev.revision)
         return applied
+
+    async def _current_heads_async(self) -> list[str]:
+        """The revisions stored in ``alembic_version`` (empty when unversioned)."""
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        engine = create_async_engine(self._database_url())
+        try:
+            async with engine.connect() as conn:
+                return list(
+                    await conn.run_sync(
+                        lambda c: MigrationContext.configure(c).get_current_heads()
+                    )
+                )
+        finally:
+            await engine.dispose()
 
     def _sync_tracking(self) -> None:
         """Align the batch table with alembic_version (reconciling both ways).
@@ -308,24 +339,42 @@ def _run_async(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def run_seeders(project_root: str | Path) -> list[str]:
-    """Import and run every ``database/seeders/*.py`` (module-level ``run()``)."""
+def _seeder_matches(stem: str, name: str) -> bool:
+    """``user`` and ``user_seeder`` both name the ``user_seeder`` module."""
+    return stem == name or stem == f"{name}_seeder"
+
+
+def run_seeders(project_root: str | Path, seeder: str | None = None) -> list[str]:
+    """Import and run ``database/seeders/*.py`` (module-level ``run()``).
+
+    ``seeder`` narrows the run to a single module — its exact stem
+    (``user_seeder``) or the name without the ``_seeder`` suffix (``user``).
+    A name matching nothing raises ``ValueError`` listing the available
+    seeders, so the CLI can refuse loudly instead of silently doing nothing.
+    """
     import asyncio
     import importlib.util
 
     root = Path(project_root).resolve()
     seeders_dir = root / "database" / "seeders"
-    if not seeders_dir.is_dir():
-        return []
+    files = (
+        sorted(seeders_dir.glob("*.py")) if seeders_dir.is_dir() else []
+    )
+    files = [file for file in files if not file.name.startswith("_")]
+
+    if seeder is not None:
+        selected = [file for file in files if _seeder_matches(file.stem, seeder)]
+        if not selected:
+            available = ", ".join(file.stem for file in files) or "(none found)"
+            raise ValueError(f"no seeder matches {seeder!r} — available: {available}")
+        files = selected
 
     root_str = str(root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
 
     ran: list[str] = []
-    for file in sorted(seeders_dir.glob("*.py")):
-        if file.name.startswith("_"):
-            continue
+    for file in files:
         module_name = f"_fastplace_seeder_{file.stem}"
         spec = importlib.util.spec_from_file_location(module_name, file)
         if spec is None or spec.loader is None:  # pragma: no cover

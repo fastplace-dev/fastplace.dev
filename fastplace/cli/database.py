@@ -206,12 +206,33 @@ def make_migration(
 
 
 @database_app.command("migrate")
-def migrate() -> None:
-    """Run pending migrations (alembic upgrade head)."""
+def migrate(
+    pretend: bool = typer.Option(
+        False, "--pretend", "-p", help="Print the SQL that would run instead of running it."
+    ),
+) -> None:
+    """Run pending migrations (alembic upgrade head; --pretend previews the SQL)."""
+    from alembic.util import CommandError
+
     manager = _manager()
     if not manager.configured:
         console.print(_MIGRATIONS_NOT_CONFIGURED)
         raise typer.Exit(code=1)
+    if pretend:
+        try:
+            script = manager.pretend()
+        except CommandError as exc:
+            # Offline mode cannot reflect tables, so histories with batch
+            # ALTERs (SQLite) without copy_from cannot be rendered as SQL.
+            console.print(f"[red]cannot render this migration history offline:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+        if not script:
+            console.print("[dim]nothing to migrate[/]")
+            return
+        # Offline mode: raw SQL, so no Rich markup and no re-wrapped lines.
+        console.print("[dim]pretend — SQL that would run (nothing was applied):[/]")
+        console.print(script, markup=False, soft_wrap=True)
+        return
     manager.upgrade()
     console.print("[green]migrated[/] database to head")
 
@@ -235,18 +256,49 @@ def migrate_rollback(
     console.print(f"[green]rolled back[/] {reverted} migration(s)")
 
 
-@database_app.command("migration:status")
-def migration_status() -> None:
+@database_app.command("migrate:status")
+def migrate_status() -> None:
     """Show applied/pending migrations."""
+    _print_migration_status()
+
+
+@database_app.command("migration:status", hidden=True)
+def migration_status() -> None:
+    """Show applied/pending migrations (legacy alias of migrate:status)."""
+    _print_migration_status()
+
+
+def _print_migration_status() -> None:
     console.print(_manager().status())
 
 
+@database_app.command("migrate:reset")
+def migrate_reset() -> None:
+    """Revert every migration (downgrade to base — no rebuild, no seed)."""
+    manager = _manager()
+    if not manager.configured:
+        console.print(_MIGRATIONS_NOT_CONFIGURED)
+        raise typer.Exit(code=1)
+    manager.downgrade("base")
+    console.print("[green]reset[/] — all migrations reverted (database is at base)")
+
+
 @database_app.command("db:seed")
-def db_seed() -> None:
-    """Run all seeders in database/seeders/ (module-level async run())."""
+def db_seed(
+    seeder: str = typer.Option(
+        None,
+        "--seeder",
+        help="Run one seeder: exact stem (user_seeder) or without the _seeder suffix (user).",
+    ),
+) -> None:
+    """Run all seeders in database/seeders/ — or a single one with --seeder."""
     from fastplace.orm.migrations import run_seeders
 
-    ran = run_seeders(_project_root())
+    try:
+        ran = run_seeders(_project_root(), seeder=seeder)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
     if ran:
         for name in ran:
             console.print(f"[green]seeded[/] {name}")
