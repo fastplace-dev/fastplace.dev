@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from pathlib import Path
 
 import pytest
+from _isolation import park_app_modules
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
@@ -31,7 +31,13 @@ def notify_team(event):
 
 @pytest.fixture
 def fresh_project(tmp_path, monkeypatch):
-    """A freshly scaffolded project cwd; env/config restored after."""
+    """A freshly scaffolded project cwd; env/config and the app.* slice restored.
+
+    ``gate:list`` and ``event:list`` import the fixture project's own modules
+    (auth gates, job listeners), which also evicts foreign cached ``app.*``
+    entries — ``park_app_modules`` restores the pre-test slice so later
+    suites keep finding theirs cached.
+    """
     cwd_before = Path.cwd().resolve()
     env_before = dict(os.environ)
 
@@ -40,9 +46,15 @@ def fresh_project(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
 
     root = tmp_path / "blog"
+    # The scaffold's app/ is a namespace package; a regular package anywhere
+    # else on sys.path (this repo's own app/) would win resolution and shadow
+    # the fixture project's jobs/gates. Make it regular — the same workaround
+    # tests/cli/test_route_list.py applies.
+    (root / "app" / "__init__.py").write_text("")
     monkeypatch.chdir(root)
     try:
-        yield root
+        with park_app_modules():
+            yield root
     finally:
         os.environ.clear()
         os.environ.update(env_before)
@@ -156,6 +168,31 @@ def test_event_list_empty_state(fresh_project, clean_event_registry):
     assert "no event listeners" in out
 
 
+def test_event_list_imports_the_projects_job_listeners(fresh_project, clean_event_registry):
+    (fresh_project / "app" / "jobs" / "notify.py").write_text(
+        "from fastplace.events import listen\n\n"
+        "async def send_welcome(user_id: int):\n"
+        "    return None\n\n"
+        "listen('user.registered', send_welcome)\n"
+    )
+    code, out = _run("event:list")
+    assert code == 0, out
+    assert "user.registered" in out
+    assert "send_welcome" in out
+
+
+def test_event_list_degrades_gracefully_when_project_import_fails(
+    fresh_project, clean_event_registry
+):
+    (fresh_project / "app" / "jobs" / "broken.py").write_text("raise RuntimeError('boom')\n")
+    listen("invoice.paid", record_signup)
+    code, out = _run("event:list")
+    assert code == 0, out
+    assert "project import unavailable" in out
+    assert "invoice.paid" in out  # the in-process registry view still shows
+    assert "record_signup" in out
+
+
 # --- module:list -------------------------------------------------------------
 
 
@@ -202,11 +239,8 @@ def test_gate_list_reads_the_project_gates_file(fresh_project, clean_gate_regist
     code, out = _run("gate:list")
     assert code == 0, out
     assert "delete-posts" in out
-    # the importer caches it under its canonical dotted name; drop that entry
-    # so later tests resolve the fixture project, not this scaffolded one.
-    module = sys.modules.get("app.auth.gates")
-    if module is not None and str(gates) in str(getattr(module, "__file__", "")):
-        sys.modules.pop("app.auth.gates", None)
+    # the loader caches the module under its canonical dotted name;
+    # park_app_modules' teardown sweeps the adopted app.* entry away.
 
 
 def test_gate_list_empty_state(fresh_project, clean_gate_registry):

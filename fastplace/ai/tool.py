@@ -9,12 +9,15 @@ schemas for LLM function calling using type hints and docstrings").
 
 from __future__ import annotations
 
+import importlib
 import inspect
+import pkgutil
 import re
 import types
 import typing
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, create_model
@@ -56,6 +59,74 @@ def registered_tools() -> list[str]:
 def reset_tool_registry() -> None:
     """Clear the registry — test isolation."""
     tool_registry.clear()
+
+
+def import_tools(project_root: str | Path | None = None) -> list[str]:
+    """Import every module under ``app/ai/tools/`` so @Tool registrations run.
+
+    Mirrors ``fastplace.queue.import_jobs``: the project root sits at the
+    front of ``sys.path`` only for the call, cached ``app.*`` modules bound
+    to a different root are evicted first (their registrations die with
+    them), and an already-imported module is a cache hit — re-running the
+    import in the same process never re-registers anything.
+    """
+    import sys
+
+    root = Path(project_root) if project_root else Path.cwd()
+    tools_dir = root / "app" / "ai" / "tools"
+    if not tools_dir.is_dir():
+        return []
+    root_str = str(root)
+    inserted = root_str not in sys.path
+    if inserted:
+        sys.path.insert(0, root_str)
+    _evict_stale_app_modules(root)
+    try:
+        package = importlib.import_module("app.ai.tools")
+        for module_info in pkgutil.iter_modules(package.__path__):
+            if module_info.name.startswith("_"):
+                continue
+            importlib.import_module(f"app.ai.tools.{module_info.name}")
+    except ModuleNotFoundError as exc:
+        if exc.name not in ("app", "app.ai", "app.ai.tools"):
+            raise
+    finally:
+        if inserted:
+            sys.path.remove(root_str)
+    return registered_tools()
+
+
+def _evict_stale_app_modules(root: Path) -> None:
+    """Drop cached ``app``/``app.*`` modules bound to a different root.
+
+    Their @Tool registrations died with the modules — drop those too, or the
+    fresh import collides on names the evicted handlers still "own". Mirrors
+    the queue and vectors importers.
+    """
+    import sys
+
+    evicted: set[str] = set()
+    for name in list(sys.modules):
+        if name != "app" and not name.startswith("app."):
+            continue
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        origin = getattr(module, "__file__", None) or ""
+        if not origin or not _path_contains(root, origin):
+            sys.modules.pop(name, None)
+            evicted.add(name)
+    for tool_name in list(tool_registry):
+        if tool_registry[tool_name].fn.__module__ in evicted:
+            del tool_registry[tool_name]
+
+
+def _path_contains(root: Path, origin: str) -> bool:
+    """True when ``origin`` really lives under ``root`` (resolved-path containment)."""
+    try:
+        return Path(origin).resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def args_model(spec: ToolSpec) -> type[BaseModel]:

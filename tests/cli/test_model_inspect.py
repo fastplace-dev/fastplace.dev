@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _isolation import ensure_modules
 from typer.testing import CliRunner
 
 # Imported at collection time, before any test can evict them: the module
@@ -39,19 +40,17 @@ def repo_project(monkeypatch):
     """cwd at the repo root, with its model modules importable.
 
     Earlier test files evict cached ``app.*`` modules (the stale-eviction in
-    the vector/jobs importers); restoring the collection-time module objects
-    keeps ``import_all_models`` a cache hit instead of a re-execution that
-    would collide with the still-registered tables.
+    the vector/jobs importers); re-inserting the collection-time module
+    objects keeps ``import_all_models`` a cache hit instead of a re-execution
+    that would collide with the still-registered tables. State as found via
+    ``ensure_modules``: only what the fixture healed is popped afterward —
+    modules the test's own imports pulled in (``import_all_models`` walks
+    every module) stay cached for ``tests/http``, whose re-import would
+    collide with their still-registered tables otherwise.
     """
     monkeypatch.chdir(REPO_ROOT)
-    healed = {name: mod for name, mod in _REPO_MODEL_MODULES.items() if name not in sys.modules}
-    sys.modules.update(healed)
-    try:
+    with ensure_modules(_REPO_MODEL_MODULES):
         yield REPO_ROOT
-    finally:
-        for name, module in healed.items():
-            if sys.modules.get(name) is module:
-                sys.modules.pop(name, None)
 
 
 @pytest.fixture

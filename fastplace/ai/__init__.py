@@ -7,7 +7,14 @@ outputs validate through Instructor, so app code never imports either.
 
 from fastplace.ai.agent import Agent
 from fastplace.ai.embeddings import embed, embed_many
-from fastplace.ai.tool import Tool, ToolSpec, registered_tools, reset_tool_registry, tool_registry
+from fastplace.ai.tool import (
+    Tool,
+    ToolSpec,
+    import_tools,
+    registered_tools,
+    reset_tool_registry,
+    tool_registry,
+)
 from fastplace.ai.vectors import reset_vector_registry, vector_registry
 
 __all__ = [
@@ -16,6 +23,7 @@ __all__ = [
     "ToolSpec",
     "embed",
     "embed_many",
+    "import_tools",
     "registered_tools",
     "reset_tool_registry",
     "reset_vector_registry",

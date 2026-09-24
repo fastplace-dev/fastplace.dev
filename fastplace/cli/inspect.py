@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -251,12 +251,34 @@ def model_show(
     console.print(rels)
 
 
+def _import_project_registrations(importer: Callable[[], object]) -> None:
+    """Best-effort import of the project's registration modules.
+
+    Real users run these commands in a fresh process, where importing the
+    project's modules is safe and the listing is complete (listeners live in
+    ``app/jobs`` registrations, tools in ``app/ai/tools``). In a reused
+    process the import may be impossible — name collisions from earlier
+    registrations, module-cache churn, broken project code — and a read-only
+    command must never crash on that: print one dim note and fall back to
+    the in-process registry view.
+    """
+    try:
+        importer()
+    except Exception:  # noqa: BLE001 — any project-import failure degrades, never crashes
+        console.print(
+            "[dim]project import unavailable in this process; "
+            "showing in-process registrations only[/]"
+        )
+
+
 @inspect_app.command("event:list")
 def event_list() -> None:
-    """List the domain-event listeners registered in this process."""
+    """List the project's domain-event listeners (app/jobs registrations)."""
     from fastplace.events import registered_listeners
+    from fastplace.queue import import_jobs
 
-    _project_root()
+    root = _project_root()
+    _import_project_registrations(lambda: import_jobs(root))  # queue:work's targeting
     listeners = registered_listeners()
     if not listeners:
         console.print("[dim]no event listeners registered in this process[/]")
@@ -338,10 +360,11 @@ def gate_list() -> None:
 
 @inspect_app.command("ai:tools")
 def ai_tools() -> None:
-    """List the @Tool functions registered in this process."""
-    from fastplace.ai.tool import registered_tools, tool_registry
+    """List the project's @Tool functions (app/ai/tools registrations)."""
+    from fastplace.ai.tool import import_tools, registered_tools, tool_registry
 
-    _project_root()
+    root = _project_root()
+    _import_project_registrations(lambda: import_tools(root))
     names = registered_tools()
     if not names:
         console.print(

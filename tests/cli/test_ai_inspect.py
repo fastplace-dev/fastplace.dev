@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from pathlib import Path
 
 import pytest
+from _isolation import park_app_modules
 from typer.testing import CliRunner
 
 from fastplace.ai import Tool, reset_tool_registry, reset_vector_registry, vector_registry
@@ -25,34 +25,29 @@ def fresh_project(tmp_path, monkeypatch):
 
     ``ai:vectors`` loads the project's .env and rebinds the config registry
     to it (the config:show contract), so both are snapshotted. Its
-    vector-store import also evicts foreign cached ``app.*`` modules — the
-    same mid-suite eviction ``tests/ai`` performs — so the pre-test ``app.*``
-    entries are parked and restored afterward (the pattern
-    ``tests/cli/_isolation.py`` documents: later suites rely on cached
-    project modules staying cached).
+    vector-store import (and the tool import behind ``ai:tools``) also evicts
+    foreign cached ``app.*`` modules — the same mid-suite eviction ``tests/ai``
+    performs — so ``park_app_modules`` restores the pre-test ``app.*`` slice
+    afterward (later suites rely on cached project modules staying cached).
     """
     cwd_before = Path.cwd().resolve()
     env_before = dict(os.environ)
-    parked = {
-        name: module
-        for name, module in sys.modules.items()
-        if name == "app" or name.startswith("app.")
-    }
 
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli_app, ["new", "blog"])
     assert result.exit_code == 0, result.output
 
     root = tmp_path / "blog"
+    # The scaffold's app/ is a namespace package; a regular package anywhere
+    # else on sys.path (this repo's own app/) would win resolution and shadow
+    # the fixture project's tools. Make it regular — the same workaround
+    # tests/cli/test_route_list.py applies.
+    (root / "app" / "__init__.py").write_text("")
     monkeypatch.chdir(root)
     try:
-        yield root
+        with park_app_modules():
+            yield root
     finally:
-        for name in [
-            n for n in list(sys.modules) if n == "app" or n.startswith("app.")
-        ]:
-            del sys.modules[name]
-        sys.modules.update(parked)
         os.environ.clear()
         os.environ.update(env_before)
         from fastplace.config import reset_config
@@ -100,6 +95,32 @@ def test_ai_tools_empty_state(fresh_project, clean_tool_registry):
     code, out = _run("ai:tools")
     assert code == 0, out
     assert "no tools registered" in out
+
+
+def test_ai_tools_imports_the_projects_tools(fresh_project, clean_tool_registry):
+    (fresh_project / "app" / "ai" / "tools" / "lookup_docs.py").write_text(
+        "from fastplace.ai import Tool\n\n"
+        "@Tool(name='lookup_docs', description='Look up internal documents')\n"
+        "def lookup_docs(query: str) -> str:\n"
+        "    return query\n"
+    )
+    code, out = _run("ai:tools")
+    assert code == 0, out
+    assert "lookup_docs" in out
+    assert "Look up internal documents" in out
+
+
+def test_ai_tools_degrades_gracefully_when_project_import_fails(
+    fresh_project, clean_tool_registry
+):
+    (fresh_project / "app" / "ai" / "tools" / "broken.py").write_text(
+        "raise RuntimeError('boom')\n"
+    )
+    _register_dummy_tool()
+    code, out = _run("ai:tools")
+    assert code == 0, out
+    assert "project import unavailable" in out
+    assert "inspect_dummy" in out  # the in-process registry view still shows
 
 
 # --- ai:vectors --------------------------------------------------------------
