@@ -11,5 +11,8 @@ database/
 node_modules/
 package-lock.json
 
+# Agent worktrees (gitignored local state)
+.claude/
+
 # Package build output
 packages/*/dist/

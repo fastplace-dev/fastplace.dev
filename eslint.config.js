@@ -9,6 +9,8 @@ export default tseslint.config(
       ".venv/**",
       "node_modules/**",
       "public/build/**",
+      // Agent worktrees (gitignored local state) — never linted.
+      ".claude/**",
       // Local-only reference material (gitignored) — never linted.
       "docs/**",
       "packages/*/dist/**",
