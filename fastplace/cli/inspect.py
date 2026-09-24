@@ -418,6 +418,24 @@ def ai_vectors() -> None:
     console.print(table)
 
 
+@inspect_app.command("search:status")
+def search_status() -> None:
+    """Show the active search service — which backend answers free-text queries."""
+    _project_root()
+    from fastplace.search import DatabaseSearchService, get_search_service
+
+    service = get_search_service()
+    cls = type(service)
+    console.print(f"Active search service: [bold cyan]{cls.__name__}[/]")
+    if isinstance(service, DatabaseSearchService):
+        console.print(
+            f"[dim]{cls.__module__} — the default; PostgreSQL full-text search. "
+            "Applications swap it with register_search_service().[/]"
+        )
+    else:
+        console.print(f"[dim]{cls.__module__}[/]")
+
+
 #: A key whose uppercased name contains any of these substrings is secret.
 MASK_PATTERNS = ("KEY", "SECRET", "PASSWORD", "TOKEN")
 

@@ -1,4 +1,4 @@
-"""Cache maintenance commands — `fastplace cache:clear`, `cache:forget`."""
+"""Cache maintenance commands — `fastplace cache:clear`, `cache:forget`, `throttle:clear`."""
 
 from __future__ import annotations
 
@@ -53,3 +53,26 @@ def cache_forget(
         console.print(f"[yellow]Cache key '{key}' not found — nothing to forget.[/yellow]")
         return
     console.print(f"[green]Forgot cache key '{key}'.[/green]")
+
+
+@cache_app.command("throttle:clear")
+def throttle_clear(
+    key: str = typer.Argument(help="The throttle counter key to reset."),
+) -> None:
+    """Reset one rate-limit counter — un-block a throttled client (spec #49)."""
+
+    async def _run() -> None:
+        # Imported here so tests can monkeypatch the limiter symbol; the
+        # store binds to the configured cache exactly as the middleware's
+        # limiter does.
+        from fastplace.ratelimit import RateLimiter
+
+        await RateLimiter().clear(key)
+
+    from fastplace.config import load_env
+
+    load_env()
+    import asyncio
+
+    asyncio.run(_run())
+    console.print(f"[green]Cleared throttle counter '{key}'.[/green]")
