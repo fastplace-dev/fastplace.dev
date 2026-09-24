@@ -596,6 +596,110 @@ def make_mail(
 
 
 # ---------------------------------------------------------------------------
+# make:* — generic scaffolding (spec #19–#22)
+# ---------------------------------------------------------------------------
+
+_SUPPORT_CLASS_TEMPLATE = '''"""{name} — a shared support class."""
+
+from __future__ import annotations
+
+
+class {name}:
+    pass
+'''
+
+_SUPPORT_ENUM_TEMPLATE = '''"""{name} — an enumerated set of values."""
+
+from __future__ import annotations
+
+from enum import Enum
+
+
+class {name}(str, Enum):
+    # TODO: declare members, e.g. ACTIVE = "active" — no placeholder values shipped.
+    pass
+'''
+
+_SUPPORT_EXCEPTION_TEMPLATE = '''"""{name} — a domain exception."""
+
+from __future__ import annotations
+
+
+class {name}(Exception):
+    pass
+'''
+
+_SUPPORT_INTERFACE_TEMPLATE = '''"""{name} — a structural interface."""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+
+class {name}(Protocol):
+    pass
+'''
+
+
+def _write_support_stub(
+    name: str, what: str, template: str, root: Path, force: bool
+) -> None:
+    """Create a generic stub in app/support/ (the package is made on demand)."""
+    clean = _clean_name(name, what)
+    _write(root / "app" / "support" / "__init__.py", "", root)
+    _write(
+        root / "app" / "support" / f"{clean}.py",
+        template.format(name=name.strip()),
+        root,
+        force=force,
+    )
+
+
+@generators_app.command("make:class")
+def make_class(
+    name: str = typer.Argument(..., help="Class name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a plain class stub in app/support/."""
+    _write_support_stub(
+        name, "class", _SUPPORT_CLASS_TEMPLATE, _project_root(), force
+    )
+
+
+@generators_app.command("make:enum")
+def make_enum(
+    name: str = typer.Argument(..., help="Enum name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a str-Enum stub in app/support/."""
+    _write_support_stub(
+        name, "enum", _SUPPORT_ENUM_TEMPLATE, _project_root(), force
+    )
+
+
+@generators_app.command("make:exception")
+def make_exception(
+    name: str = typer.Argument(..., help="Exception name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create an exception stub in app/support/."""
+    _write_support_stub(
+        name, "exception", _SUPPORT_EXCEPTION_TEMPLATE, _project_root(), force
+    )
+
+
+@generators_app.command("make:interface")
+def make_interface(
+    name: str = typer.Argument(..., help="Interface name in PascalCase"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a Protocol interface stub in app/support/."""
+    _write_support_stub(
+        name, "interface", _SUPPORT_INTERFACE_TEMPLATE, _project_root(), force
+    )
+
+
+# ---------------------------------------------------------------------------
 # fastplace new — the modular-monolith project scaffolder (blueprint §3)
 # ---------------------------------------------------------------------------
 
