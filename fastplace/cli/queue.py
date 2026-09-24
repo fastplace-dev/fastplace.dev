@@ -257,3 +257,75 @@ def queue_prune_failed(
     before = utcnow() - timedelta(hours=hours)
     removed = asyncio.run(failed_job_store().prune(before))
     console.print(f"[green]pruned[/] {removed} failed-job record(s) older than {hours}h")
+
+
+@queue_app.command("queue:retry")
+def queue_retry(
+    target: str = typer.Argument("all", help="A failed-job ID to retry, or 'all' (the default)."),
+) -> None:
+    """Re-dispatch failed job(s) from the persisted failed-job store.
+
+    A successful re-dispatch deletes the record; a dispatch error (broker
+    down, handler no longer registered) keeps it for the next attempt and
+    exits 1.
+    """
+    load_env()
+    from fastplace.console import console
+    from fastplace.queue import import_jobs, queue
+    from fastplace.queue_failures import failed_job_store
+
+    import_jobs()  # handlers must be registered before dispatch validates names
+    store = failed_job_store()
+
+    async def _retry(row) -> bool:
+        try:
+            await queue().dispatch(row.name, **dict(row.kwargs))
+        except Exception as exc:  # noqa: BLE001 — the record stays for the next attempt
+            console.print(f"[red]✗[/] failed job {row.id} ({row.name}): {exc}")
+            return False
+        await store.delete(row.id)
+        console.print(f"[green]✓[/] retried {row.name} (failed job {row.id})")
+        return True
+
+    async def _all_rows() -> list:
+        # Page the whole ledger BEFORE touching it: deleting while paging
+        # would shift later offsets and silently skip records.
+        rows: list = []
+        offset = 0
+        while True:
+            page = await store.list(offset=offset, limit=100)
+            rows.extend(page)
+            if len(page) < 100:
+                return rows
+            offset += 100
+
+    async def _run(rows: list) -> tuple[int, int]:
+        retried = kept = 0
+        for row in rows:
+            if await _retry(row):
+                retried += 1
+            else:
+                kept += 1
+        return retried, kept
+
+    if target != "all":
+        try:
+            job_id = int(target)
+        except ValueError:
+            console.print(f"[red]'{target}' is not a failed-job id — pass an ID or 'all'[/]")
+            raise typer.Exit(code=1) from None
+        row = asyncio.run(store.get(job_id))
+        if row is None:
+            console.print(f"[red]no failed job with id {job_id}[/]")
+            raise typer.Exit(code=1)
+        raise typer.Exit(code=0 if asyncio.run(_retry(row)) else 1)
+
+    rows = asyncio.run(_all_rows())
+    if not rows:
+        console.print("[dim]no failed jobs[/]")
+        return
+    retried, kept = asyncio.run(_run(rows))
+    if kept:
+        console.print(f"[red]✗[/] {kept} record(s) kept — dispatch failed")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/] retried {retried} job(s)")
