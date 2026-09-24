@@ -1,4 +1,4 @@
-"""Inspection commands — the project's routes and effective configuration."""
+"""Inspection commands — the project's routes, configuration, and models."""
 
 from __future__ import annotations
 
@@ -131,6 +131,124 @@ def route_list(
     for row in rows:
         table.add_row(row["method"], row["path"], row["name"])
     console.print(table)
+
+
+def _declared_in_project(cls: Any, root: Path) -> bool:
+    """True when ``cls`` is a mapped model whose source module lives under root.
+
+    Path math against ``__module__`` — never ``sys.modules``, whose entries for
+    an earlier project may have been evicted from this process — plus a
+    ``__table__`` check that keeps half-mapped shadows (a re-import that
+    collided with tables already registered here) out of listings.
+    """
+    parts = cls.__module__.split(".")
+    if parts[0] != "app" or getattr(cls, "__table__", None) is None:
+        return False
+    base = root.joinpath(*parts)
+    return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
+
+
+def collect_models(root: Path | None = None) -> list[Any]:
+    """The project's mapped Model subclasses, scoped to files under ``root``.
+
+    ``import_all_models`` (the registry's import-all entry) runs first; an
+    InvalidRequestError means this process mapped these modules before and
+    the already-registered classes ARE the project's — nothing to re-import.
+    """
+    from sqlalchemy.exc import InvalidRequestError
+
+    from fastplace.orm.registry import all_models, import_all_models
+
+    base = Path.cwd() if root is None else root
+    root_str = str(base)
+    inserted = root_str not in sys.path
+    if inserted:
+        sys.path.insert(0, root_str)
+    try:
+        try:
+            import_all_models(base)
+        except InvalidRequestError:
+            pass  # tables already mapped in-process; the existing classes stand in
+    finally:
+        if inserted:
+            sys.path.remove(root_str)
+    return sorted(
+        (cls for cls in all_models() if _declared_in_project(cls, base)),
+        key=lambda cls: (cls.__module__, cls.__name__),
+    )
+
+
+@inspect_app.command("model:list")
+def model_list() -> None:
+    """List the project's models (module, class, table)."""
+    models = collect_models(_project_root())
+    if not models:
+        console.print("[dim]no models declared — add one with `fastplace make:model Name`[/]")
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Fastplace models")
+    table.add_column("module", style="dim")
+    table.add_column("class", style="bold cyan", no_wrap=True)
+    table.add_column("table", no_wrap=True)
+    for cls in models:
+        table.add_row(cls.__module__, cls.__name__, cls.__tablename__)
+    console.print(table)
+
+
+@inspect_app.command("model:show")
+def model_show(
+    name: str = typer.Argument(..., help="Model class name, e.g. User."),
+) -> None:
+    """Show one model's table, fields (with types), and relationships."""
+    from sqlalchemy import inspect as sa_inspect
+
+    models = collect_models(_project_root())
+    cls = next((candidate for candidate in models if candidate.__name__ == name), None)
+    if cls is None:
+        if models:
+            known = ", ".join(sorted(candidate.__name__ for candidate in models))
+            console.print(f"[red]unknown model[/] {name!r} — known models: {known}")
+        else:
+            console.print(f"[red]unknown model[/] {name!r} — none declared in this project.")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[bold]{cls.__module__}.{cls.__name__}[/] — table [bold cyan]{cls.__tablename__}[/]"
+    )
+
+    from rich.table import Table
+
+    fields = Table(title="Fields")
+    fields.add_column("field", style="bold")
+    fields.add_column("type", no_wrap=True)
+    fields.add_column("attributes", style="dim")
+    for column in sa_inspect(cls).columns:
+        attrs: list[str] = []
+        if column.primary_key:
+            attrs.append("primary key")
+        if column.unique:
+            attrs.append("unique")
+        if column.index:
+            attrs.append("index")
+        if column.nullable and not column.primary_key:
+            attrs.append("nullable")
+        fields.add_row(column.name, str(column.type), ", ".join(attrs) or "—")
+    console.print(fields)
+
+    relationships = sorted(sa_inspect(cls).relationships, key=lambda prop: prop.key)
+    if not relationships:
+        return
+    kinds = {"ONETOMANY": "one-to-many", "MANYTOONE": "many-to-one", "MANYTOMANY": "many-to-many"}
+    rels = Table(title="Relationships")
+    rels.add_column("name", style="bold")
+    rels.add_column("target", no_wrap=True)
+    rels.add_column("kind", style="dim")
+    for prop in relationships:
+        kind = kinds.get(prop.direction.name, prop.direction.name.lower().replace("_", "-"))
+        rels.add_row(prop.key, prop.mapper.class_.__name__, kind)
+    console.print(rels)
 
 
 #: A key whose uppercased name contains any of these substrings is secret.
