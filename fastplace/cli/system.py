@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections import deque
 from pathlib import Path
 
 import typer
@@ -126,13 +127,15 @@ def log_tail(
         )
         raise typer.Exit(code=1)
 
-    matching = [
-        line
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
-        if _level_matches(line, level)
-    ]
     backfill = _DEFAULT_BACKFILL if lines is None else max(lines, 0)
-    for line in matching[-backfill:] if backfill > 0 else []:
+    # Stream the backfill through a bounded window — a log is the canonical
+    # large growing dataset, so never materialize the whole file in memory.
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        recent: deque[str] = deque(maxlen=backfill)
+        for line in handle:
+            if _level_matches(line, level):
+                recent.append(line.rstrip("\n"))
+    for line in recent:
         # Raw log lines: markup off so bracketed content prints verbatim.
         console.print(line, markup=False, highlight=False)
     if lines is not None:

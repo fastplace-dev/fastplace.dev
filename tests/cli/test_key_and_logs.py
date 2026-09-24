@@ -167,6 +167,35 @@ def test_log_tail_lines_caps_the_backfill(log_project):
     assert "ERROR e1" not in out and "ERROR e3" not in out
 
 
+def test_log_tail_backfill_never_materializes_the_whole_file(log_project, monkeypatch):
+    """The backfill must stream — a tail command that loads the entire log
+    cannot keep memory bounded on a growing file (CLAUDE.md rule 1.4/#16),
+    so any whole-file read is a failure, not just a style issue."""
+    logs = log_project / "storage" / "logs"
+    (logs / "app.log").write_text("ERROR one\nINFO noise\nERROR two\nERROR three\n")
+
+    def _forbidden(self, *args, **kwargs):
+        raise AssertionError("log:tail must stream the file, not read it whole")
+
+    monkeypatch.setattr(Path, "read_text", _forbidden)
+    code, out = _run("log:tail", "--level=ERROR", "--lines", "2")
+    assert code == 0, out
+    assert "ERROR two" in out and "ERROR three" in out
+    assert "ERROR one" not in out and "INFO noise" not in out
+
+
+def test_log_tail_backfill_on_a_log_far_larger_than_the_window(log_project):
+    """Regression coverage: a window (20) far smaller than the file (2000
+    matching lines) still prints exactly the last 20. Output semantics only —
+    the memory bound is asserted by the streaming test above."""
+    body = "\n".join(f"ERROR e{i:04d}" for i in range(2000)) + "\n"
+    (log_project / "storage" / "logs" / "app.log").write_text(body)
+    code, out = _run("log:tail", "--lines", "20")
+    assert code == 0, out
+    assert "ERROR e1999" in out and "ERROR e1980" in out
+    assert "ERROR e1979" not in out and "ERROR e0000" not in out
+
+
 def test_log_tail_without_logs_exits_friendly(log_project):
     code, out = _run("log:tail", "--lines", "5")
     assert code == 1
