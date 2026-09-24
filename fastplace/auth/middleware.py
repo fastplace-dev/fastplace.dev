@@ -23,7 +23,12 @@ from fastplace.auth.remember import (
     REMEMBER_COOKIE_SCOPE,
     REMEMBER_COOKIE_TTL,
 )
-from fastplace.errors import AuthenticationError, AuthorizationError, FastplaceError
+from fastplace.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    ConfigurationError,
+    FastplaceError,
+)
 from fastplace.http.middleware import Middleware
 from fastplace.http.request import Request
 from fastplace.http.response import Json, Redirect, Response
@@ -264,3 +269,50 @@ class EnsurePasswordConfirmedMiddleware(Middleware):
             raise AuthorizationError("Password confirmation required.")
         request.session[INTENDED_SESSION_KEY] = request.full_path
         return Redirect("/user/confirm-password", status_code=302)
+
+
+def _anonymous_login_redirect(request: Request) -> Response:
+    """The auth-middleware anonymous contract, shared by the ability gates."""
+    if request.is_bridge or request.path.startswith("/api/"):
+        raise AuthenticationError()
+    request.session[INTENDED_SESSION_KEY] = request.full_path
+    return Redirect("/login", status_code=302)
+
+
+class AbilitiesMiddleware(Middleware):
+    """``abilities:a,b`` — a PAT bearer must hold EVERY listed ability (§4.5).
+
+    Session-authenticated requests pass unconditionally (spec §4.14:
+    ``token_can`` answers True off the PAT edge); anonymous requests get the
+    ``auth`` middleware treatment — 401 envelope on the API edge, a login
+    redirect with the intended URL parked for browsers.
+    """
+
+    _MODE_ALL = True
+
+    def __init__(self, *args: str) -> None:
+        self.abilities = [arg.strip() for arg in args if arg.strip()]
+        if not self.abilities:
+            raise ConfigurationError(
+                "abilities middleware expects at least one ability (abilities:orders,posts)"
+            )
+
+    async def handle(self, request: Request, call_next) -> Response:
+        if request.user is None:
+            return _anonymous_login_redirect(request)
+        if self._mode_all():
+            ok = all(request.token_can(ability) for ability in self.abilities)
+        else:
+            ok = any(request.token_can(ability) for ability in self.abilities)
+        if not ok:
+            raise AuthorizationError("Invalid token ability.")
+        return await call_next(request)
+
+    def _mode_all(self) -> bool:
+        return self._MODE_ALL
+
+
+class AbilityMiddleware(AbilitiesMiddleware):
+    """``ability:a,b`` — a PAT bearer needs ANY ONE of the listed abilities."""
+
+    _MODE_ALL = False

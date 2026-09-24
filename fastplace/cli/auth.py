@@ -25,3 +25,21 @@ def clear_resets() -> None:
 
     removed = asyncio.run(_run())
     console.print(f"[green]Purged {removed} expired password-reset token(s).[/green]")
+
+
+@auth_app.command("auth:prune-tokens")
+def prune_tokens() -> None:
+    """Purge expired personal access tokens."""
+
+    async def _run() -> int:
+        from fastplace.auth.tokens import pat_store
+
+        return await pat_store().prune_expired()
+
+    from fastplace.config import load_env
+
+    load_env()
+    import asyncio
+
+    removed = asyncio.run(_run())
+    console.print(f"[green]Purged {removed} expired personal access token(s).[/green]")

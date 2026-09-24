@@ -57,6 +57,7 @@ async def sample_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/sample.db")
     monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
 
+    from app.modules.accounts.models.personal_access_token import PersonalAccessToken  # noqa: F401
     from app.modules.accounts.models.user import User  # noqa: F401
     from app.modules.knowledge.models.knowledge_item import KnowledgeItem  # noqa: F401
     from app.modules.projects.models.project import Project  # noqa: F401

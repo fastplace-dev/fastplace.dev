@@ -34,16 +34,21 @@ SESSION_PATH = "/"
 # The credential endpoints (routes/auth.py) name these at declaration time
 # and the kernel resolves them eagerly at mount — the registry must ship in
 # the same commit as any route that names an alias, or boot fails.
+# abilities/ability gate PAT bearers (spec §4.5) — ALL / ANY semantics.
 ROUTE_MIDDLEWARE = {
     "auth": "fastplace.auth.middleware.AuthenticateMiddleware",
     "guest": "fastplace.auth.middleware.GuestMiddleware",
     "verified": "fastplace.auth.middleware.EnsureEmailVerifiedMiddleware",
     "password.confirm": "fastplace.auth.middleware.EnsurePasswordConfirmedMiddleware",
     "throttle": "fastplace.ratelimit.ThrottleMiddleware",
+    "abilities": "fastplace.auth.middleware.AbilitiesMiddleware",
+    "ability": "fastplace.auth.middleware.AbilityMiddleware",
 }
 
 # CSRF protection (fastplace.auth.middleware.CsrfMiddleware)
-CSRF_EXCEPT: list[str] = []
+# /api/token: anonymous email+password exchange (spec §4.14) — no session
+# exists to carry a token, and ThrottleMiddleware is the abuse brake.
+CSRF_EXCEPT: list[str] = ["/api/token"]
 
 # Default HTTP middleware stack (dotted paths, outermost first). App-owned
 # middleware lives in app/http/middleware/ — framework and app entries share

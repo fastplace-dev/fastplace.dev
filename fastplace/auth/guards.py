@@ -27,6 +27,11 @@ from fastplace.auth.remember import (
     VIA_REMEMBER_SCOPE,
     remember_store,
 )
+from fastplace.auth.tokens import (
+    PAT_ABILITIES_SCOPE,
+    VIA_PAT_SCOPE,
+    pat_store,
+)
 from fastplace.errors import ConfigurationError, ThrottleRequestsError
 from fastplace.events import DomainEvent, dispatch
 from fastplace.ratelimit import RateLimiter
@@ -396,6 +401,8 @@ class TokenGuard:
         token = self.extract(request)
         if token is None:
             return None
+        if "|" in token:
+            return await self._user_via_pat(request, token)
         try:
             claims = self.decode(token)
         except jwt.PyJWTError:
@@ -405,6 +412,23 @@ class TokenGuard:
         if user is None and isinstance(subject, str) and subject.isdigit():
             # JWT subjects are strings; identifiers are often numeric.
             user = await self.provider.resolve(int(subject))
+        return user
+
+    async def _user_via_pat(self, request: Any, bearer: str) -> Any | None:
+        """Personal-access-token branch (spec §4.14): id lookup, timing-safe
+        compare, expiry check, last_used_at touch. JWT payloads are
+        base64url + dots — a ``|`` can only be a PAT, never a JWT."""
+        result = await pat_store().authenticate(bearer)
+        if result is None:
+            return None
+        user_id, abilities = result
+        user = await self.provider.resolve(user_id)
+        if user is None:
+            return None
+        scope = getattr(request, "scope", None)
+        if scope is not None:
+            scope[VIA_PAT_SCOPE] = True
+            scope[PAT_ABILITIES_SCOPE] = list(abilities)
         return user
 
 

@@ -1,6 +1,9 @@
 """Credential + verification endpoints (spec §4.5/§4.11) — the GET pages live in web.py."""
 
 from app.http.controllers.auth_api_controller import AuthApiController
+from app.http.controllers.personal_access_token_api_controller import (
+    PersonalAccessTokenApiController,
+)
 from app.http.controllers.two_factor_api_controller import TwoFactorApiController
 from fastplace.http import Router
 
@@ -137,4 +140,33 @@ router.get(
     "secret_key",
     name="auth.two_factor.secret_key",
     middleware=_TWO_FACTOR_MIDDLEWARE,
+)
+
+# Personal access tokens (spec §4.14) — plaintext shown once, sha256 at
+# rest. These live on the ROOT mount: routes/api.py mounts under the /api/v1
+# prefix (the versioned JSON namespace) — the spec's literal /api/tokens
+# paths are the mobile contract and must not drift under a version prefix.
+# POST /api/token is anonymous (email+password exchange for machine
+# clients), throttled like login (credential brute-force class, R8: D is
+# seconds) and CSRF-exempt in config/app.py — no session token can exist.
+router.post(
+    "/api/tokens",
+    PersonalAccessTokenApiController,
+    "store",
+    name="auth.tokens.store",
+    middleware=["auth"],
+)
+router.delete(
+    "/api/tokens/{id}",
+    PersonalAccessTokenApiController,
+    "destroy",
+    name="auth.tokens.destroy",
+    middleware=["auth"],
+)
+router.post(
+    "/api/token",
+    PersonalAccessTokenApiController,
+    "issue_mobile",
+    name="auth.token.mobile",
+    middleware=["throttle:5,60"],
 )

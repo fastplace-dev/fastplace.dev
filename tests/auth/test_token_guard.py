@@ -150,3 +150,114 @@ class TestGuardFactory:
         monkeypatch.setenv("AUTH_DEFAULT_GUARD", "nonsense-driver")
         with pytest.raises(ConfigurationError, match="nonsense-driver"):
             guard()
+
+
+@pytest.fixture()
+def _pat_db(monkeypatch, tmp_path):
+    """A fresh sqlite for the PAT store (module fixture of test_pat_store)."""
+    from fastplace.auth.tokens import reset_pat_store
+    from fastplace.db import reset_db
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/pat-guard.db")
+    monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
+    reset_db()
+    reset_pat_store()
+    yield
+    reset_db()
+    reset_pat_store()
+
+
+class TestTokenGuardPatPath:
+    async def test_pat_bearer_resolves_the_user(self, _pat_db):
+        from fastplace.auth.tokens import pat_store
+
+        guard_ = make_guard()
+        plaintext = await pat_store().issue(7, "ci")
+        request = SimpleNamespace(
+            header=lambda name, default=None: (
+                f"Bearer {plaintext}" if name == "Authorization" else default
+            ),
+            scope={},
+        )
+        assert await guard_.user(request) is USER
+
+    async def test_pat_path_marks_the_scope_with_abilities(self, _pat_db):
+        from fastplace.auth.tokens import PAT_ABILITIES_SCOPE, VIA_PAT_SCOPE, pat_store
+
+        guard_ = make_guard()
+        plaintext = await pat_store().issue(7, "ci", abilities=["orders"])
+        request = SimpleNamespace(
+            header=lambda name, default=None: (
+                f"Bearer {plaintext}" if name == "Authorization" else default
+            ),
+            scope={},
+        )
+        await guard_.user(request)
+        assert request.scope[VIA_PAT_SCOPE] is True
+        assert request.scope[PAT_ABILITIES_SCOPE] == ["orders"]
+
+    async def test_invalid_pat_bearer_resolves_no_user(self, _pat_db):
+        guard_ = make_guard()
+        request = SimpleNamespace(
+            header=lambda name, default=None: (
+                "Bearer 999|tampered-secret-value-0000000000000000000000"
+                if name == "Authorization"
+                else default
+            ),
+            scope={},
+        )
+        assert await guard_.user(request) is None
+
+    async def test_unknown_pat_user_resolves_no_user(self, _pat_db):
+        from fastplace.auth.tokens import pat_store
+
+        guard_ = make_guard()
+        plaintext = await pat_store().issue(404, "orphan")  # provider only knows id=7
+        request = SimpleNamespace(
+            header=lambda name, default=None: (
+                f"Bearer {plaintext}" if name == "Authorization" else default
+            ),
+            scope={},
+        )
+        assert await guard_.user(request) is None
+
+
+class TestTokenCan:
+    def _request_with(self, scope):
+        from fastplace.http.request import Request
+
+        return Request(SimpleNamespace(scope=scope))
+
+    def test_anonymous_request_has_no_abilities(self):
+        assert self._request_with({}).token_can("orders") is False
+
+    def test_session_authenticated_requests_pass_unconditionally(self):
+        request = self._request_with({"fastplace_user": USER})
+        assert request.token_can("orders") is True
+        assert request.token_can("anything-at-all") is True
+
+    def test_pat_wildcard_ability_passes_any_check(self):
+        request = self._request_with(
+            {
+                "fastplace_user": USER,
+                "fastplace_via_pat": True,
+                "fastplace_pat_abilities": ["*"],
+            }
+        )
+        assert request.token_can("orders") is True
+
+    def test_pat_exact_ability_passes_only_that_check(self):
+        request = self._request_with(
+            {
+                "fastplace_user": USER,
+                "fastplace_via_pat": True,
+                "fastplace_pat_abilities": ["orders"],
+            }
+        )
+        assert request.token_can("orders") is True
+        assert request.token_can("posts") is False
+
+    def test_jwt_edge_requests_pass_unconditionally(self):
+        # Bearer-JWT requests carry no PAT marker — same rule as sessions.
+        request = self._request_with({"fastplace_user": USER})
+        assert request.token_can("orders") is True
