@@ -17,6 +17,7 @@ from fastplace.cache import (
     cache,
     reset_cache,
 )
+from fastplace.errors import ConfigurationError
 
 
 @pytest.fixture(autouse=True)
@@ -494,3 +495,44 @@ async def test_factory_rejects_redis_driver_without_library(monkeypatch):
     monkeypatch.setattr("fastplace.cache._redis_available", lambda: False)
     with pytest.raises(Exception, match="redis"):
         cache()
+
+
+# ---------------------------------------------------------------------------
+# production guard
+# ---------------------------------------------------------------------------
+
+
+async def test_production_refuses_the_default_memory_driver(monkeypatch):
+    """Audit T8: memory counters are per-process, so multi-worker serve
+    under-counts every rate limit — production must fail loudly instead
+    of silently degrading to N loose throttles."""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("CACHE_DRIVER", raising=False)
+    with pytest.raises(ConfigurationError, match="CACHE_ALLOW_MEMORY_IN_PRODUCTION"):
+        cache()
+
+
+async def test_production_refuses_an_explicit_memory_driver(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CACHE_DRIVER", "memory")
+    with pytest.raises(ConfigurationError, match="multi-worker"):
+        cache()
+
+
+async def test_production_accepts_a_shared_cache_driver(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CACHE_DRIVER", "database")
+    assert isinstance(cache(), DatabaseCache)
+
+
+async def test_single_worker_production_can_acknowledge_memory(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CACHE_DRIVER", "memory")
+    monkeypatch.setenv("CACHE_ALLOW_MEMORY_IN_PRODUCTION", "1")
+    assert isinstance(cache(), MemoryCache)
+
+
+async def test_non_production_environments_keep_the_memory_default(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "testing")
+    monkeypatch.delenv("CACHE_DRIVER", raising=False)
+    assert isinstance(cache(), MemoryCache)
