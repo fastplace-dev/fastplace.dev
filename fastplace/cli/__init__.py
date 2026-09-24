@@ -68,6 +68,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     except ImportError:
         pass
     try:
+        from fastplace.cli.db_inspect import db_inspect_app
+
+        app.add_typer(db_inspect_app, name="")
+    except ImportError:
+        pass
+    try:
         from fastplace.cli.generators import generators_app
 
         app.add_typer(generators_app, name="")
