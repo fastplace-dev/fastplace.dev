@@ -109,6 +109,51 @@ def test_db_cli_unknown_driver_exits_one(tmp_path, monkeypatch, captured_argv):
     assert captured_argv["argv"] is None  # nothing was exec'd
 
 
+def test_db_cli_psql_argv_carries_no_password(tmp_path, monkeypatch, captured_argv):
+    # Driver explicit — the repo config default ('sqlite') would otherwise
+    # shadow the URL's scheme (see the unknown-driver test above).
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://appuser:secret@db.example.com:5432/appdb"
+    )
+    monkeypatch.setenv("DATABASE_DRIVER", "postgresql")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["db:cli"])
+
+    assert result.exit_code == 0, result.output
+    argv = captured_argv["argv"]
+    assert argv[0] == "psql"
+    # The URL's password must not reach the command line in any form — not
+    # the literal secret, and not the '***' display placeholder that psql
+    # would otherwise try to authenticate with (audit finding I-1).
+    joined = " ".join(argv)
+    assert "secret" not in joined
+    assert "***" not in joined
+    assert "--username=appuser" in argv
+    assert "--host=db.example.com" in argv
+    assert "--port=5432" in argv
+    assert "appdb" in argv  # the database name
+
+
+def test_db_cli_mysql_argv_carries_no_password(tmp_path, monkeypatch, captured_argv):
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://appuser:secret@db.example.com:3306/appdb")
+    monkeypatch.setenv("DATABASE_DRIVER", "mysql")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["db:cli"])
+
+    assert result.exit_code == 0, result.output
+    argv = captured_argv["argv"]
+    assert argv[0] == "mysql"
+    joined = " ".join(argv)
+    assert "secret" not in joined
+    assert "***" not in joined
+    assert "--user=appuser" in argv
+    assert "--host=db.example.com" in argv
+    assert "--port=3306" in argv
+    assert "appdb" in argv
+
+
 def test_db_documents_without_mongodb_url_prints_disabled_notice(tmp_path, monkeypatch):
     monkeypatch.delenv("MONGODB_URL", raising=False)
     monkeypatch.chdir(tmp_path)

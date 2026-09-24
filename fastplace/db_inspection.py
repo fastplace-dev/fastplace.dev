@@ -149,6 +149,9 @@ async def describe_table(name: str) -> TableDetail | None:
 #: Relational driver → its interactive client binary.
 _SHELL_BINARIES = {"sqlite": "sqlite3", "postgresql": "psql", "mysql": "mysql"}
 
+#: Driver → the flag its client spells for the user name.
+_USER_FLAGS = {"postgresql": "--username", "mysql": "--user"}
+
 
 def native_shell_argv() -> list[str]:
     """Argv that opens the configured database's native interactive client.
@@ -178,20 +181,16 @@ def native_shell_argv() -> list[str]:
             raise ValueError("the sqlite database is in-memory — no file for the sqlite3 shell")
         return ["sqlite3", path]
 
-    if driver == "postgresql":
-        # psql speaks libpq connection URIs natively; strip the async driver
-        # suffix (+asyncpg) it would choke on. Password stays out (see above).
-        uri = url.set(drivername="postgresql").render_as_string(hide_password=True)
-        return ["psql", uri]
-
-    # mysql has no URI form — explicit flags; the client prompts for the password.
-    argv = ["mysql"]
+    # psql and mysql take the same explicit-flag form (neither accepts the
+    # async URL as-is, and flags keep the password off the command line —
+    # only the flag spelling of the user differs). Both clients prompt.
+    argv = [_SHELL_BINARIES[driver]]
     if url.host:
         argv.append(f"--host={url.host}")
     if url.port:
         argv.append(f"--port={url.port}")
     if url.username:
-        argv.append(f"--user={url.username}")
+        argv.append(f"{_USER_FLAGS[driver]}={url.username}")
     if url.database:
         argv.append(url.database)
     return argv
