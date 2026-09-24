@@ -84,8 +84,23 @@ def make_model(
     migration: bool = typer.Option(
         False, "--migration", "-m", help="Also autogenerate a migration."
     ),
+    controller: bool = typer.Option(
+        False, "--controller", "-c", help="Also create a controller (Product → ProductController)."
+    ),
+    service: bool = typer.Option(
+        False, "--service", "-s", help="Also create a service in the model's module."
+    ),
+    repository: bool = typer.Option(
+        False, "--repository", "-r", help="Also create a repository in the model's module."
+    ),
+    all: bool = typer.Option(
+        False,
+        "--all",
+        "-a",
+        help="Also create the controller, service and repository (migration stays under -m).",
+    ),
 ) -> None:
-    """Create an ORM model in app/modules/<module>/models/."""
+    """Create an ORM model in app/modules/<module>/models/ (plus companions)."""
     from fastplace.cli.database import _manager
     from fastplace.orm.fields import resolve_annotation  # noqa: F401 — import sanity
 
@@ -108,6 +123,17 @@ def make_model(
         if not marker.exists():
             _write(marker, "", root)
 
+    # Companions reuse the sibling makers directly — same templates, same
+    # no-clobber rules, one convention (spec E3).
+    if controller or all:
+        make_controller(
+            name=name if name.endswith("Controller") else f"{name}Controller"
+        )
+    if service or all:
+        make_service(name=name, module=module)
+    if repository or all:
+        make_repository(name=name, module=module)
+
     if migration:
         manager = _manager()
         if not manager.configured:
@@ -127,15 +153,64 @@ class {name}(Controller):
         return Json({{"items": []}})
 '''
 
+# Resource actions in canonical order, each with its Json placeholder payload
+# (spec E2). The API variant drops the create/edit form actions.
+_RESOURCE_ACTIONS: tuple[tuple[str, str], ...] = (
+    ("index", '{"items": []}'),
+    ("create", '{"form": "create"}'),
+    ("store", '{"created": True}'),
+    ("show", '{"item": None}'),
+    ("edit", '{"form": "edit"}'),
+    ("update", '{"updated": True}'),
+    ("destroy", '{"deleted": True}'),
+)
+_FORM_ACTIONS = frozenset({"create", "edit"})
+
+_RESOURCE_CONTROLLER_TEMPLATE = '''"""{doc_name} controller."""
+
+from fastplace.http import Controller, Json, Request
+
+
+class {name}(Controller):
+{methods}
+'''
+
+
+def _resource_controller_source(name: str, *, api: bool) -> str:
+    methods = "\n\n".join(
+        f"    async def {action}(self, request: Request):\n"
+        f"        return Json({payload})"
+        for action, payload in _RESOURCE_ACTIONS
+        if not (api and action in _FORM_ACTIONS)
+    )
+    return _RESOURCE_CONTROLLER_TEMPLATE.format(doc_name=name, name=name, methods=methods)
+
 
 @generators_app.command("make:controller")
 def make_controller(
     name: str = typer.Argument(..., help="Controller name in PascalCase"),
+    resource: bool = typer.Option(
+        False,
+        "--resource",
+        help="Include the seven CRUD action stubs (index/create/store/show/edit/update/destroy).",
+    ),
+    api: bool = typer.Option(
+        False,
+        "--api",
+        help="API resource — CRUD stubs without the create/edit form actions.",
+    ),
 ) -> None:
     """Create a controller stub in app/http/controllers/."""
     root = _project_root()
-    path = root / "app" / "http" / "controllers" / f"{_snake(name)}_controller.py"
-    _write(path, _CONTROLLER_TEMPLATE.format(doc_name=name, name=name), root)
+    # "ProductController" must not double the suffix in the filename — only
+    # the class name keeps whatever the user passed.
+    stem = name[: -len("Controller")] if name.endswith("Controller") else name
+    path = root / "app" / "http" / "controllers" / f"{_snake(stem)}_controller.py"
+    if api or resource:
+        source = _resource_controller_source(name, api=api)
+    else:
+        source = _CONTROLLER_TEMPLATE.format(doc_name=name, name=name)
+    _write(path, source, root)
 
 
 _SERVICE_TEMPLATE = '''"""{doc_name} service — business logic layer."""
