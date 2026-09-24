@@ -323,6 +323,63 @@ def db_reset() -> None:
         console.print(f"[green]seeded[/] {name}")
 
 
+@database_app.command("db:wipe")
+def db_wipe(
+    force: bool = typer.Option(
+        False, "--force", help="Skip the production confirmation prompt."
+    ),
+) -> None:
+    """Drop all tables and the migration state (no rebuild, no seed)."""
+    from fastplace.config import config, load_env
+
+    load_env()
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Wipe the production database? This drops every table.")
+    ):
+        console.print("[red]aborted[/] — the database was left untouched")
+        raise typer.Exit(code=1)
+
+    manager = _manager()
+    if not manager.configured:
+        console.print(_MIGRATIONS_NOT_CONFIGURED)
+        raise typer.Exit(code=1)
+    manager.downgrade("base")
+    _drop_migration_bookkeeping()
+    console.print("[green]wiped[/] — all tables dropped (migration state included)")
+
+
+def _drop_migration_bookkeeping() -> None:
+    """Drop alembic_version and the framework's batch-tracking table.
+
+    Downgrade-to-base empties them but leaves the tables behind (the spike:
+    SQLite keeps an empty alembic_version); a wipe should leave nothing.
+    Both are recreated automatically by the next ``migrate``.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from fastplace.config import config
+    from fastplace.orm.manager import normalize_database_url
+
+    url = normalize_database_url(
+        str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
+    )
+
+    async def _drop() -> None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+                await conn.execute(text("DROP TABLE IF EXISTS fastplace_migrations"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_drop())
+
+
 @database_app.command("session:gc")
 def session_gc(
     lifetime: int = typer.Option(
