@@ -106,6 +106,21 @@ TIER_2_COMMANDS = [
 ]
 
 
+# Frozen Tier-3 command names from the CLI-completion spec (command table #57-#63;
+# item #61 registers two commands, down and up). Same guard as Tier-1: if this
+# goes red, a command failed to register — do not trim the list.
+TIER_3_COMMANDS = [
+    "schedule:run",
+    "schedule:work",
+    "schedule:list",
+    "schedule:test",
+    "down",
+    "up",
+    "queue:restart",
+    "queue:monitor",
+]
+
+
 def test_list_covers_spec_commands():
     result = runner.invoke(cli_app, ["list", "--raw"])
     assert result.exit_code == 0
@@ -114,3 +129,5 @@ def test_list_covers_spec_commands():
     assert not missing, f"list --raw missing Tier-1 commands: {missing}"
     missing = [name for name in TIER_2_COMMANDS if name not in names]
     assert not missing, f"list --raw missing Tier-2 commands: {missing}"
+    missing = [name for name in TIER_3_COMMANDS if name not in names]
+    assert not missing, f"list --raw missing Tier-3 commands: {missing}"
