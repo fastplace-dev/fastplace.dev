@@ -5,6 +5,21 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Drop the process-wide rate-limit cache around each test.
+
+    Login and the assistant's own throttle count against the shared memory
+    cache, and these tests log in once each — without the reset the sixth
+    login in the process would 429 regardless of test boundaries.
+    """
+    from fastplace.cache import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
+
+
 @pytest.fixture()
 def fake_agent(monkeypatch):
     """Replace the provider-backed agent factory with a scripted one."""
@@ -33,7 +48,40 @@ def fake_agent(monkeypatch):
     return seen
 
 
+async def _login_assistant_user(client):
+    """A verified user behind a live session cookie."""
+    import datetime
+
+    from app.modules.accounts.models.user import User
+    from fastplace.auth.hashing import Hash
+
+    if await User.where(User.email == "assistant@example.test").first() is None:
+        await User.create(
+            name="Assistant",
+            email="assistant@example.test",
+            password_hash=Hash.make("secret123"),
+            email_verified_at=datetime.datetime.now(datetime.UTC),
+        )
+    response = await client.post(
+        "/login", json={"email": "assistant@example.test", "password": "secret123"}
+    )
+    assert response.status_code == 303
+
+
+async def test_assistant_requires_authentication(sample_client):
+    """The stream endpoint answers programmatic callers with 401 JSON.
+
+    A 302 to /login would be silently followed by the SPA's fetch() and
+    SSE-parsed as page HTML — the stream client can only surface a clean
+    error via !response.ok.
+    """
+    resp = await sample_client.post("/ai/assistant", json={"message": "hi"})
+    assert resp.status_code == 401
+    assert resp.headers["content-type"].startswith("application/json")
+
+
 async def test_assistant_streams_sse_events(sample_client, fake_agent):
+    await _login_assistant_user(sample_client)
     resp = await sample_client.post("/ai/assistant", json={"message": "hi there"})
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -48,12 +96,14 @@ async def test_assistant_streams_sse_events(sample_client, fake_agent):
 
 
 async def test_assistant_forwards_history(sample_client, fake_agent):
+    await _login_assistant_user(sample_client)
     history = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "reply"}]
     await sample_client.post("/ai/assistant", json={"message": "next", "history": history})
     assert fake_agent["history"] == history
 
 
 async def test_assistant_requires_a_message(sample_client):
+    await _login_assistant_user(sample_client)
     resp = await sample_client.post("/ai/assistant", json={})
     assert resp.status_code == 422
     assert "message" in resp.json()["errors"]
@@ -84,6 +134,7 @@ def test_assistant_history_is_bounded_and_role_checked():
 
 
 async def test_assistant_rejects_oversized_history_at_the_edge(sample_client, fake_agent):
+    await _login_assistant_user(sample_client)
     resp = await sample_client.post(
         "/ai/assistant",
         json={

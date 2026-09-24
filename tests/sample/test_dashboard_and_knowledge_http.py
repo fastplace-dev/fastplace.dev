@@ -2,8 +2,26 @@
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Drop the process-wide rate-limit cache around each test.
+
+    ThrottleMiddleware counts logins against the shared memory cache, and
+    seeding logs in first — without the reset the sixth login in the
+    process would 429 regardless of test boundaries.
+    """
+    from fastplace.cache import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
+
 
 async def _seed(client):
+    await _login_verified_user(client)
     p1 = (await client.post("/api/v1/projects", json={"name": "Alpha"})).json()
     p2 = (await client.post("/api/v1/projects", json={"name": "Beta"})).json()
     await client.post(f"/api/v1/projects/{p1['id']}/tasks", json={"title": "one"})
@@ -48,8 +66,8 @@ async def test_dashboard_api_aggregates_across_modules(sample_client, embedding_
 
 
 async def test_dashboard_bridge_page_gets_the_same_props(sample_client, embedding_seam):
+    # _seed logs in first — the mutating demo routes are authenticated.
     await _seed(sample_client)
-    await _login_verified_user(sample_client)
 
     resp = await sample_client.get("/dashboard", headers={"X-Fastplace-Request": "true"})
     body = resp.json()

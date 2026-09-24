@@ -14,6 +14,40 @@ import pytest
 from pydantic import BaseModel
 
 
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Drop the process-wide rate-limit cache around each test.
+
+    ThrottleMiddleware counts logins against the shared memory cache, and
+    the wire-shape tests log in before writing — without the reset the
+    sixth login in the process would 429 regardless of test boundaries.
+    """
+    from fastplace.cache import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
+
+
+async def _login_types_user(client):
+    """A verified user behind a live session cookie — the mutating demo
+    routes are authenticated (audit T6), so tests that write log in first."""
+    from app.modules.accounts.models.user import User
+    from fastplace.auth.hashing import Hash
+
+    if await User.where(User.email == "types@example.test").first() is None:
+        await User.create(
+            name="Types",
+            email="types@example.test",
+            password_hash=Hash.make("secret123"),
+            email_verified_at=datetime.datetime.now(datetime.UTC),
+        )
+    response = await client.post(
+        "/login", json={"email": "types@example.test", "password": "secret123"}
+    )
+    assert response.status_code == 303
+
+
 @pytest.fixture()
 async def db_and_service(sample_db):
     from app.modules.projects.services.projects_service import ProjectsService
@@ -111,6 +145,7 @@ async def test_knowledge_service_returns_typed_items(sample_db, embedding_seam):
 
 async def test_api_and_bridge_payloads_keep_the_documented_shape(sample_client):
     """Typing must not move keys — the wire contract is frozen."""
+    await _login_types_user(sample_client)
     created = await sample_client.post("/api/v1/projects", json={"name": "Shape"})
     assert created.status_code == 201
 
@@ -135,6 +170,7 @@ async def test_api_and_bridge_payloads_keep_the_documented_shape(sample_client):
 async def test_store_and_show_payloads_carry_real_counts_not_nulls(sample_client):
     """Every project payload carries integer counts — list, store, and show
     agree on the same keys with the same types (no null-when-unknown drift)."""
+    await _login_types_user(sample_client)
     created = (await sample_client.post("/api/v1/projects", json={"name": "Counted"})).json()
     assert created["task_count"] == 0
     assert created["open_task_count"] == 0

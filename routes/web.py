@@ -91,7 +91,21 @@ router.get(
 )
 
 router.get("/projects", ProjectsController, "index", name="projects.index")
-router.post("/projects", ProjectsController, "store", name="projects.store")
+# Reads stay public demo pages; writes are authenticated (audit T6) — an
+# anonymous visitor must not mutate the demo data.
+router.post("/projects", ProjectsController, "store", name="projects.store", middleware=["auth"])
 router.get("/projects/{id}", ProjectsController, "show", name="projects.show")
-router.post("/projects/{id}/tasks", ProjectsController, "store_task", name="projects.tasks.store")
-router.post("/tasks/{id}/toggle", ProjectsController, "toggle_task", name="projects.tasks.toggle")
+router.post(
+    "/projects/{id}/tasks",
+    ProjectsController,
+    "store_task",
+    name="projects.tasks.store",
+    middleware=["auth"],
+)
+router.post(
+    "/tasks/{id}/toggle",
+    ProjectsController,
+    "toggle_task",
+    name="projects.tasks.toggle",
+    middleware=["auth"],
+)

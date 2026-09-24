@@ -2,6 +2,45 @@
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Drop the process-wide rate-limit cache around each test.
+
+    ThrottleMiddleware counts logins against the shared memory cache, and
+    these tests log in once each — without the reset the sixth login in
+    the process would 429 regardless of test boundaries.
+    """
+    from fastplace.cache import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
+
+
+async def _login_projects_user(client):
+    """A verified user behind a live session cookie — the mutating demo
+    routes are authenticated (audit T6), so tests that write log in first."""
+    import datetime
+
+    from app.modules.accounts.models.user import User
+    from fastplace.auth.hashing import Hash
+
+    if await User.where(User.email == "proj@example.test").first() is None:
+        await User.create(
+            name="Proj",
+            email="proj@example.test",
+            password_hash=Hash.make("secret123"),
+            email_verified_at=datetime.datetime.now(datetime.UTC),
+        )
+    response = await client.post(
+        "/login", json={"email": "proj@example.test", "password": "secret123"}
+    )
+    assert response.status_code == 303
+
+
 # ---------------------------------------------------------------------------
 # Unified JSON API (/api/v1)
 # ---------------------------------------------------------------------------
@@ -15,6 +54,7 @@ async def test_api_lists_projects(sample_client):
 
 
 async def test_api_creates_project_with_edge_validation(sample_client):
+    await _login_projects_user(sample_client)
     created = await sample_client.post(
         "/api/v1/projects", json={"name": "Framework", "description": "sample"}
     )
@@ -28,12 +68,14 @@ async def test_api_creates_project_with_edge_validation(sample_client):
 
 
 async def test_api_rejects_blank_name_at_the_edge(sample_client):
+    await _login_projects_user(sample_client)
     resp = await sample_client.post("/api/v1/projects", json={"name": "  "})
     assert resp.status_code == 422
     assert "errors" in resp.json()
 
 
 async def test_api_project_detail_with_tasks(sample_client):
+    await _login_projects_user(sample_client)
     created = (await sample_client.post("/api/v1/projects", json={"name": "P"})).json()
     task = await sample_client.post(
         f"/api/v1/projects/{created['id']}/tasks", json={"title": "write ADR"}
@@ -54,6 +96,7 @@ async def test_api_missing_project_is_404_json(sample_client):
 
 async def test_api_non_numeric_route_ids_are_404_not_500(sample_client):
     """`/projects/abc` must resolve to a 404, never an int() ValueError."""
+    await _login_projects_user(sample_client)
     for method, url in (
         ("GET", "/api/v1/projects/abc"),
         ("POST", "/api/v1/projects/abc/tasks"),
@@ -69,6 +112,7 @@ async def test_web_non_numeric_route_ids_are_404_not_500(sample_client):
 
 
 async def test_api_toggle_task_flips_completion(sample_client):
+    await _login_projects_user(sample_client)
     project = (await sample_client.post("/api/v1/projects", json={"name": "P"})).json()
     task = (
         await sample_client.post(f"/api/v1/projects/{project['id']}/tasks", json={"title": "t"})
@@ -85,6 +129,7 @@ async def test_api_toggle_task_flips_completion(sample_client):
 
 
 async def test_bridge_renders_projects_page(sample_client):
+    await _login_projects_user(sample_client)
     await sample_client.post("/api/v1/projects", json={"name": "Bridge project"})
 
     page = await sample_client.get("/projects", headers={"X-Fastplace-Request": "true"})
@@ -101,6 +146,7 @@ async def test_bridge_initial_load_is_html(sample_client):
 
 
 async def test_bridge_project_show_page(sample_client):
+    await _login_projects_user(sample_client)
     project = (await sample_client.post("/api/v1/projects", json={"name": "Detail"})).json()
     await sample_client.post(f"/api/v1/projects/{project['id']}/tasks", json={"title": "only task"})
 
@@ -114,6 +160,7 @@ async def test_bridge_project_show_page(sample_client):
 
 
 async def test_web_store_redirects_back_to_the_page(sample_client):
+    await _login_projects_user(sample_client)
     resp = await sample_client.post(
         "/projects",
         data={"name": "Form project", "description": "via form"},
@@ -127,6 +174,7 @@ async def test_web_store_redirects_back_to_the_page(sample_client):
 
 
 async def test_web_add_task_and_toggle_redirect_back(sample_client):
+    await _login_projects_user(sample_client)
     project = (await sample_client.post("/api/v1/projects", json={"name": "Web"})).json()
 
     added = await sample_client.post(
@@ -149,6 +197,7 @@ async def test_web_add_task_and_toggle_redirect_back(sample_client):
 
 
 async def test_bridge_json_post_creates_project(sample_client):
+    await _login_projects_user(sample_client)
     resp = await sample_client.post(
         "/projects", json={"name": "Bridge POST"}, headers={"X-Fastplace-Request": "true"}
     )
@@ -157,3 +206,52 @@ async def test_bridge_json_post_creates_project(sample_client):
 
     listed = await sample_client.get("/api/v1/projects")
     assert listed.json()["total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Auth boundary — the mutating demo routes are authenticated (audit T6)
+# ---------------------------------------------------------------------------
+
+
+async def test_api_mutations_require_authentication(sample_client):
+    """Anonymous JSON mutations get the 401 envelope, never the controller."""
+    for method, url, payload in (
+        ("POST", "/api/v1/projects", {"name": "x"}),
+        ("POST", "/api/v1/projects/1/tasks", {"title": "t"}),
+        ("PATCH", "/api/v1/tasks/1/toggle", {}),
+    ):
+        resp = await sample_client.request(method, url, json=payload)
+        assert resp.status_code == 401, (method, url, resp.status_code)
+
+
+async def test_web_mutations_redirect_anonymous_browsers_to_login(sample_client):
+    resp = await sample_client.post("/projects", data={"name": "anon"})
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/login"
+
+    added = await sample_client.post("/projects/1/tasks", data={"title": "anon"})
+    assert added.status_code == 302
+    assert added.headers["location"] == "/login"
+
+    toggled = await sample_client.post("/tasks/1/toggle")
+    assert toggled.status_code == 302
+    assert toggled.headers["location"] == "/login"
+
+
+async def test_authenticated_mutations_pass_the_guard(sample_client):
+    await _login_projects_user(sample_client)
+
+    created = await sample_client.post("/api/v1/projects", json={"name": "Authed"})
+    assert created.status_code == 201
+
+    task = await sample_client.post(
+        f"/api/v1/projects/{created.json()['id']}/tasks", json={"title": "t"}
+    )
+    assert task.status_code == 201
+
+    toggled = await sample_client.patch(f"/api/v1/tasks/{task.json()['id']}/toggle")
+    assert toggled.status_code == 200
+    assert toggled.json()["completed"] is True
+
+    web = await sample_client.post("/projects", data={"name": "Web authed"})
+    assert web.status_code == 303
