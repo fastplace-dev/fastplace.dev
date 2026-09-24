@@ -775,6 +775,166 @@ def make_interface(
 
 
 # ---------------------------------------------------------------------------
+# make:* — frontend & AI scaffolding (spec #51–#54)
+# ---------------------------------------------------------------------------
+
+_VECTOR_STORE_TEMPLATE = '''"""{doc_name} vector store — an alternate similarity-search backend."""
+
+from fastplace.ai.vectors import register_vector_store
+
+
+@register_vector_store("{name}")
+class {class_name}:
+    async def search(self, model_cls, embedding, limit=10):
+        # TODO: query the backing index and return the nearest rows. Select
+        # this backend with AI_VECTOR_STORE = "{name}" in config/ai.py or .env.
+        return []
+'''
+
+
+@generators_app.command("make:vector-store")
+def make_vector_store(
+    name: str = typer.Argument(
+        ..., help="Vector store name (snake_case or PascalCase), e.g. docs"
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a vector store registration in app/ai/vectors/."""
+    root = _project_root()
+    clean = _clean_name(name, "vector store")
+    pascal = _page_component_name(clean)
+    # Package markers so import_vector_stores() finds the module at boot.
+    for marker in (
+        root / "app" / "__init__.py",
+        root / "app" / "ai" / "__init__.py",
+        root / "app" / "ai" / "vectors" / "__init__.py",
+    ):
+        _write(marker, "", root)
+    _write(
+        root / "app" / "ai" / "vectors" / f"{clean}.py",
+        _VECTOR_STORE_TEMPLATE.format(
+            doc_name=pascal, name=clean, class_name=f"{pascal}VectorStore"
+        ),
+        root,
+        force=force,
+    )
+
+
+def _frontend_component_name(name: str, what: str) -> str:
+    """Validate a React scaffold name into its PascalCase identifier."""
+    clean = name.strip().strip("/")
+    if not clean or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", clean):
+        console.print(
+            f"[red]invalid {what} name[/] — use letters/digits starting with a letter"
+        )
+        raise typer.Exit(code=1)
+    return _page_component_name(clean)
+
+
+_COMPONENT_TEMPLATE = """import React from "react";
+
+// Scaffolded by `fastplace make:component {name}` — compose into pages or
+// other components. Theme tokens (bg-surface, text-ink, border-line, …) are
+// Tailwind utilities defined in resources/css/app.css.
+export function {name}({{ children }}) {{
+  return (
+    <div className="border-line bg-surface-raised text-ink rounded-lg border p-4">
+      {{children}}
+    </div>
+  );
+}}
+"""
+
+
+@generators_app.command("make:component")
+def make_component(
+    name: str = typer.Argument(..., help="Component name in PascalCase, e.g. Card"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a React component stub in resources/js/components/."""
+    root = _project_root()
+    component = _frontend_component_name(name, "component")
+    _write(
+        root / "resources" / "js" / "components" / f"{component}.jsx",
+        _COMPONENT_TEMPLATE.format(name=component),
+        root,
+        force=force,
+    )
+
+
+_LAYOUT_TEMPLATE = """import React from "react";
+
+// Scaffolded by `fastplace make:layout {name}` — pages opt in via a
+// `layout = {name}` static on the page component; the bridge keeps this
+// chrome mounted across navigation so its state survives page swaps.
+export default function {name}({{ children }}) {{
+  return (
+    <div className="bg-surface text-ink min-h-dvh">
+      <main className="mx-auto max-w-4xl px-6 py-10">{{children}}</main>
+    </div>
+  );
+}}
+"""
+
+
+@generators_app.command("make:layout")
+def make_layout(
+    name: str = typer.Argument(..., help="Layout name in PascalCase, e.g. Admin"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a React layout stub (children slot) in resources/js/layouts/."""
+    root = _project_root()
+    # "AdminLayout" must not double the suffix in the filename — only the
+    # component name keeps whatever the user passed (same rule as make:controller).
+    stem = name[: -len("Layout")] if name.endswith("Layout") else name
+    layout = _frontend_component_name(stem, "layout") + "Layout"
+    _write(
+        root / "resources" / "js" / "layouts" / f"{layout}.jsx",
+        _LAYOUT_TEMPLATE.format(name=layout),
+        root,
+        force=force,
+    )
+
+
+_HOOK_TEMPLATE = """import {{ useState }} from "react";
+
+// Scaffolded by `fastplace make:hook {name}` — shared hooks live under
+// resources/js/hooks/; import them from pages, layouts, or components.
+export function {name}(initial = null) {{
+  const [value, setValue] = useState(initial);
+
+  // TODO: build the hook's API and return it.
+  return [value, setValue];
+}}
+"""
+
+
+@generators_app.command("make:hook")
+def make_hook(
+    name: str = typer.Argument(
+        ..., help="Hook name in camelCase, e.g. useDebounce"
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
+) -> None:
+    """Create a React hook stub in resources/js/hooks/."""
+    root = _project_root()
+    # The module name doubles as the hook's identifier, so it must already be
+    # valid JS — the kebab-case file style of the exemplars cannot be imported.
+    clean = name.strip().strip("/")
+    if not clean or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", clean):
+        console.print(
+            "[red]invalid hook name[/] — use a camelCase identifier like useDebounce"
+        )
+        raise typer.Exit(code=1)
+    _write(
+        root / "resources" / "js" / "hooks" / f"{clean}.js",
+        _HOOK_TEMPLATE.format(name=clean),
+        root,
+        force=force,
+    )
+
+
+# ---------------------------------------------------------------------------
 # fastplace new — the modular-monolith project scaffolder (blueprint §3)
 # ---------------------------------------------------------------------------
 
