@@ -75,9 +75,42 @@ TIER_1_COMMANDS = [
 ]
 
 
+# Frozen Tier-2 command names from the CLI-completion spec (command table #34-#56;
+# item #55 registers two commands, env:encrypt and env:decrypt). Same guard as
+# Tier-1: if this goes red, a command failed to register — do not trim the list.
+TIER_2_COMMANDS = [
+    "queue:failed",
+    "queue:retry",
+    "queue:flush",
+    "queue:forget",
+    "queue:prune-failed",
+    "queue:clear",
+    "db:show",
+    "db:table",
+    "db:cli",
+    "db:documents",
+    "mail:test",
+    "token:create",
+    "token:revoke",
+    "user:create",
+    "auth:logout-everywhere",
+    "throttle:clear",
+    "search:status",
+    "make:vector-store",
+    "make:component",
+    "make:layout",
+    "make:hook",
+    "env:encrypt",
+    "env:decrypt",
+    "make:command",
+]
+
+
 def test_list_covers_spec_commands():
     result = runner.invoke(cli_app, ["list", "--raw"])
     assert result.exit_code == 0
     names = set(result.stdout.splitlines())
     missing = [name for name in TIER_1_COMMANDS if name not in names]
     assert not missing, f"list --raw missing Tier-1 commands: {missing}"
+    missing = [name for name in TIER_2_COMMANDS if name not in names]
+    assert not missing, f"list --raw missing Tier-2 commands: {missing}"
