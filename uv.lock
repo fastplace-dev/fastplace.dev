@@ -130,6 +130,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiosmtplib"
+version = "5.1.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9b/5c/9cabc5db6d607616e81ba6d8f1f231cd5a75955807a308c1090a59072d6d/aiosmtplib-5.1.3.tar.gz", hash = "sha256:ac2b418d3260ba62d9cfd0fe7359726e9dc009a4e8e8d9909fdfae332f522a7c", size = 77010, upload-time = "2026-09-08T02:11:20.532Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/0a/b56ab8163d54960337fdca475d3dfd56c8badf6172e79cf2ad00d5335dc1/aiosmtplib-5.1.3-py3-none-any.whl", hash = "sha256:f7d76ce3d4995a65a178c1f11e1bd1607706b921d00cb768e7a2c7f7ef5517a8", size = 30116, upload-time = "2026-09-08T02:11:19.352Z" },
+]
+
+[[package]]
 name = "aiosqlite"
 version = "0.22.1"
 source = { registry = "https://pypi.org/simple" }
@@ -794,14 +803,17 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "greenlet" },
     { name = "itsdangerous" },
     { name = "pydantic" },
     { name = "pyjwt" },
+    { name = "pyotp" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "rich" },
+    { name = "segno" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "starlette" },
     { name = "typer" },
@@ -814,6 +826,7 @@ ai = [
     { name = "litellm" },
 ]
 all = [
+    { name = "aiosmtplib" },
     { name = "asyncmy" },
     { name = "asyncpg" },
     { name = "cryptography" },
@@ -831,6 +844,9 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+]
+mail = [
+    { name = "aiosmtplib" },
 ]
 mongodb = [
     { name = "pymongo" },
@@ -853,6 +869,8 @@ queue = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosmtplib", marker = "extra == 'all'", specifier = ">=3.0" },
+    { name = "aiosmtplib", marker = "extra == 'mail'", specifier = ">=3.0" },
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "alembic", specifier = ">=1.14" },
     { name = "asgi-lifespan", marker = "extra == 'dev'", specifier = ">=2.1" },
@@ -860,6 +878,7 @@ requires-dist = [
     { name = "asyncmy", marker = "extra == 'mysql'", specifier = ">=0.2.9" },
     { name = "asyncpg", marker = "extra == 'all'", specifier = ">=0.29" },
     { name = "asyncpg", marker = "extra == 'postgresql'", specifier = ">=0.29" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'all'", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'mysql'", specifier = ">=42" },
     { name = "fastapi", specifier = ">=0.115" },
@@ -878,6 +897,7 @@ requires-dist = [
     { name = "pyjwt", specifier = ">=2.9" },
     { name = "pymongo", marker = "extra == 'all'", specifier = ">=4.9" },
     { name = "pymongo", marker = "extra == 'mongodb'", specifier = ">=4.9" },
+    { name = "pyotp", specifier = ">=2.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
@@ -888,12 +908,13 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "saq", marker = "extra == 'all'", specifier = ">=0.18" },
     { name = "saq", marker = "extra == 'queue'", specifier = ">=0.18" },
+    { name = "segno", specifier = ">=1.6" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
     { name = "starlette", specifier = ">=0.40" },
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
-provides-extras = ["postgresql", "mysql", "mongodb", "ai", "pwdlib", "queue", "all", "dev"]
+provides-extras = ["postgresql", "mysql", "mongodb", "mail", "ai", "pwdlib", "queue", "all", "dev"]
 
 [[package]]
 name = "fastuuid"
@@ -2187,6 +2208,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyotp"
+version = "2.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/c6/c5d96a86fd0bf6fa1bbb5c5c341ff3208638b692727a683c8289068d9a11/pyotp-2.10.0.tar.gz", hash = "sha256:d01e9703443616b03c57c700b5cbffd56a1f929c1b0f8f03131bc78c1fca9d3f", size = 18625, upload-time = "2026-06-14T03:48:49.221Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/33/7b83bde70eddaaaaef487751a9c3a5cc0c0be54620ded0e120ebdc401ff9/pyotp-2.10.0-py3-none-any.whl", hash = "sha256:1df2f6a1bcc3bb0716172a5215ddc2f8c7c7fd26a13df9927d52e1746934836c", size = 13768, upload-time = "2026-06-14T03:48:47.831Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2589,6 +2619,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/da/b3/38c164b8766e6ac92e9faf961f4dd1103580227edbd95da18f08c07233de/saq-0.26.4.tar.gz", hash = "sha256:e29a3c8b7df722c28f6b8db9566571fc0bbdb32d0fcccbaa3af9517f46a6011c", size = 75417, upload-time = "2026-05-21T15:00:55.144Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/82/cf178bee890a1b7e17950c778c752b7dc342c93f254bc3143a4375378a52/saq-0.26.4-py3-none-any.whl", hash = "sha256:7a1f81ae2a95b6c34b170bc9b8cf84423052d9612f62cf0ec426c1fd27e35b2c", size = 63222, upload-time = "2026-05-21T15:00:53.503Z" },
+]
+
+[[package]]
+name = "segno"
+version = "1.6.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/2e/b396f750c53f570055bf5a9fc1ace09bed2dff013c73b7afec5702a581ba/segno-1.6.6.tar.gz", hash = "sha256:e60933afc4b52137d323a4434c8340e0ce1e58cec71439e46680d4db188f11b3", size = 1628586, upload-time = "2025-03-12T22:12:53.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/02/12c73fd423eb9577b97fc1924966b929eff7074ae6b2e15dd3d30cb9e4ae/segno-1.6.6-py3-none-any.whl", hash = "sha256:28c7d081ed0cf935e0411293a465efd4d500704072cdb039778a2ab8736190c7", size = 76503, upload-time = "2025-03-12T22:12:48.106Z" },
 ]
 
 [[package]]

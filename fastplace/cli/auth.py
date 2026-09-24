@@ -1,4 +1,4 @@
-"""Auth maintenance commands — expired-token housekeeping (spec §4.10)."""
+"""Auth maintenance commands — token housekeeping and session revocation."""
 
 from __future__ import annotations
 
@@ -43,3 +43,28 @@ def prune_tokens() -> None:
 
     removed = asyncio.run(_run())
     console.print(f"[green]Purged {removed} expired personal access token(s).[/green]")
+
+
+@auth_app.command("auth:logout-everywhere")
+def logout_everywhere(
+    user: int = typer.Argument(..., help="User id whose sessions are destroyed."),
+) -> None:
+    """Destroy every active session for a user (incident response, spec #48)."""
+
+    async def _run() -> int:
+        # Imported here so tests can monkeypatch the factory symbol — the
+        # same seam session:gc uses.
+        from fastplace.http.session import session_store
+
+        return await session_store().destroy_for_user(user)
+
+    from fastplace.config import load_env
+
+    load_env()
+    import asyncio
+
+    removed = asyncio.run(_run())
+    if removed:
+        console.print(f"[green]Destroyed {removed} session(s) for user {user}.[/green]")
+    else:
+        console.print(f"[dim]User {user} has no active sessions.[/dim]")

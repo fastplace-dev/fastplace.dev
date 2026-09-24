@@ -41,7 +41,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["DomainEvent", "listen", "dispatch", "reset_listeners"]
+__all__ = [
+    "DomainEvent",
+    "listen",
+    "dispatch",
+    "registered_listeners",
+    "reset_listeners",
+]
 
 logger = logging.getLogger("fastplace.events")
 
@@ -132,3 +138,21 @@ def discard_deferred_domain_events(state: Any) -> None:
 def reset_listeners() -> None:
     """Clear all listeners — test isolation."""
     _listeners.clear()
+
+
+def registered_listeners() -> dict[str, list[str]]:
+    """A copy of the listener registry: event name -> sorted handler names.
+
+    Handler names are ``module.qualname`` where Python knows them, so the
+    CLI (and tooling) can show which callable answers an event without
+    touching the private registry or holding live references.
+    """
+
+    def _name(handler: Callable[[DomainEvent], Any]) -> str:
+        qualname = getattr(handler, "__qualname__", None)
+        if qualname is None:
+            return repr(handler)
+        module = getattr(handler, "__module__", "") or "?"
+        return f"{module}.{qualname}"
+
+    return {name: sorted(_name(handler) for handler in handlers) for name, handlers in _listeners.items()}

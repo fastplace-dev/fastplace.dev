@@ -250,6 +250,7 @@ The CLI (Typer + Rich) is the main developer interface — it orchestrates serve
 | :--- | :--- | :--- |
 | **Server** | `fastplace run dev` | Concurrently starts ASGI backend (Uvicorn with reload) & Vite dev server (HMR) |
 | | `fastplace serve` | Compiles frontend assets and launches the optimized multi-worker production ASGI server |
+| **Maintenance** | `fastplace down` / `up` | Toggle maintenance mode — every request gets a 503, then bring the application back |
 | **Scaffolding** | `fastplace new <Name>` | Creates a new application skeleton — module-first layout, `.env.example`, SQLite default |
 | | `fastplace make:module <Name>` | Scaffolds a bounded module — `app/modules/<name>/{models,repositories,services}` |
 | | `fastplace make:controller <Name>` | Controller stub in `app/http/controllers/` |
@@ -257,9 +258,22 @@ The CLI (Typer + Rich) is the main developer interface — it orchestrates serve
 | | `fastplace make:service <Name>` / `make:repository <Name>` | Service / repository stubs inside a module |
 | | `fastplace make:agent <Name>` | AI agent and tool suite stub in `app/ai/` |
 | | `fastplace make:page <Name>` | Hydrated React page component in `resources/js/pages/` |
+| | `fastplace make:command` / `make:component` / `make:layout` / `make:hook` / `make:vector-store` | CLI command module, React component/layout/hook stubs, vector-store registration |
+| | `fastplace make:seeder, make:job, make:request, make:middleware, make:policy, make:test, make:scope, make:config, make:mail, …` | Stubs for the remaining scaffoldable surfaces, including support classes (`make:class`, `make:enum`, `make:exception`, `make:interface`) |
+| **Inspection** | `fastplace list` / `env` | Every registered command grouped by namespace; current framework environment |
+| | `fastplace route:list` / `config:show` / `model:list` / `model:show` / `event:list` / `module:list` / `gate:list` | Routes, effective config, ORM models, event listeners, modules, and gate abilities at a glance |
+| | `fastplace ai:tools` / `ai:vectors` / `search:status` | Registered agent tools, vector stores, and the active search backend |
 | **Database** | `fastplace db:configure <driver>` | Writes the `DATABASE_*` env block — `sqlite`, `postgresql`, `mysql`, or `mongodb` |
-| | `fastplace migrate` / `migrate:rollback` / `migration:status` | Run, revert, and inspect Alembic migrations |
+| | `fastplace migrate` / `migrate:rollback` / `migrate:status` | Run, revert, and inspect Alembic migrations (`migrate --pretend` previews the SQL) |
 | | `fastplace db:seed` / `db:reset` | Seed via `database/seeders/`; drop, re-migrate, re-seed |
+| | `fastplace migrate:reset` / `db:wipe` | Revert every migration, or drop every table and view — no rebuild, no seed |
+| | `fastplace db:show` / `db:table` / `db:cli` / `db:documents` | Live database overview, one table's schema, the native SQL shell, document-adapter status |
+| **Queue** | `fastplace queue:work` / `queue:restart` / `queue:monitor` | Process jobs from `app/jobs/`, recycle workers at the next job boundary, watch queue depths |
+| | `fastplace queue:failed` / `queue:retry` / `queue:flush` / `queue:forget` / `queue:prune-failed` / `queue:clear` | Failed-job forensics — list, re-dispatch, delete, and prune records; clear pending jobs |
+| **Scheduling** | `fastplace schedule:list` / `schedule:run` / `schedule:work` / `schedule:test` | List tasks with next due time, run what's due now, work every minute in the foreground, or fire one task immediately |
+| **Operations** | `fastplace cache:clear` / `cache:forget` / `key:generate` / `log:tail` | Cache upkeep, `APP_KEY` generation, live log tailing |
+| | `fastplace env:encrypt` / `env:decrypt` / `session:gc` / `throttle:clear` | Encrypt/restore `.env`, sweep expired sessions, un-block throttled clients |
+| | `fastplace token:create` / `token:revoke` / `user:create` / `mail:test` | Personal access tokens, account creation, mail transport probe |
 | **Code Quality** | `fastplace lint:modules` | Enforce module boundaries — fails the build on illegal imports |
 | **Shell** | `fastplace shell` | Interactive shell loaded with models and framework context |
 

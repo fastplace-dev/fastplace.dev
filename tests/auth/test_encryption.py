@@ -71,3 +71,27 @@ class TestEncryptDecrypt:
         with pytest.raises(ValueError):
             decrypt(token)
         reset_config()
+
+
+class TestExplicitKeyOverride:
+    """``key=`` substitutes explicit material for the config APP_KEY derivation."""
+
+    def test_explicit_key_round_trips_without_app_key(self, monkeypatch):
+        monkeypatch.setenv("APP_KEY", "")
+        from fastplace.config import reset_config
+
+        reset_config()
+        token = encrypt("env-blob", key="hand-carried")
+        assert decrypt(token, key="hand-carried") == "env-blob"
+        reset_config()
+
+    def test_explicit_key_seals_against_the_config_app_key(self, monkeypatch):
+        # A key= token must NOT open under APP_KEY — the override wins outright.
+        token = encrypt("env-blob", key="hand-carried")
+        with pytest.raises(ValueError):
+            decrypt(token)
+
+    def test_explicit_key_mismatch_raises_value_error(self):
+        token = encrypt("env-blob", key="right")
+        with pytest.raises(ValueError):
+            decrypt(token, key="wrong")

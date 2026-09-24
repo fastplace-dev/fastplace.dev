@@ -19,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 
 from fastplace.errors import ConfigurationError, FastplaceError
 from fastplace.http import lifecycle
+from fastplace.http.maintenance import MaintenanceMiddleware
 from fastplace.http.middleware import Middleware, wrap_middleware
 from fastplace.http.response import Json, Response
 from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware
@@ -142,6 +143,13 @@ def get_app(
     app.add_middleware(_SecurityHeadersMiddleware)
     app.add_middleware(_QueryTrackerMiddleware)
     _install_session_middleware(app, cfg, app_env=app_env)
+    # Added last -> outermost (add_middleware inserts at index 0). A down
+    # app answers with the 503 gate before sessions mint cookies or the
+    # bridge/React surface is reached.
+    app.add_middleware(
+        MaintenanceMiddleware,
+        root=str(project_root or cfg.root or Path.cwd()),
+    )
     _install_error_handlers(app, debug=debug)
     return app
 
@@ -476,7 +484,11 @@ async def _drain_memory_queue_on_shutdown() -> None:
     memory = queue()
     if not isinstance(memory, MemoryQueue) or not memory.pending:
         return
-    executed = await memory.run_pending()
+    # honor_sentinel=False: this process is not a restartable queue worker —
+    # nothing on the web path ever consumes the sentinel, so honoring one
+    # (e.g. latched on a shared cache by `queue:restart` for saq workers)
+    # would silently skip the very jobs this drain exists to run.
+    executed = await memory.run_pending(honor_sentinel=False)
     if memory.failures:
         logging.getLogger("fastplace.queue").error(
             "%d/%d shutdown-drained job(s) failed: %s",

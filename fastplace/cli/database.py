@@ -206,12 +206,33 @@ def make_migration(
 
 
 @database_app.command("migrate")
-def migrate() -> None:
-    """Run pending migrations (alembic upgrade head)."""
+def migrate(
+    pretend: bool = typer.Option(
+        False, "--pretend", "-p", help="Print the SQL that would run instead of running it."
+    ),
+) -> None:
+    """Run pending migrations (alembic upgrade head; --pretend previews the SQL)."""
+    from alembic.util import CommandError
+
     manager = _manager()
     if not manager.configured:
         console.print(_MIGRATIONS_NOT_CONFIGURED)
         raise typer.Exit(code=1)
+    if pretend:
+        try:
+            script = manager.pretend()
+        except CommandError as exc:
+            # Offline mode cannot reflect tables, so histories with batch
+            # ALTERs (SQLite) without copy_from cannot be rendered as SQL.
+            console.print(f"[red]cannot render this migration history offline:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+        if not script:
+            console.print("[dim]nothing to migrate[/]")
+            return
+        # Offline mode: raw SQL, so no Rich markup and no re-wrapped lines.
+        console.print("[dim]pretend — SQL that would run (nothing was applied):[/]")
+        console.print(script, markup=False, soft_wrap=True)
+        return
     manager.upgrade()
     console.print("[green]migrated[/] database to head")
 
@@ -235,18 +256,62 @@ def migrate_rollback(
     console.print(f"[green]rolled back[/] {reverted} migration(s)")
 
 
-@database_app.command("migration:status")
-def migration_status() -> None:
+@database_app.command("migrate:status")
+def migrate_status() -> None:
     """Show applied/pending migrations."""
+    _print_migration_status()
+
+
+@database_app.command("migration:status", hidden=True)
+def migration_status() -> None:
+    """Show applied/pending migrations (legacy alias of migrate:status)."""
+    _print_migration_status()
+
+
+def _print_migration_status() -> None:
     console.print(_manager().status())
 
 
+@database_app.command("migrate:reset")
+def migrate_reset(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Revert every migration (downgrade to base — no rebuild, no seed)."""
+    from fastplace.config import config, load_env
+
+    load_env()
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force
+        or typer.confirm("Reset the production database? This drops and rebuilds the whole schema.")
+    ):
+        console.print("[red]aborted[/] — the database was left untouched")
+        raise typer.Exit(code=1)
+
+    manager = _manager()
+    if not manager.configured:
+        console.print(_MIGRATIONS_NOT_CONFIGURED)
+        raise typer.Exit(code=1)
+    manager.downgrade("base")
+    console.print("[green]reset[/] — all migrations reverted (database is at base)")
+
+
 @database_app.command("db:seed")
-def db_seed() -> None:
-    """Run all seeders in database/seeders/ (module-level async run())."""
+def db_seed(
+    seeder: str = typer.Option(
+        None,
+        "--seeder",
+        help="Run one seeder: exact stem (user_seeder) or without the _seeder suffix (user).",
+    ),
+) -> None:
+    """Run all seeders in database/seeders/ — or a single one with --seeder."""
     from fastplace.orm.migrations import run_seeders
 
-    ran = run_seeders(_project_root())
+    try:
+        ran = run_seeders(_project_root(), seeder=seeder)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
     if ran:
         for name in ran:
             console.print(f"[green]seeded[/] {name}")
@@ -255,8 +320,21 @@ def db_seed() -> None:
 
 
 @database_app.command("db:reset")
-def db_reset() -> None:
+def db_reset(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
     """Drop everything through migrations, rebuild, and re-seed."""
+    from fastplace.config import config, load_env
+
+    load_env()
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force
+        or typer.confirm("Reset the production database? This drops and rebuilds the whole schema.")
+    ):
+        console.print("[red]aborted[/] — the database was left untouched")
+        raise typer.Exit(code=1)
+
     manager = _manager()
     if not manager.configured:
         console.print(_MIGRATIONS_NOT_CONFIGURED)
@@ -269,6 +347,80 @@ def db_reset() -> None:
     console.print("[green]reset[/] schema rebuilt to head")
     for name in ran:
         console.print(f"[green]seeded[/] {name}")
+
+
+@database_app.command("db:wipe")
+def db_wipe(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Drop every table and view, migration state included (no rebuild, no seed)."""
+    from fastplace.config import config, load_env
+
+    load_env()
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Wipe the production database? This drops every table.")
+    ):
+        console.print("[red]aborted[/] — the database was left untouched")
+        raise typer.Exit(code=1)
+
+    manager = _manager()
+    if not manager.configured:
+        console.print(_MIGRATIONS_NOT_CONFIGURED)
+        raise typer.Exit(code=1)
+    manager.downgrade("base")
+    _drop_everything_remaining(manager)
+    console.print("[green]wiped[/] — every table and view dropped (migration state included)")
+
+
+def _drop_everything_remaining(manager) -> None:
+    """Drop what downgrade-to-base left behind: every table and every view.
+
+    Spec outcome for a wipe is an empty database, but downgrade only reaches
+    tables the migration history knows about — out-of-history tables, stray
+    views, and the (now empty) alembic_version bookkeeping would survive.
+    Names come from live catalog reflection, so no hardcoded list can go
+    stale. Full Table reflection is deliberately avoided: a stray table can
+    carry a FOREIGN KEY pointing at a table that no longer exists, which
+    makes ``MetaData.reflect()`` raise NoSuchTableError instead of dropping.
+    """
+    import asyncio
+
+    from sqlalchemy import inspect
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    def _drop_sync(connection) -> None:
+        inspector = inspect(connection)
+        preparer = connection.dialect.identifier_preparer
+        # Views first: they may read from tables about to be dropped.
+        for view in inspector.get_view_names():
+            connection.exec_driver_sql(f"DROP VIEW IF EXISTS {preparer.quote(view)}")
+        # Disarm FK checks so drop order cannot matter — including the
+        # dangling references strays tend to carry.
+        _disable_fk_checks(connection)
+        for name in inspector.get_table_names():
+            connection.exec_driver_sql(f"DROP TABLE IF EXISTS {preparer.quote(name)}")
+
+    async def _drop() -> None:
+        engine = create_async_engine(manager._database_url())
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(_drop_sync)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_drop())
+
+
+def _disable_fk_checks(connection) -> None:
+    """Best-effort per-dialect FK disarm for the wipe's unordered drops."""
+    dialect = connection.dialect.name
+    if dialect == "postgresql":
+        connection.exec_driver_sql("SET session_replication_role = replica")
+    elif dialect in ("mysql", "mariadb"):
+        connection.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 0")
+    # sqlite: FK enforcement is off unless the app opted in per connection,
+    # and the pragma is a no-op inside a transaction anyway.
 
 
 @database_app.command("session:gc")

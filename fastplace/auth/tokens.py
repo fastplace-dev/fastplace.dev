@@ -164,6 +164,16 @@ class PersonalAccessTokenStore:
                 .values(last_used_at=_now())
             )
 
+    async def owner_of(self, token_id: Any) -> Any | None:
+        """The user id owning one token row (operator tooling; None = no row)."""
+        await self._ensure_table()
+        stmt = select(personal_access_tokens.c.user_id).where(
+            personal_access_tokens.c.id == token_id
+        )
+        async with self._engine().connect() as conn:
+            row = (await conn.execute(stmt)).first()
+        return None if row is None else row.user_id
+
     async def revoke(self, token_id: Any, user_id: Any) -> bool:
         """Owner-scoped hard delete — a wrong user revokes nothing (IDOR-safe)."""
         await self._ensure_table()
@@ -182,6 +192,18 @@ class PersonalAccessTokenStore:
             result = await conn.execute(
                 delete(personal_access_tokens).where(personal_access_tokens.c.user_id == user_id)
             )
+            return int(result.rowcount or 0)
+
+    async def revoke_all(self) -> int:
+        """Every token, every owner — operator-side incident response.
+
+        Reachable only from trusted console context (token:revoke --all);
+        HTTP paths use the owner-scoped :meth:`revoke` and per-user
+        :meth:`revoke_all_for_user`.
+        """
+        await self._ensure_table()
+        async with self._engine().begin() as conn:
+            result = await conn.execute(delete(personal_access_tokens))
             return int(result.rowcount or 0)
 
     async def prune_expired(self) -> int:

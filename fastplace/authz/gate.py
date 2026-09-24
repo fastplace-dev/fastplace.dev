@@ -107,6 +107,25 @@ class Gate:
         self._discovered.clear()
         self._before = None
 
+    # -- introspection --------------------------------------------------
+
+    def registered_abilities(self) -> list[str]:
+        """The defined ability names, sorted — for `gate:list` and tooling."""
+        return sorted(self._abilities)
+
+    def registered_policies(self) -> dict[str, str]:
+        """Explicitly bound policies: model name -> policy name, sorted by model.
+
+        Auto-discovered policies resolve per check and are not listed here;
+        this surface shows what ``gate.policy`` bound explicitly.
+        """
+        return {
+            model_cls.__name__: policy_cls.__name__
+            for model_cls, policy_cls in sorted(
+                self._policies.items(), key=lambda pair: pair[0].__name__
+            )
+        }
+
     # -- resolution ---------------------------------------------------
 
     def _resolve_policy(self, model_cls: type) -> type | None:
