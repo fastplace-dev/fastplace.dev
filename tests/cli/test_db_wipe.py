@@ -5,46 +5,14 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+
+# Autouse fixture: clean db/model/module state per test (see _isolation.py).
+from _isolation import isolate_project_state  # noqa: F401
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
 
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def _isolate_project_state():
-    """Give every test a clean db facade, model metadata, and module cache.
-
-    Same rationale as ``tests/cli/test_migrate_family.py``: seeders import
-    project models through package resolution, so foreign cached ``app.*``
-    modules must be parked for the test and the pre-test snapshot restored
-    afterward (tests/http depends on the repo-owned ``app.*`` staying cached).
-    """
-    import sys
-
-    from fastplace.db import reset_db
-    from fastplace.orm import Model
-
-    reset_db()
-    saved_path = list(sys.path)
-    saved_modules = dict(sys.modules)
-    saved_tables = set(Model.metadata.tables)
-    parked = {
-        name: module
-        for name, module in saved_modules.items()
-        if name == "app" or name.startswith(("app.", "_fastplace_seeder_", "_fastplace_config_"))
-    }
-    for name in parked:
-        del sys.modules[name]
-    yield
-    reset_db()
-    for key in set(Model.metadata.tables) - saved_tables:
-        Model.metadata.remove(Model.metadata.tables[key])
-    for name in [m for m in list(sys.modules) if m not in saved_modules]:
-        del sys.modules[name]
-    sys.modules.update(parked)
-    sys.path[:] = saved_path
 
 
 @pytest.fixture()
@@ -86,6 +54,14 @@ def _tables(project):
     conn = sqlite3.connect(project / "test.sqlite3")
     try:
         return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+
+
+def _views(project):
+    conn = sqlite3.connect(project / "test.sqlite3")
+    try:
+        return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='view'")}
     finally:
         conn.close()
 
@@ -145,3 +121,26 @@ def test_db_wipe_in_testing_env_needs_no_prompt(migrated_and_seeded, monkeypatch
 
     assert result.exit_code == 0, result.output
     assert _tables(migrated_and_seeded) == set()
+
+
+def test_db_wipe_drops_tables_and_views_outside_migration_history(migrated_and_seeded):
+    """Spec outcome: a wiped database is EMPTY. Anything downgrade-to-base
+    leaves behind — out-of-history tables, stray views, the alembic_version
+    bookkeeping — must still be dropped. The stray table also carries a
+    dangling foreign key (references a table that never existed), the exact
+    shape that breaks dependency-ordered drop strategies."""
+    conn = sqlite3.connect(migrated_and_seeded / "test.sqlite3")
+    try:
+        conn.execute(
+            "CREATE TABLE strays (id INTEGER PRIMARY KEY, ghost_id INTEGER REFERENCES ghosts (id))"
+        )
+        conn.execute("CREATE VIEW stray_view AS SELECT id FROM strays")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = runner.invoke(cli_app, ["db:wipe", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert _tables(migrated_and_seeded) == set()
+    assert _views(migrated_and_seeded) == set()

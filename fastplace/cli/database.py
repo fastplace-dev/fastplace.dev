@@ -329,7 +329,7 @@ def db_wipe(
         False, "--force", help="Skip the production confirmation prompt."
     ),
 ) -> None:
-    """Drop all tables and the migration state (no rebuild, no seed)."""
+    """Drop every table and view, migration state included (no rebuild, no seed)."""
     from fastplace.config import config, load_env
 
     load_env()
@@ -345,39 +345,58 @@ def db_wipe(
         console.print(_MIGRATIONS_NOT_CONFIGURED)
         raise typer.Exit(code=1)
     manager.downgrade("base")
-    _drop_migration_bookkeeping()
-    console.print("[green]wiped[/] — all tables dropped (migration state included)")
+    _drop_everything_remaining(manager)
+    console.print("[green]wiped[/] — every table and view dropped (migration state included)")
 
 
-def _drop_migration_bookkeeping() -> None:
-    """Drop alembic_version and the framework's batch-tracking table.
+def _drop_everything_remaining(manager) -> None:
+    """Drop what downgrade-to-base left behind: every table and every view.
 
-    Downgrade-to-base empties them but leaves the tables behind (the spike:
-    SQLite keeps an empty alembic_version); a wipe should leave nothing.
-    Both are recreated automatically by the next ``migrate``.
+    Spec outcome for a wipe is an empty database, but downgrade only reaches
+    tables the migration history knows about — out-of-history tables, stray
+    views, and the (now empty) alembic_version bookkeeping would survive.
+    Names come from live catalog reflection, so no hardcoded list can go
+    stale. Full Table reflection is deliberately avoided: a stray table can
+    carry a FOREIGN KEY pointing at a table that no longer exists, which
+    makes ``MetaData.reflect()`` raise NoSuchTableError instead of dropping.
     """
     import asyncio
 
-    from sqlalchemy import text
+    from sqlalchemy import inspect
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    from fastplace.config import config
-    from fastplace.orm.manager import normalize_database_url
-
-    url = normalize_database_url(
-        str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
-    )
+    def _drop_sync(connection) -> None:
+        inspector = inspect(connection)
+        preparer = connection.dialect.identifier_preparer
+        # Views first: they may read from tables about to be dropped.
+        for view in inspector.get_view_names():
+            connection.exec_driver_sql(f"DROP VIEW IF EXISTS {preparer.quote(view)}")
+        # Disarm FK checks so drop order cannot matter — including the
+        # dangling references strays tend to carry.
+        _disable_fk_checks(connection)
+        for name in inspector.get_table_names():
+            connection.exec_driver_sql(f"DROP TABLE IF EXISTS {preparer.quote(name)}")
 
     async def _drop() -> None:
-        engine = create_async_engine(url)
+        engine = create_async_engine(manager._database_url())
         try:
             async with engine.begin() as conn:
-                await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
-                await conn.execute(text("DROP TABLE IF EXISTS fastplace_migrations"))
+                await conn.run_sync(_drop_sync)
         finally:
             await engine.dispose()
 
     asyncio.run(_drop())
+
+
+def _disable_fk_checks(connection) -> None:
+    """Best-effort per-dialect FK disarm for the wipe's unordered drops."""
+    dialect = connection.dialect.name
+    if dialect == "postgresql":
+        connection.exec_driver_sql("SET session_replication_role = replica")
+    elif dialect in ("mysql", "mariadb"):
+        connection.exec_driver_sql("SET FOREIGN_KEY_CHECKS = 0")
+    # sqlite: FK enforcement is off unless the app opted in per connection,
+    # and the pragma is a no-op inside a transaction anyway.
 
 
 @database_app.command("session:gc")
