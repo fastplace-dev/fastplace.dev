@@ -103,7 +103,14 @@ def queue_work(
     """Process queued background jobs from app/jobs/."""
     load_env()
     from fastplace.console import console
-    from fastplace.queue import MemoryQueue, SaqQueue, import_jobs, queue
+    from fastplace.queue import (
+        MemoryQueue,
+        SaqQueue,
+        clear_restart_sentinel,
+        import_jobs,
+        queue,
+        restart_requested_at,
+    )
 
     names = import_jobs()
     driver_name = str(config("QUEUE_DRIVER", default="memory"))
@@ -130,7 +137,16 @@ def queue_work(
             f"[green]▸[/] saq worker started ({len(names)} job(s) registered, "
             f"queue '{label}')" + (" — burst mode" if burst else "")
         )
-        asyncio.run(worker.start())
+
+        async def _run_saq_worker() -> None:
+            # A sentinel already pending at start is honored at the first
+            # job boundary (the worker's before_process hook consumes it).
+            requested = await restart_requested_at() is not None
+            await worker.start()
+            if requested:
+                console.print("[yellow]! restart requested — worker exiting for a replacement")
+
+        asyncio.run(_run_saq_worker())
         return
 
     # Memory driver: there is no cross-process broker, so working always
@@ -155,11 +171,27 @@ def queue_work(
                 "it drains what was dispatched and exits"
             )
 
-    executed = asyncio.run(q.run_pending())
+    async def _drain() -> tuple[int, bool]:
+        executed = await q.run_pending()
+        # The drain stops at a sentinel but never consumes one; this worker
+        # is exiting either way, so it consumes it here — otherwise the
+        # replacement would immediately exit again.
+        requested = await restart_requested_at() is not None
+        if requested:
+            await clear_restart_sentinel()
+        return executed, requested
+
+    executed, restarted = asyncio.run(_drain())
+    if restarted:
+        console.print("[yellow]! restart requested — worker stopping[/]")
     if executed:
         console.print(f"[green]✓[/] processed {executed} job(s)")
-    else:
+    elif not restarted or not q.pending:
         console.print("no pending jobs")
+    if restarted and q.pending:
+        # Only restart-related leftovers get a line: an ordinary drain's
+        # chained jobs stay silent exactly as they did before restarts.
+        console.print(f"[cyan]▸[/] {len(q.pending)} job(s) left for the replacement worker")
     for failure in q.failures:
         console.print(f"[red]✗[/] {failure.name} failed: {failure.error}")
 
@@ -352,3 +384,84 @@ def queue_retry(
         console.print(f"[red]✗[/] {kept} record(s) kept — dispatch failed")
         raise typer.Exit(code=1)
     console.print(f"[green]✓[/] retried {retried} job(s)")
+
+
+# ---------------------------------------------------------------------------
+# worker control — the restart sentinel and depth monitoring
+# ---------------------------------------------------------------------------
+
+
+@queue_app.command("queue:restart")
+def queue_restart() -> None:
+    """Ask every queue worker to exit at its next job boundary.
+
+    Publishes a timestamped sentinel on the cache store; each worker polls
+    it per job, finishes what it can, and exits 0 — a supervisor restarts
+    it. Not destructive (no jobs are dropped), so no production guard.
+    """
+    load_env()
+    from fastplace.console import console
+    from fastplace.queue import set_restart_sentinel
+
+    asyncio.run(set_restart_sentinel())
+    console.print("[green]✓[/] restart requested — workers exit at their next job boundary")
+
+
+@queue_app.command("queue:monitor")
+def queue_monitor(
+    queues: list[str] = typer.Argument(..., help="Queue names to check."),
+    max_depth: int = typer.Option(
+        ..., "--max", min=0, help="Exit 1 when any queue's depth exceeds this."
+    ),
+) -> None:
+    """Report queue depths; exit 1 when any queue exceeds --max.
+
+    Each breach dispatches a ``queue.busy`` domain event (queue, depth,
+    max) — a listener or ``@Job`` under that name reacts (alerting,
+    scaling); a dispatch that raises only warns, never failing the check.
+    On the saq driver each name resolves to its own queue; the memory
+    driver has one in-process queue, so every name reports its depth.
+    """
+    load_env()
+    from rich.table import Table
+
+    from fastplace.console import console
+    from fastplace.events import DomainEvent, dispatch
+    from fastplace.queue import SaqQueue, import_jobs, queue
+
+    import_jobs()  # a "queue.busy" @Job bridges the event to a handler
+
+    driver_name = str(config("QUEUE_DRIVER", default="memory"))
+
+    async def _depth(name: str) -> int:
+        if driver_name == "saq":
+            return await SaqQueue(name=name).queue_depth()
+        return await queue().queue_depth()
+
+    async def _check() -> list[tuple[str, int]]:
+        return [(name, await _depth(name)) for name in queues]
+
+    depths = asyncio.run(_check())
+
+    table = Table(box=None, header_style="bold")
+    table.add_column("queue", style="bold")
+    table.add_column("depth", justify="right")
+    table.add_column("max", justify="right")
+    for name, depth in depths:
+        table.add_row(name, str(depth), str(max_depth))
+    console.print(table)
+
+    breaches = [(name, depth) for name, depth in depths if depth > max_depth]
+    for name, depth in breaches:
+        console.print(f"[red]✗[/] {name} exceeds --max ({depth} > {max_depth})")
+        try:
+            asyncio.run(
+                dispatch(
+                    DomainEvent("queue.busy", {"queue": name, "depth": depth, "max": max_depth})
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — a broken listener never masks the verdict
+            console.print(f"[yellow]! queue.busy dispatch failed for '{name}': {exc}")
+    if breaches:
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/] all queue(s) within --max {max_depth}")
