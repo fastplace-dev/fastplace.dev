@@ -1,4 +1,4 @@
-"""Key management commands — APP_KEY generation (spec #32)."""
+"""Key & environment secret commands — APP_KEY generation, env encryption (spec #32, #55)."""
 
 from __future__ import annotations
 
@@ -64,9 +64,11 @@ def key_generate(
     env = root / ".env"
     if not env.exists():
         example = root / ".env.example"
-        env.write_text(example.read_text() if example.exists() else "")
+        text = example.read_text() if example.exists() else ""
     else:
-        current = _active_app_key(env.read_text())
+        # One read serves the refusal check, the backup, and the rewrite.
+        text = env.read_text()
+        current = _active_app_key(text)
         if current is not None and not force:
             console.print("[red]refusing to overwrite[/] APP_KEY — already set in .env")
             console.print(
@@ -74,9 +76,80 @@ def key_generate(
                 "(the previous .env is kept as .env.bak)"
             )
             raise typer.Exit(code=1)
-        if current is not None and env.read_text().strip():
+        if current is not None and text.strip():
             shutil.copyfile(env, env.parent / (env.name + ".bak"))
-    env.write_text(_upsert_env_lines(env.read_text(), {"APP_KEY": key}))
+    env.write_text(_upsert_env_lines(text, {"APP_KEY": key}))
     # .env.example documents the key — a commented placeholder, never the secret.
     _ensure_example_keys(root / ".env.example", {"APP_KEY": ""})
     console.print("[green]set[/] APP_KEY in .env")
+
+
+@keys_app.command("env:encrypt")
+def env_encrypt(
+    key: str | None = typer.Option(
+        None, "--key", help="Encrypt with this key instead of APP_KEY (never written to .env)."
+    ),
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Encrypt .env into .env.encrypted, base64-armored (the original .env is kept)."""
+    from fastplace.auth.encryption import encrypt
+    from fastplace.config import config, load_env
+    from fastplace.errors import ConfigurationError
+
+    root = _project_root()
+    load_env()
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Encrypt the production .env file?")
+    ):
+        console.print("[red]aborted[/] — the .env was left untouched")
+        raise typer.Exit(code=1)
+
+    env = root / ".env"
+    if not env.exists():
+        console.print("[red]no .env found[/] — nothing to encrypt")
+        raise typer.Exit(code=1)
+    try:
+        token = encrypt(env.read_text(), key=key)
+    except ConfigurationError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    (root / ".env.encrypted").write_text(token + "\n")
+    console.print("[green]encrypted[/] .env → .env.encrypted (the original .env is kept)")
+
+
+@keys_app.command("env:decrypt")
+def env_decrypt(
+    key: str | None = typer.Option(None, "--key", help="Decrypt with this key instead of APP_KEY."),
+) -> None:
+    """Restore .env from .env.encrypted (a drifted .env is kept as .env.bak)."""
+    from fastplace.auth.encryption import decrypt
+    from fastplace.config import load_env
+    from fastplace.errors import ConfigurationError
+
+    root = _project_root()
+    load_env()
+    encrypted = root / ".env.encrypted"
+    if not encrypted.exists():
+        console.print("[red]no .env.encrypted found[/] — run env:encrypt first")
+        raise typer.Exit(code=1)
+    try:
+        text = decrypt(encrypted.read_text().strip(), key=key)
+    except ConfigurationError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        console.print(
+            f"[red]cannot decrypt .env.encrypted:[/] {exc} — wrong key or a rotated APP_KEY"
+        )
+        raise typer.Exit(code=1) from exc
+
+    env = root / ".env"
+    current = env.read_text() if env.exists() else None
+    if current == text:
+        console.print("[dim]already in sync[/] — .env matches .env.encrypted")
+        return
+    if current is not None and current.strip():
+        shutil.copyfile(env, env.parent / (env.name + ".bak"))
+    env.write_text(text)
+    console.print("[green]restored[/] .env from .env.encrypted")
