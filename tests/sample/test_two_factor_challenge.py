@@ -254,3 +254,36 @@ class TestRememberCookieBoundary:
             assert bounced.status_code == 302
             assert bounced.headers["location"] == "/two-factor-challenge"
         assert client.cookies.get("fastplace_remember"), "rotation must keep the cookie alive"
+
+
+class TestCodeSingleUse:
+    """A TOTP code is one-time: replaying the code that just worked must not
+    complete a second challenge while it is still inside the window."""
+
+    async def _relogin_into_a_fresh_challenge(self, client):
+        await client.post("/logout")
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={"email": REGISTER_PAYLOAD["email"], "password": REGISTER_PAYLOAD["password"]},
+        )
+        assert login.status_code == 303  # challenge parked again
+
+    async def test_the_same_code_cannot_complete_two_challenges(self, client):
+        import time
+
+        user, secret, codes, totp = await _park_challenge(client)
+        code = totp.now()
+        first = await client.post("/two-factor-challenge", json={"code": code})
+        assert first.status_code == 303
+
+        await self._relogin_into_a_fresh_challenge(client)
+        replay = await client.post("/two-factor-challenge", json={"code": code})
+        assert replay.status_code == 422
+
+        # Not over-tightened: the NEXT timestep's code still completes —
+        # pyotp's ±1 window accepts it immediately after.
+        later = totp.at(int(time.time()) + 30)
+        third = await client.post("/two-factor-challenge", json={"code": later})
+        assert third.status_code == 303
+        assert (await client.get("/settings/profile")).status_code == 200

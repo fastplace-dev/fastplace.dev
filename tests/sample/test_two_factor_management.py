@@ -164,6 +164,35 @@ class TestEnableConfirmDisable:
         refreshed = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
         assert refreshed.two_factor_confirmed_at is not None
 
+    async def test_confirming_consumes_the_confirming_code(self, client):
+        # The setup confirm is itself a TOTP acceptance: replaying the very
+        # code that confirmed the setup must not complete the next login's
+        # challenge while it is still inside the window.
+        import pyotp
+
+        from app.modules.accounts.repositories.user_repository import UserRepository
+
+        await _confirmed_client(client)
+        await client.post("/user/two-factor-authentication")
+        user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        totp = pyotp.TOTP(decrypt(user.two_factor_secret))
+        code = totp.now()
+
+        confirmed = await client.post(
+            "/user/confirmed-two-factor-authentication", json={"code": code}
+        )
+        assert confirmed.status_code == 200
+
+        await client.post("/logout")
+        await client.get("/login")
+        login = await client.post(
+            "/login",
+            json={"email": REGISTER_PAYLOAD["email"], "password": REGISTER_PAYLOAD["password"]},
+        )
+        assert login.status_code == 303
+        replay = await client.post("/two-factor-challenge", json={"code": code})
+        assert replay.status_code == 422
+
     async def test_confirm_with_invalid_code_is_frozen_422(self, client):
         await _confirmed_client(client)
         await client.post("/user/two-factor-authentication")

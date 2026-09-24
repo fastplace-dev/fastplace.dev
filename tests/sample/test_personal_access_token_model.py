@@ -58,5 +58,6 @@ class TestMigrationChain:
             assert rev, f"{file.name} declares no revision id"
             revisions[rev.group(1)] = down.group(1) or down.group(2) if down else None
         heads = [r for r in revisions if r not in set(revisions.values())]
-        assert heads == ["b9d5c2e8f7a3"]
+        assert heads == ["c4e8d1f9a2b7"]
+        assert revisions["c4e8d1f9a2b7"] == "b9d5c2e8f7a3"
         assert revisions["b9d5c2e8f7a3"] == "a7c3e9f1b2d4"

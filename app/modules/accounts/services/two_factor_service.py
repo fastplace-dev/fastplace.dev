@@ -14,7 +14,11 @@ from typing import Any
 from app.modules.accounts.repositories.user_repository import UserRepository
 from fastplace.auth.encryption import decrypt, encrypt
 from fastplace.auth.guards import TWO_FACTOR_CHALLENGE_KEY, TWO_FACTOR_REMEMBER_KEY, guard
-from fastplace.auth.two_factor import generate_recovery_codes, generate_secret, verify_code
+from fastplace.auth.two_factor import (
+    generate_recovery_codes,
+    generate_secret,
+    verify_code_step,
+)
 from fastplace.errors import ValidationError
 
 
@@ -39,7 +43,13 @@ class TwoFactorService:
 
         ok = False
         if code:
-            ok = verify_code(decrypt(user.two_factor_secret), code)
+            step = verify_code_step(decrypt(user.two_factor_secret), code)
+            # Single-use: a TOTP code is refused once its step has been
+            # accepted — the same code cannot complete two challenges.
+            ok = step is not None and step > (user.two_factor_accepted_step or -1)
+            if ok:
+                user.two_factor_accepted_step = step
+                await user.save()
         elif recovery_code and user.two_factor_recovery_codes:
             stored = json.loads(decrypt(user.two_factor_recovery_codes))
             match = next((c for c in stored if hmac.compare_digest(c, recovery_code)), None)
@@ -88,14 +98,22 @@ class TwoFactorService:
         """Complete the setup: a valid TOTP code stamps confirmed_at.
 
         The flag check runs before any code verdict, and an absent/invalid
-        code shares the one frozen 422 (verify_code rejects an empty string).
+        code shares the one frozen 422 (verify_code_step rejects an empty string).
         """
         self._require_enabled()
         import datetime
 
         user = request.user
-        if not user.two_factor_secret or not verify_code(decrypt(user.two_factor_secret), code):
+        step = (
+            verify_code_step(decrypt(user.two_factor_secret), code)
+            if user.two_factor_secret
+            else None
+        )
+        if step is None or step <= (user.two_factor_accepted_step or -1):
             raise self._invalid()
+        # Confirming consumes the code too: the setup code must not go on to
+        # complete the next login's challenge.
+        user.two_factor_accepted_step = step
         user.two_factor_confirmed_at = datetime.datetime.now(datetime.UTC)
         await user.save()
 

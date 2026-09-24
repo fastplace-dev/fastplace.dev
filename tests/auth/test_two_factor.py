@@ -13,6 +13,7 @@ from fastplace.auth.two_factor import (
     otp_auth_uri,
     qr_code_svg,
     verify_code,
+    verify_code_step,
 )
 
 CODE_RE = re.compile(r"^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{5}-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{5}$")
@@ -79,6 +80,35 @@ class TestVerifyCode:
 
     def test_rejects_a_code_for_a_different_secret(self):
         assert verify_code(generate_secret(), pyotp.TOTP(generate_secret()).now()) is False
+
+
+class TestVerifyCodeStep:
+    """verify_code_step — the matched timestep, for single-use enforcement."""
+
+    def test_returns_the_current_step_for_a_valid_code(self):
+        import time
+
+        secret = generate_secret()
+        now = int(time.time())
+        assert verify_code_step(secret, pyotp.TOTP(secret).at(now), now=now) == now // 30
+
+    def test_resolves_a_previous_window_code_to_its_earlier_step(self):
+        import time
+
+        secret = generate_secret()
+        now = int(time.time())
+        previous = pyotp.TOTP(secret).at(now - 30)
+        assert verify_code_step(secret, previous, now=now) == now // 30 - 1
+
+    def test_returns_none_where_verify_code_returns_false(self):
+        import time
+
+        secret = generate_secret()
+        now = int(time.time())
+        assert verify_code_step(secret, "000000", now=now) is None
+        assert verify_code_step(secret, "", now=now) is None
+        stale = pyotp.TOTP(secret).at(now - 120)
+        assert verify_code_step(secret, stale, now=now) is None
 
 
 class TestQrCodeSvg:
