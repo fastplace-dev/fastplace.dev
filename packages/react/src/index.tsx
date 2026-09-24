@@ -74,6 +74,10 @@ function getSnapshot(): Page {
 
 function setPage(page: Page, opts: { history?: HistoryMode } = {}): void {
   currentPage = page;
+  // Every bridge payload carries the session CSRF token (render() embeds
+  // it for the no-JS hidden inputs) — keep the meta tag in step with it.
+  const token = (page.props as Record<string, unknown> | undefined)?.csrf_token;
+  if (typeof token === "string") writeCsrfToken(token);
   const mode = opts.history ?? "push";
   if (mode !== "none" && typeof window !== "undefined") {
     if (page.url && window.location.pathname + window.location.search !== page.url) {
@@ -133,6 +137,28 @@ function csrfToken(): string | null {
   return meta?.content || null;
 }
 
+/** Write a fresh token into the meta tag (created when the shell had none). */
+function writeCsrfToken(value: string): void {
+  if (typeof document === "undefined") return;
+  let meta = document.querySelector<HTMLMetaElement>("meta[name='csrf-token']");
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.name = "csrf-token";
+    document.head.appendChild(meta);
+  }
+  meta.content = value;
+}
+
+/**
+ * Adopt the token the server advertises after rotating it across an auth
+ * privilege boundary (login/logout/2FA) — otherwise every later unsafe
+ * bridge request would echo the stale token and die with a 419.
+ */
+function adoptCsrfToken(response: Response): void {
+  const fresh = response.headers.get("X-Fastplace-CSRF-Token");
+  if (fresh) writeCsrfToken(fresh);
+}
+
 async function visit(url: string, options: VisitOptions = {}): Promise<void> {
   const method = options.method ?? "GET";
   const hasBody = options.data != null && method !== "GET";
@@ -150,6 +176,8 @@ async function visit(url: string, options: VisitOptions = {}): Promise<void> {
     },
     body: hasBody ? JSON.stringify(options.data) : undefined,
   });
+
+  adoptCsrfToken(response);
 
   const contentType = response.headers.get("content-type") ?? "";
   const fallback = () => window.location.assign(response.redirected ? response.url : requestUrl);
@@ -548,6 +576,8 @@ async function submitBridge(
     // Network-level failure — nothing to map onto fields.
     return { kind: "errored", errors: {} };
   }
+
+  adoptCsrfToken(response);
 
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {

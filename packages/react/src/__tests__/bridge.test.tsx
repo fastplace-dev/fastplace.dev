@@ -402,6 +402,113 @@ describe("CSRF protection", () => {
     await router.visit("/logout", { method: "POST" }); // no meta tag present
     expect(fetchMock.mock.calls[1][1].headers["X-Fastplace-CSRF-Token"]).toBeUndefined();
   });
+
+  it("adopts the rotated token from the X-Fastplace-CSRF-Token response header", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    const meta = document.createElement("meta");
+    meta.name = "csrf-token";
+    meta.content = "stale-token";
+    document.head.appendChild(meta);
+
+    const page = (url: string) => ({
+      component: "Dashboard/Index",
+      props: {},
+      url,
+      version: "v1",
+    });
+    const respondWith = (token: string) => ({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json", "X-Fastplace-CSRF-Token": token }),
+      redirected: false,
+      json: () => Promise.resolve(page("/dashboard")),
+    }) as unknown as Response;
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(respondWith("rotated-by-login")) // login rotates the token
+      .mockResolvedValueOnce(respondWith("rotated-again"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await router.visit("/login", { method: "POST" });
+    expect(meta.content).toBe("rotated-by-login");
+    await router.visit("/logout", { method: "POST" });
+
+    expect(fetchMock.mock.calls[1][1].headers["X-Fastplace-CSRF-Token"]).toBe("rotated-by-login");
+    expect(meta.content).toBe("rotated-again");
+  });
+
+  it("writes props.csrf_token into the meta tag on a swapped page", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    const meta = document.createElement("meta");
+    meta.name = "csrf-token";
+    meta.content = "stale-token";
+    document.head.appendChild(meta);
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockBridgeResponse({
+        component: "Dashboard/Index",
+        props: { csrf_token: "fresh-from-props" },
+        url: "/dashboard",
+        version: "v1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await router.visit("/dashboard");
+
+    expect(meta.content).toBe("fresh-from-props");
+    await router.visit("/logout", { method: "POST" });
+    expect(fetchMock.mock.calls[1][1].headers["X-Fastplace-CSRF-Token"]).toBe("fresh-from-props");
+  });
+
+  it("adopts the advertised token even from an error response, and creates a missing meta tag", async () => {
+    render(
+      <FastplaceProvider
+        initialPage={{ component: "Dashboard/Index", props: {}, url: "/dashboard", version: "v1" }}
+      >
+        <div />,
+      </FastplaceProvider>,
+    );
+    // No meta tag at all — the shell rendered before any session existed.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 419,
+        headers: new Headers({
+          "content-type": "application/json",
+          "X-Fastplace-CSRF-Token": "recovered-token",
+        }),
+        redirected: false,
+        json: () => Promise.resolve({ message: "CSRF token mismatch." }),
+      } as unknown as Response)
+      .mockResolvedValueOnce(mockBridgeResponse({
+        component: "Dashboard/Index",
+        props: {},
+        url: "/dashboard",
+        version: "v1",
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await router.visit("/logout", { method: "POST" });
+
+    const meta = document.querySelector<HTMLMetaElement>("meta[name='csrf-token']");
+    expect(meta?.content).toBe("recovered-token");
+    await router.visit("/logout", { method: "POST" });
+    expect(fetchMock.mock.calls[1][1].headers["X-Fastplace-CSRF-Token"]).toBe("recovered-token");
+  });
 });
 
 describe("history semantics", () => {
