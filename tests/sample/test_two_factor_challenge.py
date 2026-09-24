@@ -287,3 +287,44 @@ class TestCodeSingleUse:
         third = await client.post("/two-factor-challenge", json={"code": later})
         assert third.status_code == 303
         assert (await client.get("/settings/profile")).status_code == 200
+
+
+class TestChallengeThrottle:
+    """The fulfillment POST rides throttle:5,60 (spec §4.19) — code brute
+    force gets the same brake as password brute force."""
+
+    async def test_sixth_wrong_code_is_locked_out_with_retry_after(self, client):
+        await _park_challenge(client)
+
+        for _ in range(5):
+            resp = await client.post("/two-factor-challenge", json={"code": "000000"})
+            assert resp.status_code == 422
+        sixth = await client.post("/two-factor-challenge", json={"code": "000000"})
+        assert sixth.status_code == 429
+        assert int(sixth.headers["Retry-After"]) >= 1
+
+    async def test_the_lock_decays_and_a_valid_code_still_completes(self, client):
+        """Per-IP with a decay, not a brick on the challenge.
+
+        Someone sharing the victim's IP can burn the window, but once it
+        decays the victim's valid code completes — the throttle must never
+        strand a parked challenge permanently.
+        """
+        import hashlib
+
+        from fastplace.ratelimit import RateLimiter
+
+        user, secret, codes, totp = await _park_challenge(client)
+        for _ in range(5):
+            await client.post("/two-factor-challenge", json={"code": "000000"})
+        blocked = await client.post("/two-factor-challenge", json={"code": "000000"})
+        assert blocked.status_code == 429
+
+        # Window elapsed: drop the per-IP counter exactly as expiry would
+        # (ThrottleMiddleware keys on sha1(f"{ip}|{path}")).
+        key = hashlib.sha1(b"127.0.0.1|/two-factor-challenge").hexdigest()
+        await RateLimiter().clear(key)
+
+        done = await client.post("/two-factor-challenge", json={"code": totp.now()})
+        assert done.status_code == 303
+        assert (await client.get("/settings/profile")).status_code == 200
