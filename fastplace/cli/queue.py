@@ -543,6 +543,7 @@ def queue_jobs(
     import asyncio
     import datetime as dt
     import json
+    import time
 
     from rich.markup import escape
     from rich.table import Table
@@ -575,20 +576,35 @@ def queue_jobs(
         pending = getattr(store, "pending", None)
         if pending is not None:  # memory driver — every row is 'queued'
             for entry in list(pending):
-                if status in ("all", "queued"):
+                if status in ("all", "queued", "incomplete"):
                     rows.append(("queued", entry.name, "-", "-", json.dumps(entry.kwargs)))
         else:  # saq driver
+            from saq.job import Status
+
+            # saq knows new/queued/active/aborting/aborted/failed/complete.
+            # "scheduled" and "incomplete" are CLI concepts translated here:
+            # passing them through raw makes the broker filter match nothing.
             statuses: Any
             if status == "all":
-                from saq.job import Status
-
                 # iter_jobs does set(statuses) — None would crash it there,
                 # so "all" passes the complete saq status list instead.
                 statuses = list(Status)
+            elif status == "incomplete":
+                statuses = [Status.NEW, Status.QUEUED, Status.ACTIVE, Status.ABORTING]
+            elif status == "scheduled":
+                # A delayed job sits in NEW/QUEUED with a future epoch; an
+                # ACTIVE job is already running, so it is never scheduled.
+                # Fetch those statuses and post-filter on the fire time.
+                statuses = [Status.NEW, Status.QUEUED]
             else:
-                statuses = (status,)
+                statuses = [Status(status)]
             broker: Any = getattr(store, "queue", None)
+            now = time.time()
             async for job in broker.iter_jobs(statuses=statuses, batch_size=500):
+                if status == "scheduled":
+                    # Due-now (or already running) jobs are not scheduled.
+                    if (getattr(job, "scheduled", 0) or 0) <= now:
+                        continue
                 # saq's Job.scheduled is absolute epoch SECONDS (its own
                 # docstring) — the same fact dispatch_delayed already encodes.
                 scheduled = getattr(job, "scheduled", 0)

@@ -186,3 +186,94 @@ def test_saq_scheduled_column_renders_epoch_seconds(project, monkeypatch):
     assert result.exit_code == 0, result.output
     expected = dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
     assert expected in _out(result)
+
+
+# Review fix 2 — --status must speak saq's real Status enum; "scheduled"
+# and "incomplete" are CLI concepts the command translates, not broker
+# statuses a filter can match.
+class _Job:
+    def __init__(self, status, function, scheduled=0):
+        self.status = status
+        self.function = function
+        self.attempts = 0
+        self.scheduled = scheduled  # saq: absolute epoch seconds
+        self.kwargs = {}
+
+
+class _FakeBroker:
+    """Filters like the real broker (job.status in set(statuses)) and
+    records exactly what the command asked it to match on."""
+
+    def __init__(self, jobs):
+        self._jobs = jobs
+        self.seen = None
+
+    async def iter_jobs(self, statuses=None, batch_size=100):
+        self.seen = set(statuses or ())
+        for job in self._jobs:
+            if job.status in self.seen:
+                yield job
+
+
+class _RecordingSaqQueue:
+    def __init__(self, jobs):
+        self.queue = _FakeBroker(jobs)
+
+
+def _install_fake(monkeypatch, jobs):
+    store = _RecordingSaqQueue(jobs)
+    monkeypatch.setattr("fastplace.queue.queue", lambda: store)
+    return store.queue
+
+
+def test_saq_status_filter_passes_real_enums(project, monkeypatch):
+    from saq.job import Status
+
+    broker = _install_fake(monkeypatch, [_Job("queued", "ping")])
+    result = runner.invoke(cli_app, ["queue:jobs", "--status", "queued"])
+    assert result.exit_code == 0, result.output
+    assert broker.seen == {Status.QUEUED}
+    assert all(isinstance(s, Status) for s in broker.seen)
+
+
+def test_saq_incomplete_maps_to_unfinished_statuses(project, monkeypatch):
+    from saq.job import Status
+
+    broker = _install_fake(monkeypatch, [_Job("queued", "ping")])
+    result = runner.invoke(cli_app, ["queue:jobs", "--status", "incomplete"])
+    assert result.exit_code == 0, result.output
+    assert broker.seen == {Status.NEW, Status.QUEUED, Status.ACTIVE, Status.ABORTING}
+    assert "ping" in _out(result)
+
+
+def test_saq_scheduled_requests_undone_statuses_never_scheduled(project, monkeypatch):
+    from saq.job import Status
+
+    broker = _install_fake(monkeypatch, [])
+    result = runner.invoke(cli_app, ["queue:jobs", "--status", "scheduled"])
+    assert result.exit_code == 0, result.output
+    # "scheduled" is not a saq Status — the broker must be asked for the
+    # undone statuses, and the epoch post-filter narrows from there.
+    assert broker.seen <= {Status.NEW, Status.QUEUED, Status.ACTIVE}
+    assert "scheduled" not in {str(s) for s in broker.seen}
+
+
+def test_saq_scheduled_filter_keeps_only_future_fire_times(project, monkeypatch):
+    import time
+
+    future = int(time.time()) + 300
+    broker = _install_fake(
+        monkeypatch,
+        [
+            _Job("queued", "later_ping", scheduled=future),
+            _Job("queued", "immediate_ping", scheduled=0),
+            _Job("active", "running_ping", scheduled=future),
+        ],
+    )
+    result = runner.invoke(cli_app, ["queue:jobs", "--status", "scheduled"])
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "later_ping" in out
+    assert "immediate_ping" not in out  # due now — not scheduled
+    assert "running_ping" not in out  # already running — not scheduled
+    assert broker.seen is not None
