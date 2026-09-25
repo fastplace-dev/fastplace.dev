@@ -138,3 +138,62 @@ def test_outbox_missing_log_is_dim_exit_zero(outbox_log):
 
     assert result.exit_code == 0, result.output
     assert "no mail log" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# mail:preview
+# ---------------------------------------------------------------------------
+
+
+def test_preview_applies_default_from_address(tmp_path, monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["mail:preview"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "fastplace@localhost" in plain  # MAIL_FROM_ADDRESS default
+    for field in ("to", "subject", "from"):
+        assert field in plain
+
+
+def test_preview_honors_configured_from_name_and_address(tmp_path, monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MAIL_FROM_ADDRESS", "noreply@corp.test")
+    monkeypatch.setenv("MAIL_FROM_NAME", "Corp Notifier")
+
+    result = runner.invoke(cli_app, ["mail:preview"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "Corp Notifier <noreply@corp.test>" in plain
+
+
+def test_preview_renders_html_body_when_given(tmp_path, monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli_app, ["mail:preview", "--html", "<h1>Big Hello</h1>", "--text", "plain hello"]
+    )
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "Big Hello" in plain
+    assert "plain hello" not in plain  # html wins when given
+
+
+def test_preview_flags_flow_into_the_panel(tmp_path, monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli_app,
+        ["mail:preview", "--to", "ada@example.com", "--subject", "Welcome", "--text", "hi ada"],
+    )
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "ada@example.com" in plain and "Welcome" in plain and "hi ada" in plain

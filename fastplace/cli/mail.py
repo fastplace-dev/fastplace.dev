@@ -69,3 +69,29 @@ def mail_outbox(
             str(msg.get("subject", "—")),
         )
     console.print(table)
+
+
+@mail_app.command("mail:preview")
+def mail_preview(
+    to: str = typer.Option("user@example.com", "--to", help="Recipient address."),
+    subject: str = typer.Option("Test message", "--subject", help="Subject line."),
+    text: str = typer.Option("Hello from fastplace.", "--text", help="Plain-text body."),
+    html: str = typer.Option("", "--html", help="HTML body (rendered instead of --text)."),
+) -> None:
+    """Preview a message with the configured from-address defaults — no transport."""
+    from rich.panel import Panel
+
+    from fastplace.config import config, load_env
+
+    load_env()
+    from_address = str(config("MAIL_FROM_ADDRESS", default="fastplace@localhost"))
+    from_name = str(config("MAIL_FROM_NAME", default="") or "") or None
+    sender = f"{from_name} <{from_address}>" if from_name else from_address
+    body = html or text
+    console.print(
+        Panel(
+            f"[bold]from:[/]    {sender}\n[bold]to:[/]      {to}\n"
+            f"[bold]subject:[/] {subject}\n\n{body}",
+            title="Mail preview",
+        )
+    )
