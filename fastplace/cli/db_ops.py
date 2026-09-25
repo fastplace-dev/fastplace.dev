@@ -5,8 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
 import sys
 import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import IO
+from urllib.parse import urlsplit
 
 import typer
 
@@ -358,3 +363,138 @@ def db_truncate(
     for name in tables:
         table.add_row(escape(name))
     console.print(table)
+
+
+def _unique_path(path: Path) -> Path:
+    """First non-existent path: stem, stem-2, stem-3, … (same-second safe)."""
+    if not path.exists():
+        return path
+    stem, suffix = path.stem, path.suffix
+    parent = path.parent
+    counter = 2
+    while True:
+        candidate = parent / f"{stem}-{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def _backup_path(backups_dir: Path, driver: str, ext: str) -> Path:
+    """Timestamped, collision-safe destination: ``<driver>-YYYYMMDD-HHMMSS[.<ext>]``."""
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    name = f"{driver}-{stamp}" + (f".{ext}" if ext else "")
+    return _unique_path(backups_dir / name)
+
+
+def _driver_family(url: str) -> str:
+    """Connection family from the URL scheme: sqlite, postgresql, mysql, …
+
+    The scheme — already canonicalized by ``normalize_database_url`` — drives
+    db:export's branching (not ``engine.dialect.name``): the dump clients must
+    run without their python driver installed, and mongodb connections never
+    get a SQLAlchemy dialect at all.
+    """
+    return url.partition("://")[0].split("+", 1)[0].lower()
+
+
+def _base_uri(url: str) -> str:
+    """Strip the python driver suffix so pg_dump's libpq accepts the URI."""
+    scheme, separator, rest = url.partition("://")
+    if not separator:
+        return url
+    return f"{scheme.split('+', 1)[0]}://{rest}"
+
+
+def _mysql_argv(url: str) -> list[str]:
+    """mysqldump-compatible args from a SQLAlchemy URL.
+
+    ``--password=`` only when the URL carries one — a bare ``-p`` would make
+    mysqldump prompt interactively mid-backup.
+    """
+    parts = urlsplit(url)
+    argv = ["--host", parts.hostname or "localhost"]
+    if parts.port:
+        argv += ["--port", str(parts.port)]
+    if parts.username:
+        argv += ["--user", parts.username]
+    if parts.password:
+        argv.append(f"--password={parts.password}")
+    argv.append(parts.path.lstrip("/"))
+    return argv
+
+
+def _dir_size(root: Path) -> int:
+    """Bytes under a directory tree (0 when absent — mongodump's --out dir)."""
+    if not root.is_dir():
+        return 0
+    return sum(item.stat().st_size for item in root.rglob("*") if item.is_file())
+
+
+def _run_dump(argv: list[str], *, stdout: IO[bytes] | None = None) -> None:
+    from fastplace.console import console
+
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=stdout is None,
+            stdout=stdout,
+            stderr=None if stdout is None else subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        console.print(f"[red]'{argv[0]}' not found — install the client or add it to PATH[/]")
+        raise typer.Exit(code=127) from None
+    if completed.returncode != 0:
+        from rich.markup import escape
+
+        stderr = completed.stderr or b""
+        console.print(f"[red]'{argv[0]}' failed[/] — {escape(stderr.decode(errors='replace'))}")
+        raise typer.Exit(code=1)
+
+
+@db_ops_app.command("db:export")
+def db_export() -> None:
+    """Write a timestamped backup of the default database to storage/backups/."""
+    from rich.markup import escape
+
+    from fastplace.console import console
+    from fastplace.db import db
+
+    load_env()
+    backups = Path.cwd() / "storage" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+
+    url = str(db.manager.config_for("default")["url"])
+    family = _driver_family(url)
+
+    if family == "sqlite":
+        dest = _backup_path(backups, "sqlite", "sqlite3")
+        engine = db.manager.engine("default")
+
+        async def _vacuum() -> None:
+            # VACUUM cannot run inside a transaction; the aiosqlite dialect
+            # opens no driver-level BEGIN ahead of a non-DML statement, so
+            # this parameterized exec (no path spliced into the SQL text)
+            # is the one proven path. Disposal keeps pooled connections from
+            # pinning the source file after the backup exists.
+            async with engine.connect() as connection:
+                await connection.exec_driver_sql("VACUUM INTO ?", (str(dest),))
+            await engine.dispose()
+
+        asyncio.run(_vacuum())
+    elif family == "postgresql":
+        dest = _backup_path(backups, "postgresql", "sql")
+        _run_dump(["pg_dump", _base_uri(url), "--file", str(dest)])
+    elif family in ("mysql", "mariadb"):
+        dest = _backup_path(backups, family, "sql")
+        with dest.open("wb") as sink:
+            _run_dump(["mysqldump", *_mysql_argv(url)], stdout=sink)
+    elif family == "mongodb":
+        dest = _backup_path(backups, "mongodb", "")
+        _run_dump(["mongodump", f"--uri={url}", f"--out={dest}"])
+    else:
+        console.print(f"[red]no export strategy for driver '{escape(family)}'[/]")
+        raise typer.Exit(code=1)
+
+    size = dest.stat().st_size if dest.is_file() else _dir_size(dest)
+    console.print(f"[green]exported[/] — {escape(str(dest))} ({size} bytes)")
