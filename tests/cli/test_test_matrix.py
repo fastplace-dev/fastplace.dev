@@ -162,6 +162,10 @@ def test_matrix_keep_skips_teardown_and_prints_url(monkeypatch, no_sleep, driver
     result = runner.invoke(cli_app, ["test:matrix", "--backends", "postgres", "--keep"])
     assert result.exit_code == 0, result.stdout
     assert not [c for c in fake.calls if c[0:2] == ["docker", "rm"]]
+    kept_line = [line for line in _out(result).splitlines() if "kept" in line]
+    assert (
+        kept_line and "fastplace-matrix-" in kept_line[0]
+    )  # name + URL, or nothing to exec against
     assert "49153" in _out(result)  # connection URL surfaced for the kept container
 
 
@@ -208,7 +212,7 @@ def test_matrix_unexpected_error_still_cleans_up(monkeypatch, no_sleep, drivers_
     assert [c for c in fake.calls if c[0:2] == ["docker", "rm"]]  # container removed despite crash
 
 
-def test_matrix_backends_flag_without_names_errors(monkeypatch):
+def test_matrix_backends_flag_without_names_errors():
     result = runner.invoke(cli_app, ["test:matrix", "--backends", ",,"])
     assert result.exit_code == 1
     out = _out(result)

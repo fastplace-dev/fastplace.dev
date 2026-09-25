@@ -192,7 +192,9 @@ def _run_backend(root: Path, backend: str, spec: dict, keep: bool, extra_args: l
         # parse, pgvector connect refused) and Ctrl-C (KeyboardInterrupt
         # propagates after this runs) — so no fastplace-matrix-* container
         # is ever orphaned; --keep deliberately opts out.
-        if cid and not keep:
+        if cid and keep:
+            console.print(f"[dim]{backend} container kept: {name} ({url})[/]")
+        elif cid:
             _subprocess_run(["docker", "rm", "-f", cid], capture_output=True)
 
 
