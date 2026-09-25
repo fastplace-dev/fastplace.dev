@@ -248,3 +248,67 @@ def auth_2fa_disable(
         f"two_factor_confirmed_at for user {user_id}"
     )
     console.print(f"revoked {remembered} remember token(s); destroyed {destroyed} session(s)")
+
+
+@auth_ops_app.command("auth:reset-link")
+def auth_reset_link(
+    user_or_email: str,
+    send: bool = typer.Option(False, "--send", help="Also dispatch the reset mail."),
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Reissue a password-reset link (the prior link dies immediately)."""
+    import asyncio
+    from urllib.parse import quote
+
+    from fastplace.config import config, load_env
+
+    load_env()
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force
+        or typer.confirm(
+            "Reissue the password reset link? The previously issued link stops working immediately."
+        )
+    ):
+        console.print("[red]aborted[/] — the existing reset link is untouched")
+        raise typer.Exit(code=1)
+
+    async def _run() -> str:
+        from fastplace.auth.passwords import token_store
+        from fastplace.cli.provisioning import _accounts_repository
+        from fastplace.http import build_absolute_url
+        from fastplace.mail.notifications import reset_password_message
+
+        try:
+            repository = _accounts_repository()
+        except ImportError:
+            console.print("[red]no accounts module found[/] — run [bold]make:auth[/] first")
+            raise typer.Exit(code=1) from None
+        if "@" in user_or_email:
+            user = await repository.find_by_email(user_or_email)
+        else:
+            try:
+                user_id = int(user_or_email)
+            except ValueError:
+                console.print(f"[red]{user_or_email!r} is not a valid user id or email[/]")
+                raise typer.Exit(code=1) from None
+            user = await repository.find_by_id(user_id)
+        if user is None:
+            console.print(f"[red]no user matching {user_or_email}[/]")
+            raise typer.Exit(code=1)
+
+        raw = await token_store().issue(user.email)
+        url = build_absolute_url(f"/reset-password/{raw}?email={quote(user.email, safe='')}")
+        if send:
+            from fastplace.mail import Mail
+
+            await Mail.to(user.email).send(reset_password_message(user.email, url))
+        return url
+
+    url = asyncio.run(_run())
+    console.print(f"[bold]{url}[/]")
+    console.print("[dim]any previously issued reset link for this address is now invalid[/]")
+    if send:
+        console.print(
+            "[dim]reset mail dispatched through the active transport "
+            "(queued when smtp+saq — run queue:work)[/]"
+        )

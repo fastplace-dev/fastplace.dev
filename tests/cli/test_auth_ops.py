@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from types import SimpleNamespace
 
 import pytest
 from _isolation import isolate_project_state  # noqa: F401  (autouse: db + app.* isolation)
@@ -33,12 +34,15 @@ def _hermetic_environ():
 
 @pytest.fixture(autouse=True)
 def _fresh_auth_ops_state():
-    """PAT-store singleton never leaks engines between tests."""
+    """PAT-store and reset-token-store singletons never leak engines between tests."""
+    from fastplace.auth.passwords import reset_token_store
     from fastplace.auth.tokens import reset_pat_store
 
     reset_pat_store()
+    reset_token_store()
     yield
     reset_pat_store()
+    reset_token_store()
 
 
 @pytest.fixture()
@@ -487,3 +491,114 @@ def test_2fa_disable_unknown_user_exits_one(project, monkeypatch, two_factor_sea
 
     assert result.exit_code == 1
     assert "no user with id 5" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# auth:reset-link — reissue with one-live-token semantics
+# ---------------------------------------------------------------------------
+
+
+class FakeResetRepository:
+    """find_by_id / find_by_email seam — ids 5 and email ada@example.com."""
+
+    def __init__(self) -> None:
+        self.user = SimpleNamespace(id=5, email="ada@example.com")
+
+    async def find_by_id(self, user_id):
+        return self.user if user_id == 5 else None
+
+    async def find_by_email(self, email):
+        return self.user if email == "ada@example.com" else None
+
+
+@pytest.fixture()
+def reset_seam(monkeypatch):
+    import fastplace.cli.provisioning as provisioning
+
+    repository = FakeResetRepository()
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: repository)
+    return repository
+
+
+def _live_reset_rows() -> int:
+    from sqlalchemy import func, select
+
+    from fastplace.auth.passwords import password_reset_tokens, token_store
+
+    async def _count() -> int:
+        store = token_store()
+        # The guard-abort path never issues, so the table may not exist yet —
+        # _ensure_table is idempotent (checkfirst) and makes count() safe.
+        await store._ensure_table()
+        async with store._engine().connect() as conn:
+            return int(
+                (
+                    await conn.execute(select(func.count()).select_from(password_reset_tokens))
+                ).scalar()
+            )
+
+    return asyncio.run(_count())
+
+
+def test_reset_link_by_id_prints_url_and_invalidation_note(project, reset_seam):
+    result = runner.invoke(cli_app, ["auth:reset-link", "5"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "/reset-password/" in plain
+    assert "email=ada%40example.com" in plain
+    assert "previously issued reset link" in plain and "invalid" in plain
+
+
+def test_reset_link_by_email_resolves_the_same_user(project, reset_seam):
+    result = runner.invoke(cli_app, ["auth:reset-link", "ada@example.com"])
+
+    assert result.exit_code == 0, result.output
+    assert "/reset-password/" in ANSI_RE.sub("", result.output)
+
+
+def test_reset_link_reissue_invalidates_prior_link(project, reset_seam):
+    """Review Focus #5: two runs leave exactly ONE live token row."""
+    assert runner.invoke(cli_app, ["auth:reset-link", "5"]).exit_code == 0
+    assert runner.invoke(cli_app, ["auth:reset-link", "5"]).exit_code == 0
+
+    assert _live_reset_rows() == 1
+
+
+def test_reset_link_send_dispatches_through_mail_facade(project, monkeypatch, reset_seam):
+    monkeypatch.setenv("MAIL_DRIVER", "memory")
+
+    result = runner.invoke(cli_app, ["auth:reset-link", "5", "--send"])
+
+    assert result.exit_code == 0, result.output
+    from fastplace.mail import mail_outbox
+
+    outbox = mail_outbox()
+    assert len(outbox) == 1
+    assert outbox[0].to == "ada@example.com"
+    plain = ANSI_RE.sub("", result.output)
+    assert "dispatched" in plain  # the side effect is stated
+
+
+def test_reset_link_guard_blocks_in_production(project, monkeypatch, reset_seam):
+    monkeypatch.setenv("APP_ENV", "production")
+
+    result = runner.invoke(cli_app, ["auth:reset-link", "5"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "aborted" in ANSI_RE.sub("", result.output)
+    assert _live_reset_rows() == 0  # nothing was issued
+
+
+def test_reset_link_unknown_user_exits_one(project, reset_seam):
+    result = runner.invoke(cli_app, ["auth:reset-link", "999"])
+
+    assert result.exit_code == 1
+    assert "999" in ANSI_RE.sub("", result.output)
+
+
+def test_reset_link_non_numeric_non_email_exits_one(project, reset_seam):
+    result = runner.invoke(cli_app, ["auth:reset-link", "not-an-email"])
+
+    assert result.exit_code == 1
+    assert "user id or email" in ANSI_RE.sub("", result.output)
