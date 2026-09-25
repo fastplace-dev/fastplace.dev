@@ -332,3 +332,27 @@ def test_chat_stream_prints_deltas_then_done(tmp_path, monkeypatch):
     plain = ANSI_RE.sub("", result.output)
     assert "hello" in plain  # both delta tokens printed inline
     assert "done" in plain
+
+
+# ---------------------------------------------------------------------------
+# ai:tool:show
+# ---------------------------------------------------------------------------
+
+
+def test_tool_show_prints_schema_and_validation_fields(tools_project, park_project_modules):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    result = runner.invoke(cli_app, ["ai:tool:show", "echo"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    # provider wire schema (pretty JSON from spec.to_openai())
+    assert '"function"' in plain and '"echo"' in plain
+    assert "Echo the text back" in plain  # description rides the schema
+    # validation model fields
+    assert "required" in plain and "int" in plain  # column header + times' type
+
+
+def test_tool_show_unknown_tool_exits_one(tools_project, park_project_modules):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    result = runner.invoke(cli_app, ["ai:tool:show", "teapot"])
+
+    assert result.exit_code == 1
+    assert "teapot" in ANSI_RE.sub("", result.output)

@@ -134,3 +134,41 @@ def ai_chat(
         console.print(f"[red]{type(exc).__name__}:[/] {exc}")
         raise typer.Exit(code=1) from exc
     console.print(reply)
+
+
+@ai_ops_app.command("ai:tool:show")
+def ai_tool_show(name: str) -> None:
+    """Show one tool's provider wire schema and its validation model."""
+    import json
+
+    from fastplace.config import load_env
+
+    load_env()
+    from fastplace.cli.system import _project_root
+
+    root = _project_root()
+    from fastplace.ai import import_tools, tool_registry
+    from fastplace.ai.tool import args_model
+
+    import_tools(root)
+    spec = tool_registry.get(name)
+    if spec is None:
+        console.print(f"[red]no tool named '{name}'[/]")
+        raise typer.Exit(code=1)
+
+    console.print_json(json.dumps(spec.to_openai()))
+    model = args_model(spec)
+    required = [
+        field_name
+        for field_name, field in model.model_fields.items()
+        if field.is_required()
+    ]
+    from rich.table import Table
+
+    table = Table(title=f"Validation model — {name}")
+    for column in ("field", "type", "required"):
+        table.add_column(column)
+    for field_name, field in model.model_fields.items():
+        annotation = getattr(field.annotation, "__name__", str(field.annotation))
+        table.add_row(field_name, annotation, "yes" if field_name in required else "no")
+    console.print(table)
