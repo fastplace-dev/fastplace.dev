@@ -182,12 +182,19 @@ def cache_gc(
             from fastplace.cache import _cache_table
             from fastplace.db import db
 
-            # A first-run project has no cache table yet; the non-dry path
-            # self-heals via purge_expired()'s own _ensure_table(), so the
-            # count SELECT must not skip it either (idempotent via _ensured).
-            await store._ensure_table()
+            # A first-run project has no cache table yet. The real path
+            # self-heals via purge_expired()'s own _ensure_table(); the
+            # dry-run must not — creating schema is a write, exactly what
+            # --dry-run promises not to do. Check existence read-only and
+            # count zero when the table is absent.
             engine = db.manager.engine("default")
             async with engine.connect() as connection:
+                from sqlalchemy import inspect as sa_inspect
+
+                if not await connection.run_sync(
+                    lambda sync_conn: sa_inspect(sync_conn).has_table(_cache_table.name)
+                ):
+                    return 0
                 rows = await connection.execute(
                     select(_cache_table.c.key).where(
                         _cache_table.c.expires_at.is_not(None),

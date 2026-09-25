@@ -85,14 +85,15 @@ def test_live_rows_survive(database_cache):
     assert asyncio.run(database_cache.get("live")) == "y"
 
 
-def test_dry_run_on_virgin_database_self_heals(tmp_path, monkeypatch):
-    """--dry-run must not crash before the cache table exists.
+def test_dry_run_on_virgin_database_writes_nothing(tmp_path, monkeypatch):
+    """--dry-run must neither crash nor write on a first-run project.
 
-    The non-dry path self-heals via purge_expired()'s _ensure_table(); the
-    dry-run count SELECT must do the same on a first-run project instead of
-    raising OperationalError (no such table: cache). No seeding here — the
-    existing database_cache fixture's store.put() is what created the table
-    and hid this gap.
+    A first-run project has no cache table; the dry-run count must report
+    zero without creating it — creating schema is a write, exactly what
+    --dry-run promises not to do. The real path's purge_expired() still
+    self-heals via its own _ensure_table(). No seeding here: the
+    database_cache fixture's store.put() is what creates the table and
+    would hide this gap.
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("APP_ENV", "testing")
@@ -101,6 +102,23 @@ def test_dry_run_on_virgin_database_self_heals(tmp_path, monkeypatch):
     result = runner.invoke(cli_app, ["cache:gc", "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "Would purge 0 expired row(s)." in _out(result)
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from fastplace.cache import _cache_table
+    from fastplace.db import db
+
+    def _cache_table_exists() -> bool:
+        async def _check() -> bool:
+            engine = db.manager.engine("default")
+            async with engine.connect() as connection:
+                return await connection.run_sync(
+                    lambda sync_conn: sa_inspect(sync_conn).has_table(_cache_table.name)
+                )
+
+        return asyncio.run(_check())
+
+    assert not _cache_table_exists()
 
 
 def test_memory_driver_is_a_no_op(tmp_path, monkeypatch):
