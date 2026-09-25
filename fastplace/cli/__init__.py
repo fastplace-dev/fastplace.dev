@@ -141,6 +141,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
         app.add_typer(db_ops_app, name="")
     except ImportError:
         pass
+    try:
+        from fastplace.cli.search_cmd import search_cmd_app
+
+        app.add_typer(search_cmd_app, name="")
+    except ImportError:
+        pass
 
 
 _register_phase_commands()
