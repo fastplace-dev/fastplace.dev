@@ -50,16 +50,31 @@ def list_commands(
         for name, _ in items:
             console.print(name)
         return
-    from rich.table import Table
 
-    table = Table(title="Fastplace commands", show_lines=False)
-    table.add_column("namespace", style="dim")
-    table.add_column("command", style="bold")
-    table.add_column("description")
+    # Group by namespace (colon prefix; un-namespaced commands land in
+    # "available"), preserving the alphabetical order iter_command_names
+    # already established within each group.
+    groups: dict[str, list[tuple[str, str]]] = {}
     for name, help_text in items:
         namespace = name.split(":", 1)[0] if ":" in name else "available"
-        command = name.split(":", 1)[1] if ":" in name else name
-        table.add_row(namespace, command, help_text)
+        groups.setdefault(namespace, []).append((name, help_text))
+    ordered = sorted(groups.items(), key=lambda group: (group[0] != "available", group[0]))
+
+    # One borderless two-column table: namespace headers are standalone
+    # rows, commands keep their full `cache:clear` spelling, and the
+    # description column aligns across every section at once.
+    from rich.table import Table
+
+    table = Table(show_header=False, box=None, padding=(0, 2, 0, 2))
+    table.add_column()  # command name (headers render here, styled)
+    table.add_column(style="white")  # description
+    for index, (namespace, commands) in enumerate(ordered):
+        table.add_row(f"[bold yellow]{namespace}[/]", "")
+        for name, help_text in commands:
+            table.add_row(name, help_text)
+        if index < len(ordered) - 1:
+            table.add_row("", "")
+    console.print("[bold]Fastplace commands[/]")
     console.print(table)
 
 

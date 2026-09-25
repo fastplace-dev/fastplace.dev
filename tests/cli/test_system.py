@@ -131,3 +131,42 @@ def test_list_covers_spec_commands():
     assert not missing, f"list --raw missing Tier-2 commands: {missing}"
     missing = [name for name in TIER_3_COMMANDS if name not in names]
     assert not missing, f"list --raw missing Tier-3 commands: {missing}"
+
+
+def _nonblank_lines(result) -> list[str]:
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def test_list_renders_namespace_header_lines():
+    """Each namespace is a standalone section header, not a table column."""
+    result = runner.invoke(cli_app, ["list"])
+    assert result.exit_code == 0
+    lines = _nonblank_lines(result)
+    header = next(i for i, line in enumerate(lines) if line == "cache")
+    # the first command of the section follows its header directly
+    assert lines[header + 1].startswith("cache:")
+
+
+def test_list_shows_full_command_names_under_headers():
+    """artisan-style sections repeat the namespace — `cache:clear`, not bare `clear`."""
+    result = runner.invoke(cli_app, ["list"])
+    assert "cache:clear" in result.stdout
+    assert "db:doctor" in result.stdout
+
+
+def test_list_available_group_first_then_namespaces_alphabetical():
+    """Un-namespaced commands lead (`available`), then `ai` < `auth` < `cache`."""
+    result = runner.invoke(cli_app, ["list"])
+    lines = _nonblank_lines(result)
+    positions = {
+        token: next(i for i, line in enumerate(lines) if line.split(":")[0] == token)
+        for token in ("available", "ai", "auth", "cache")
+    }
+    assert positions["available"] < positions["ai"] < positions["auth"] < positions["cache"]
+
+
+def test_list_header_line_precedes_sections():
+    """The listing opens with a bold `Fastplace commands` banner line."""
+    result = runner.invoke(cli_app, ["list"])
+    lines = _nonblank_lines(result)
+    assert lines[0] == "Fastplace commands"
