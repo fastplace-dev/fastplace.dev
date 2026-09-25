@@ -28,8 +28,9 @@ def ai_tool_run(
 
     root = _project_root()
     from fastplace.ai import import_tools, tool_registry
+    from fastplace.cli.inspect import _import_project_registrations
 
-    import_tools(root)
+    _import_project_registrations(lambda: import_tools(root))
     spec = tool_registry.get(name)
     if spec is None:
         console.print(f"[red]no tool named '{name}'[/]")
@@ -71,7 +72,9 @@ def ai_tool_run(
 @ai_ops_app.command("ai:chat")
 def ai_chat(
     message: str,
-    agent_name: str = typer.Option("", "--agent", help="Project agent factory to use (see ai:agents)."),
+    agent_name: str = typer.Option(
+        "", "--agent", help="Project agent factory to use (see ai:agents)."
+    ),
     model: str = typer.Option("", "--model", help="Override the agent's model."),
     stream: bool = typer.Option(False, "--stream", help="Print the SSE event stream live."),
 ) -> None:
@@ -89,8 +92,9 @@ def ai_chat(
 
         root = _project_root()
         from fastplace.ai import import_agents, registered_agent_factories
+        from fastplace.cli.inspect import _import_project_registrations
 
-        import_agents(root)
+        _import_project_registrations(lambda: import_agents(root))
         factories = {factory.name: factory for factory in registered_agent_factories()}
         factory = factories.get(agent_name)
         if factory is None:
@@ -121,7 +125,12 @@ def ai_chat(
         return failed
 
     if stream:
-        if asyncio.run(_stream_run()):
+        try:
+            failed = asyncio.run(_stream_run())
+        except Exception as exc:  # noqa: BLE001 — provider errors report, not traceback
+            console.print(f"[red]{type(exc).__name__}:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+        if failed:
             raise typer.Exit(code=1)
         return
 
@@ -151,8 +160,9 @@ def ai_tool_show(name: str) -> None:
     root = _project_root()
     from fastplace.ai import import_tools, tool_registry
     from fastplace.ai.tool import args_model
+    from fastplace.cli.inspect import _import_project_registrations
 
-    import_tools(root)
+    _import_project_registrations(lambda: import_tools(root))
     spec = tool_registry.get(name)
     if spec is None:
         console.print(f"[red]no tool named '{name}'[/]")
@@ -161,9 +171,7 @@ def ai_tool_show(name: str) -> None:
     console.print_json(json.dumps(spec.to_openai()))
     model = args_model(spec)
     required = [
-        field_name
-        for field_name, field in model.model_fields.items()
-        if field.is_required()
+        field_name for field_name, field in model.model_fields.items() if field.is_required()
     ]
     from rich.table import Table
 
@@ -186,8 +194,9 @@ def ai_agents() -> None:
 
     root = _project_root()
     from fastplace.ai import import_agents, registered_agent_factories
+    from fastplace.cli.inspect import _import_project_registrations
 
-    import_agents(root)
+    _import_project_registrations(lambda: import_agents(root))
     factories = registered_agent_factories()
     if not factories:
         console.print("[dim]no agent factories in app/ai/agents/[/]")
@@ -201,7 +210,9 @@ def ai_agents() -> None:
     for factory in factories:
         try:
             agent_obj = factory.fn()  # config + tool resolution only — no LLM call
-            table.add_row(factory.name, factory.module, str(agent_obj.model), str(len(agent_obj.tools)))
+            table.add_row(
+                factory.name, factory.module, str(agent_obj.model), str(len(agent_obj.tools))
+            )
         except Exception as exc:  # noqa: BLE001 — one broken factory must not kill the table
             table.add_row(factory.name, factory.module, f"[red]error: {exc}[/]", "—")
     console.print(table)
@@ -287,11 +298,15 @@ def ai_embed(
     mismatched = False
     for name, dims in columns:
         if dims is None:
-            console.print(f"[dim]{check}.{name}: dims not declared on this backend (sqlite/json vectors)[/]")
+            console.print(
+                f"[dim]{check}.{name}: dims not declared on this backend (sqlite/json vectors)[/]"
+            )
         elif dims == len(vector):
             console.print(f"[green]match[/]   {check}.{name}: {dims}")
         else:
             mismatched = True
-            console.print(f"[red]mismatch[/] {check}.{name}: declared {dims}, embedding returns {len(vector)}")
+            console.print(
+                f"[red]mismatch[/] {check}.{name}: declared {dims}, embedding returns {len(vector)}"
+            )
     if mismatched:
         raise typer.Exit(code=1)

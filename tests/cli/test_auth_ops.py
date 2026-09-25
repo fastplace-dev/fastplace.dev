@@ -422,9 +422,7 @@ def two_factor_seam(monkeypatch):
     user = FakeTwoFactorUser()
     remember = FakeRememberStore()
     sessions = FakeDestroySessionStore()
-    monkeypatch.setattr(
-        provisioning, "_accounts_repository", lambda: FakeTwoFactorRepository(user)
-    )
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: FakeTwoFactorRepository(user))
     monkeypatch.setattr(remember_module, "remember_store", lambda: remember)
     monkeypatch.setattr(session_module, "session_store", lambda config_get=None: sessions)
     return user, remember, sessions
@@ -588,6 +586,62 @@ def test_reset_link_guard_blocks_in_production(project, monkeypatch, reset_seam)
     assert result.exit_code == 1
     assert "aborted" in ANSI_RE.sub("", result.output)
     assert _live_reset_rows() == 0  # nothing was issued
+
+
+# Review fix 1 — --send through the smtp driver is real mail in every
+# environment; the confirmation gate must fire for smtp outside production.
+def test_reset_link_send_smtp_prompts_outside_production(project, monkeypatch, reset_seam):
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+
+    result = runner.invoke(cli_app, ["auth:reset-link", "5", "--send"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "aborted" in ANSI_RE.sub("", result.output)
+    assert _live_reset_rows() == 0  # nothing was issued, nothing was sent
+
+
+# Review fix 2a — APP_URL must be validated BEFORE the token is issued: a
+# link minted against an unresolvable origin would kill the prior link and
+# hand the operator a URL that cannot work.
+def test_reset_link_without_app_url_fails_before_issuing(project, monkeypatch, reset_seam):
+    import fastplace.config as config_module
+
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.delenv("APP_URL", raising=False)
+    # Bind a config-less tmp root via monkeypatch so teardown restores the
+    # real singleton — constructing Config directly, NOT reset_config(),
+    # which rebinds the module attr before setattr can snapshot the original.
+    monkeypatch.setattr(config_module, "_default_config", config_module.Config(project))
+
+    result = runner.invoke(cli_app, ["auth:reset-link", "5"])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "APP_URL is not set" in plain
+    assert _live_reset_rows() == 0  # pre-mutation: no token was issued
+
+
+# Review fix 2b — a runtime failure after the guard must print one clean
+# red line, never a traceback (parity with the ai:chat non-stream path).
+def test_reset_link_runtime_failure_reports_cleanly(project, monkeypatch, reset_seam):
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("APP_URL", "https://app.example.com")
+
+    class _BrokenStore:
+        def __getattr__(self, name):
+            raise RuntimeError("token store exploded")
+
+    import fastplace.auth.passwords as passwords_module
+
+    monkeypatch.setattr(passwords_module, "token_store", lambda: _BrokenStore())
+
+    result = runner.invoke(cli_app, ["auth:reset-link", "5"])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "token store exploded" in plain
+    assert "Traceback" not in plain
 
 
 def test_reset_link_unknown_user_exits_one(project, reset_seam):

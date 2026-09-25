@@ -306,6 +306,32 @@ def test_resend_smtp_force_delivers_rebuilt_message(outbox_log, monkeypatch, del
     assert "payer@example.com" in ANSI_RE.sub("", result.output)
 
 
+# Review fix 1 — the smtp driver sends real mail regardless of APP_ENV, so
+# the confirmation gate must fire for smtp outside production too.
+def test_resend_smtp_driver_prompts_outside_production(outbox_log, monkeypatch, deliver_journal):
+    monkeypatch.delenv("APP_ENV", raising=False)  # local — still real mail via smtp
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    outbox_log.write_text(_line("invoice", to="payer@example.com") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:resend", "1"], input="n\n")
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "aborted" in plain and "real mail" in plain.lower()
+    assert deliver_journal == []  # nothing left the process
+
+
+def test_resend_smtp_local_force_delivers(outbox_log, monkeypatch, deliver_journal):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    outbox_log.write_text(_line("invoice", to="payer@example.com") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:resend", "1", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert len(deliver_journal) == 1
+
+
 def test_resend_missing_line_exits_one(outbox_log, monkeypatch):
     monkeypatch.setenv("MAIL_DRIVER", "log")
     outbox_log.write_text(_line("only") + "\n")

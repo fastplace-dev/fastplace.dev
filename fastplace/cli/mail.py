@@ -160,9 +160,11 @@ def mail_resend(
         question = f"Resend '{subject}' to {recipient}? Real mail will be sent."
     else:
         question = f"Replay logged message {line} through the active transport?"
-    if str(config("APP_ENV", default="production")).lower() == "production" and not (
-        force or typer.confirm(question)
-    ):
+    # The smtp driver sends real mail in every environment, so it gates the
+    # confirmation alongside production — local must not mean silent sends.
+    if (
+        driver == "smtp" or str(config("APP_ENV", default="production")).lower() == "production"
+    ) and not (force or typer.confirm(question)):
         console.print("[red]aborted[/] — nothing was sent")
         raise typer.Exit(code=1)
 

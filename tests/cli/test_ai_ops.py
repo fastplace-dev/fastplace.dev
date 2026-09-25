@@ -94,9 +94,7 @@ def tools_project(tmp_path, monkeypatch):
 
 
 def test_tool_run_executes_sync_tool_and_prints_json(tools_project, park_project_modules):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
-    result = runner.invoke(
-        cli_app, ["ai:tool:run", "echo", "--args", '{"text": "hi", "times": 2}']
-    )
+    result = runner.invoke(cli_app, ["ai:tool:run", "echo", "--args", '{"text": "hi", "times": 2}'])
 
     assert result.exit_code == 0, result.output
     assert '"hi"' in ANSI_RE.sub("", result.output)
@@ -192,12 +190,12 @@ def scripted(monkeypatch):
     return _install
 
 
-AGENTS_MODULE = '''from fastplace.ai import Agent
+AGENTS_MODULE = """from fastplace.ai import Agent
 
 
 def helper_agent() -> Agent:
     return Agent(model="factory-model-x")
-'''
+"""
 
 
 @pytest.fixture()
@@ -339,6 +337,103 @@ def test_chat_stream_prints_deltas_then_done(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# Review fix 3 — a broken project import (name collisions, module-cache
+# churn, broken project code in a reused process) must degrade to the
+# in-process registry view, never crash a read-only listing command.
+def _boom_import(root):
+    raise RuntimeError("project import broken")
+
+
+def test_tool_run_degrades_when_project_import_fails(
+    tools_project,
+    park_project_modules,
+    monkeypatch,  # noqa: F811 — fixture param
+):
+    import fastplace.ai as ai_package
+
+    monkeypatch.setattr(ai_package, "import_tools", _boom_import)
+
+    result = runner.invoke(cli_app, ["ai:tool:run", "echo", "--args", '{"text": "hi"}'])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "project import unavailable" in plain
+    assert "no tool named 'echo'" in plain
+
+
+# Review fix 4 — a provider failure mid-stream must print one clean red
+# line and exit 1, matching the non-stream path.
+def test_chat_stream_provider_failure_exits_one_cleanly(tmp_path, monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    import fastplace.ai.stream as stream_module
+
+    async def _boom_stream(agent, message):
+        raise RuntimeError("stream provider down")
+        yield  # pragma: no cover — makes this an async generator
+
+    monkeypatch.setattr(stream_module, "stream_events", _boom_stream)
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi", "--stream"])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "stream provider down" in plain
+    assert "Traceback" not in plain
+
+
+def test_tool_show_degrades_when_project_import_fails(
+    tools_project,
+    park_project_modules,
+    monkeypatch,  # noqa: F811 — fixture param
+):
+    import fastplace.ai as ai_package
+
+    monkeypatch.setattr(ai_package, "import_tools", _boom_import)
+
+    result = runner.invoke(cli_app, ["ai:tool:show", "echo"])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "project import unavailable" in plain
+    assert "no tool named 'echo'" in plain
+
+
+def test_agents_degrades_when_project_import_fails(
+    agents_project,
+    park_project_modules,
+    monkeypatch,  # noqa: F811 — fixture param
+):
+    import fastplace.ai as ai_package
+
+    monkeypatch.setattr(ai_package, "import_agents", _boom_import)
+
+    result = runner.invoke(cli_app, ["ai:agents"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "project import unavailable" in plain
+    assert "no agent factories" in plain
+
+
+def test_chat_agent_discovery_degrades_when_project_import_fails(
+    agents_project,
+    park_project_modules,
+    monkeypatch,  # noqa: F811 — fixture param
+):
+    import fastplace.ai as ai_package
+
+    monkeypatch.setattr(ai_package, "import_agents", _boom_import)
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi", "--agent", "helper_agent"])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "project import unavailable" in plain
+    assert "no agent named 'helper_agent'" in plain
+
+
 def test_tool_show_prints_schema_and_validation_fields(tools_project, park_project_modules):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
     result = runner.invoke(cli_app, ["ai:tool:show", "echo"])
 
@@ -422,7 +517,7 @@ def embed_stub(monkeypatch):
     return calls
 
 
-VECTOR_MODEL_TEMPLATE = '''from fastplace.orm import Model
+VECTOR_MODEL_TEMPLATE = """from fastplace.orm import Model
 from fastplace.orm import VectorField
 
 
@@ -430,7 +525,7 @@ class Document(Model):
     __tablename__ = "embed_documents_{suffix}"
 
     body: "list[float] | None" = VectorField(dimensions={dims})
-'''
+"""
 
 # NOTE before writing the fixture: confirm the repo's canonical import path for
 # Model/VectorField with `git grep -n 'VectorField' tests/orm | head -5` and
@@ -488,7 +583,9 @@ def test_embed_check_mismatch_exits_one(tmp_path, monkeypatch, park_project_modu
     assert "512" in plain and "1536" in plain  # both sides of the verdict shown
 
 
-def test_embed_check_unknown_class_exits_one(tmp_path, monkeypatch, park_project_modules, embed_stub):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+def test_embed_check_unknown_class_exits_one(
+    tmp_path, monkeypatch, park_project_modules, embed_stub
+):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
     _vector_project(tmp_path, monkeypatch, dims=512, suffix="unknown", url=PG_URL)
 
     result = runner.invoke(cli_app, ["ai:embed", "text", "--check", "Teapot"])
@@ -498,7 +595,10 @@ def test_embed_check_unknown_class_exits_one(tmp_path, monkeypatch, park_project
 
 
 def test_embed_check_sqlite_backend_notes_missing_dims(
-    tmp_path, monkeypatch, park_project_modules, embed_stub  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    tmp_path,
+    monkeypatch,
+    park_project_modules,
+    embed_stub,  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
 ):
     url = f"sqlite+aiosqlite:///{tmp_path}/embed.db"
     _vector_project(tmp_path, monkeypatch, dims=512, suffix="sqlite", url=url)

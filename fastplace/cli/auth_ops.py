@@ -263,7 +263,24 @@ def auth_reset_link(
     from fastplace.config import config, load_env
 
     load_env()
-    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+    # APP_URL must resolve before anything mutates: a link minted against an
+    # empty origin would kill the prior link and be unusable anyway.
+    from fastplace.errors import ConfigurationError
+    from fastplace.http import build_absolute_url
+
+    try:
+        build_absolute_url("/reset-password/")
+    except ConfigurationError:
+        console.print("[red]APP_URL is not set[/] — set it before issuing reset links")
+        raise typer.Exit(code=1) from None
+
+    driver = str(config("MAIL_DRIVER", default="log") or "log").strip().lower()
+    # --send through smtp is real mail in every environment — it gates the
+    # confirmation alongside production, so local never means silent sends.
+    if (
+        (send and driver == "smtp")
+        or str(config("APP_ENV", default="production")).lower() == "production"
+    ) and not (
         force
         or typer.confirm(
             "Reissue the password reset link? The previously issued link stops working immediately."
@@ -275,7 +292,6 @@ def auth_reset_link(
     async def _run() -> str:
         from fastplace.auth.passwords import token_store
         from fastplace.cli.provisioning import _accounts_repository
-        from fastplace.http import build_absolute_url
         from fastplace.mail.notifications import reset_password_message
 
         try:
@@ -304,7 +320,11 @@ def auth_reset_link(
             await Mail.to(user.email).send(reset_password_message(user.email, url))
         return url
 
-    url = asyncio.run(_run())
+    try:
+        url = asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001 — failures report as one red line, not a traceback
+        console.print(f"[red]{type(exc).__name__}:[/] {exc}")
+        raise typer.Exit(code=1) from exc
     console.print(f"[bold]{url}[/]")
     console.print("[dim]any previously issued reset link for this address is now invalid[/]")
     if send:
