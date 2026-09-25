@@ -169,8 +169,8 @@ def test_log_tail_lines_caps_the_backfill(log_project):
 
 def test_log_tail_backfill_never_materializes_the_whole_file(log_project, monkeypatch):
     """The backfill must stream — a tail command that loads the entire log
-    cannot keep memory bounded on a growing file (CLAUDE.md rule 1.4/#16),
-    so any whole-file read is a failure, not just a style issue."""
+    cannot keep memory bounded on a growing file, so any whole-file read is
+    a failure, not just a style issue."""
     logs = log_project / "storage" / "logs"
     (logs / "app.log").write_text("ERROR one\nINFO noise\nERROR two\nERROR three\n")
 

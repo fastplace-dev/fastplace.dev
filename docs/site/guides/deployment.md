@@ -70,6 +70,6 @@ dev and small deployments only.
 
 ## Publishing this framework itself
 
-The framework's own publishing steps (docs site, PyPI, npm) live in
-`docs/deployment-runbook.md` in the repository — they need accounts and
-domains, so they are a runbook rather than a guide.
+The framework's own publishing steps (docs site, PyPI, npm) need accounts
+and domains, so they live in the maintainers' internal runbook rather than
+in this guide.

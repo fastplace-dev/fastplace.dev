@@ -6,7 +6,7 @@ Fastplace is a **modular monolith by default** — one deployable unit composed 
 
 ![Fastplace banner](docs/fastpklace-banner.png)
 
-> **Status:** The framework is implemented (Phases 1–7) and exercised end-to-end by the sample application in this repo. The [Architectural Blueprint](docs/framework_architectural_blueprint.md) remains the single source of truth — read it before any feature work, and update it whenever the architecture changes.
+> **Status:** The framework is implemented (Phases 1–7) and exercised end-to-end by the sample application in this repo. The documentation at [fastplace.dev](https://fastplace.dev) covers the guides; this README is the project overview.
 
 ---
 
@@ -373,7 +373,7 @@ Phase ordering is deliberate: the ORM precedes both presentation edges and the m
 
 ## Documentation
 
-- **[Fastplace Architectural Blueprint](docs/framework_architectural_blueprint.md)** — the complete, authoritative design guide and implementation roadmap. This README summarizes it; the blueprint remains the single source of truth.
+- **[fastplace.dev](https://fastplace.dev)** — guides for getting started, the database layer, authentication, AI, background jobs, testing, deployment, and versioning.
 
 ## Acknowledgements
 

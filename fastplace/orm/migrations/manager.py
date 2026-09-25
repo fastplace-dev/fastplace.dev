@@ -161,8 +161,8 @@ class MigrationsManager:
         return True
 
     # -- batch tracking ------------------------------------------------------------
-    # `migrate:rollback` reverts "the latest migration batch" (blueprint §7 /
-    # CLAUDE.md): every revision applied by the most recent `migrate` run.
+    # `migrate:rollback` reverts "the latest migration batch": every revision
+    # applied by the most recent `migrate` run.
     # Alembic alone does not track invocation batches, so the framework keeps
     # a small bookkeeping table next to alembic_version. All bookkeeping rides
     # the configured async engine — sync drivers (psycopg2/pymysql) are never

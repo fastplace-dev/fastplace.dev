@@ -151,9 +151,8 @@ fastplace run dev              # http://127.0.0.1:8000
 - `database/migrations/` + `database/seeders/` — schema and demo data
 - `config/` — app, database, auth, ai configuration
 
-The framework docs live at https://fastplace.dev; the deployment runbook
-for publishing your own instance is `docs/deployment-runbook.md` in the
-framework repository.
+The framework docs live at https://fastplace.dev — they cover getting
+started, deployment, and everything in between.
 """
 
 

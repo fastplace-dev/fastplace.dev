@@ -342,7 +342,12 @@ def test_pages_workflow_builds_the_site_from_source():
 
 
 def test_deployment_runbook_names_every_external_step():
-    runbook = (ROOT / "docs" / "deployment-runbook.md").read_text()
+    runbook_path = ROOT / "docs" / "deployment-runbook.md"
+    if not runbook_path.exists():
+        # The runbook is maintainer-local (gitignored, never published);
+        # a public clone has nothing to check.
+        pytest.skip("deployment runbook is maintainer-local")
+    runbook = runbook_path.read_text()
     for section in RUNBOOK_SECTIONS:
         assert section in runbook, section
     # The extractor is the runbook's local half — it must be named.

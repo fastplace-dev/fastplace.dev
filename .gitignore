@@ -63,12 +63,15 @@ docs/site/.vitepress/cache/
 # Temporary working files
 commit-message.txt
 
-# Local agent instructions (never published)
+# Local agent instructions and internal tracking docs (never published)
+CLAUDE.md
 docs/framework_architectural_blueprint.md
+docs/deployment-runbook.md
+docs/cli_command_gap_analysis.md
+docs/cli_command_roadmap.md
 docs/superpowers
 docs/status_checklist.md
 /.playwright-mcp/
-CLAUDE.md
 
 # SDD execution scratch (ledger, briefs, review packages)
 .superpowers/

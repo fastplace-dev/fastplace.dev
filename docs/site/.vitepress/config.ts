@@ -4,7 +4,7 @@ import { defineConfig } from "vitepress";
 // under docs/site/; the sidebar mirrors the guides/ directory exactly, so a
 // missing page fails `tests/test_publishing.py` rather than shipping a dead
 // link. Deploy: `npm run docs:build` → .vitepress/dist (see
-// .github/workflows/docs.yml and docs/deployment-runbook.md).
+// .github/workflows/docs.yml).
 const base = process.env.DOCS_BASE || "/";
 
 export default defineConfig({

@@ -1,7 +1,7 @@
 # Docs site — build docs/site (VitePress) and hand the artifact to GitHub
 # Pages. Repo-side config only: activation (Pages source = GitHub Actions,
-# custom domain fastplace.dev) is a one-time user step — see
-# docs/deployment-runbook.md. Never a push-to-any-branch fan-out.
+# custom domain fastplace.dev) is a one-time maintainer step. Never a
+# push-to-any-branch fan-out.
 name: docs
 
 on:
