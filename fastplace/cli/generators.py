@@ -277,6 +277,21 @@ def _module_request_source(name: str) -> str:
     return _MODULE_REQUEST_TEMPLATE.format(doc_name=name, name=name)
 
 
+_MODULE_PAGE_CONTROLLER_TEMPLATE = '''"""{doc_name} bridge page controller."""
+
+from fastplace.http import Controller, Request, render
+
+
+class {name}PageController(Controller):
+    async def index(self, request: Request):
+        return render(request, component="{name}/Index", props={{"items": []}})
+'''
+
+
+def _module_page_controller_source(name: str) -> str:
+    return _MODULE_PAGE_CONTROLLER_TEMPLATE.format(doc_name=name, name=name)
+
+
 _MODULE_ROUTES_TEMPLATE = '''"""{doc_name} module routes — auto-merged at boot (web at root, api under /api/v1)."""
 
 from fastplace.http import Router
@@ -446,6 +461,11 @@ def make_module(
         "--api",
         help="Widen the module controller to CRUD without the create/edit form actions.",
     ),
+    web: bool = typer.Option(
+        False,
+        "--web",
+        help="Also scaffold the bridge page controller, React page and web routes.",
+    ),
     migration: bool = typer.Option(
         False, "--migration", "-m", help="Also autogenerate a migration."
     ),
@@ -521,9 +541,16 @@ def make_module(
         _module_request_source(entity),
         root,
     )
+    if web:
+        _write(
+            http / "controllers" / f"{clean}_page_controller.py",
+            _module_page_controller_source(entity),
+            root,
+        )
+        make_page(name=f"{entity}/Index.tsx")
     _write(
         base / "routes.py",
-        _module_routes_source(entity, clean, api_actions=api_actions, web=False),
+        _module_routes_source(entity, clean, api_actions=api_actions, web=web),
         root,
     )
     if migration:

@@ -164,6 +164,44 @@ def test_resource_flag_scaffolds_full_module_crud(tmp_path, monkeypatch):
     compile(source, "order_controller.py", "exec")
 
 
+def test_web_flag_scaffolds_page_and_web_routes(tmp_path, monkeypatch):
+    """--web adds the bridge page controller, React page and web_routes entry."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--web"])
+
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "app" / "modules" / "order"
+    page_controller = base / "http" / "controllers" / "order_page_controller.py"
+    assert page_controller.is_file()
+    psource = page_controller.read_text()
+    assert "class OrderPageController(Controller):" in psource
+    assert 'component="Order/Index"' in psource
+    compile(psource, str(page_controller), "exec")
+    page = tmp_path / "resources" / "js" / "pages" / "Order" / "Index.tsx"
+    assert page.is_file()
+    routes = (base / "routes.py").read_text()
+    assert "web_routes = Router()" in routes
+    assert 'web_routes.get("/orders", OrderPageController, "index"' in routes
+    compile(routes, str(base / "routes.py"), "exec")
+
+
+def test_web_composes_with_api(tmp_path, monkeypatch):
+    """--api --web -m scaffolds everything in one shot."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'web.sqlite3'}")
+
+    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--api", "--web", "-m"])
+
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "app" / "modules" / "order"
+    assert (base / "http" / "controllers" / "order_controller.py").is_file()
+    assert (base / "http" / "controllers" / "order_page_controller.py").is_file()
+    assert (base / "routes.py").is_file()
+    assert (tmp_path / "resources" / "js" / "pages" / "Order" / "Index.tsx").is_file()
+    assert len(list((tmp_path / "database" / "migrations" / "versions").glob("*.py"))) == 1
+
+
 def test_migration_flag_creates_version(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'mod.sqlite3'}")
