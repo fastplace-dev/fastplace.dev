@@ -621,3 +621,64 @@ def queue_jobs(
     for row in rows:
         table.add_row(*(escape(cell) for cell in row))
     console.print(table)
+
+
+@queue_app.command("queue:show")
+def queue_show(job_id: str = typer.Argument(..., help="Failed-job id.")) -> None:
+    """Show one failed job at full fidelity (full error, registration state)."""
+    import asyncio
+    import json
+
+    from rich.markup import escape
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from fastplace.console import console
+
+    load_env()
+    root = _project_root()
+
+    # The id arrives as a raw string — convert manually so 'abc' is a red
+    # message, never a typer usage error (mirrors queue:forget).
+    try:
+        numeric_id = int(job_id)
+    except ValueError:
+        console.print(
+            f"[red]'{escape(job_id)}' is not a job id[/] — "
+            "expected a number, e.g. fastplace queue:show 3"
+        )
+        raise typer.Exit(code=1) from None
+
+    from fastplace.queue_failures import failed_job_store, reset_failed_job_store
+
+    reset_failed_job_store()
+
+    async def _fetch():
+        return await failed_job_store().get(numeric_id)
+
+    record = asyncio.run(_fetch())
+    if record is None:
+        console.print(f"[red]no failed job #{numeric_id}[/]")
+        raise typer.Exit(code=1)
+
+    # Registration is the repair decision: a handler the code no longer
+    # defines is retried into the same failure, so say so in yellow.
+    from fastplace.queue import import_jobs, jobs
+
+    import_jobs(root)
+    registered = record.name in jobs()
+
+    body = Table(show_header=False, box=None)
+    body.add_column(style="dim")
+    body.add_column()
+    # Every persisted value is data, not markup — escape it all literally.
+    body.add_row("job", escape(str(record.name)))
+    body.add_row("failed at", record.failed_at.isoformat(sep=" ", timespec="seconds"))
+    body.add_row("kwargs", escape(json.dumps(record.kwargs, indent=2)))
+    body.add_row(
+        "handler",
+        "[green]registered[/]" if registered else "[yellow]no longer registered[/]",
+    )
+    console.print(Panel(body, title=f"[red]failed job #{numeric_id}[/]"))
+    console.print(escape(str(record.error)))
+    console.print(f"[cyan]fastplace queue:retry {numeric_id}[/]")
