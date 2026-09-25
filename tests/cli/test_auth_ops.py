@@ -352,3 +352,138 @@ def test_sessions_store_error_exits_one(project, monkeypatch):
 
     assert result.exit_code == 1
     assert "db unreachable" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# auth:2fa-disable — destructive guard + column wipe + login revocation
+# ---------------------------------------------------------------------------
+
+
+class FakeTwoFactorUser:
+    """The scaffolded user's 2FA surface — three columns + save()."""
+
+    def __init__(self, user_id: int = 5, secret: str | None = "enc-secret") -> None:
+        self.id = user_id
+        self.email = "ada@example.com"
+        self.two_factor_secret = secret
+        self.two_factor_recovery_codes = "enc-codes" if secret else None
+        self.two_factor_confirmed_at = 1690000000 if secret else None
+        self.saves = 0
+
+    async def save(self) -> None:
+        self.saves += 1
+
+
+class FakeTwoFactorRepository:
+    def __init__(self, user) -> None:
+        self.user = user
+
+    async def find_by_id(self, user_id):
+        return self.user if self.user.id == user_id else None
+
+
+class FakeRememberStore:
+    def __init__(self) -> None:
+        self.revoked_users: list[int] = []
+
+    async def revoke_all_for_user(self, user_id):
+        self.revoked_users.append(user_id)
+        return 3
+
+
+class FakeDestroySessionStore:
+    def __init__(self) -> None:
+        self.destroyed: list[int] = []
+
+    async def destroy_for_user(self, user_id, *, except_session_id=None):
+        self.destroyed.append(user_id)
+        return 2
+
+
+@pytest.fixture()
+def two_factor_seam(monkeypatch):
+    """Wire repo/remember/session seams; returns (user, remember, sessions).
+
+    Full dotted-path imports on purpose: isolate_project_state's teardown
+    evicts these modules from sys.modules after each test, and the
+    ``from package import module`` form would resolve through the parent
+    package's stale attribute — patching a dead module object while the
+    command re-imports a fresh one. ``import a.b as x`` re-hydrates the
+    sys.modules entry, so fixture and command share one module object.
+    """
+    import fastplace.auth.remember as remember_module
+    import fastplace.cli.provisioning as provisioning
+    import fastplace.http.session as session_module
+
+    user = FakeTwoFactorUser()
+    remember = FakeRememberStore()
+    sessions = FakeDestroySessionStore()
+    monkeypatch.setattr(
+        provisioning, "_accounts_repository", lambda: FakeTwoFactorRepository(user)
+    )
+    monkeypatch.setattr(remember_module, "remember_store", lambda: remember)
+    monkeypatch.setattr(session_module, "session_store", lambda config_get=None: sessions)
+    return user, remember, sessions
+
+
+def test_2fa_disable_guard_blocks_in_production(project, monkeypatch, two_factor_seam):
+    user, remember, sessions = two_factor_seam
+    monkeypatch.setenv("APP_ENV", "production")
+
+    result = runner.invoke(cli_app, ["auth:2fa-disable", "5"], input="n\n")
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "aborted" in plain and "left untouched" in plain
+    assert user.saves == 0 and user.two_factor_secret == "enc-secret"  # nothing cleared
+    assert remember.revoked_users == [] and sessions.destroyed == []
+
+
+def test_2fa_disable_force_clears_columns_and_revokes(project, monkeypatch, two_factor_seam):
+    user, remember, sessions = two_factor_seam
+    monkeypatch.setenv("APP_ENV", "production")
+
+    result = runner.invoke(cli_app, ["auth:2fa-disable", "5", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert user.two_factor_secret is None
+    assert user.two_factor_recovery_codes is None
+    assert user.two_factor_confirmed_at is None
+    assert user.saves == 1
+    assert remember.revoked_users == [5] and sessions.destroyed == [5]
+    plain = ANSI_RE.sub("", result.output)
+    assert "3" in plain and "2" in plain  # both counts reported
+    assert "two_factor_secret" in plain
+
+
+def test_2fa_disable_outside_production_skips_the_prompt(project, two_factor_seam):
+    user, _, _ = two_factor_seam  # APP_ENV unset → local; no stdin needed
+
+    result = runner.invoke(cli_app, ["auth:2fa-disable", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert user.two_factor_secret is None
+
+
+def test_2fa_disable_without_configuration_is_dim(project, monkeypatch, two_factor_seam):
+    user, remember, sessions = two_factor_seam
+    user.two_factor_secret = None
+    user.two_factor_recovery_codes = None
+    user.two_factor_confirmed_at = None
+
+    result = runner.invoke(cli_app, ["auth:2fa-disable", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "no two-factor configuration to clear" in ANSI_RE.sub("", result.output)
+    assert user.saves == 0 and remember.revoked_users == [] and sessions.destroyed == []
+
+
+def test_2fa_disable_unknown_user_exits_one(project, monkeypatch, two_factor_seam):
+    monkeypatch.setattr(
+        two_factor_seam[0], "id", 99, raising=False
+    )  # repo only matches id 5 → 5 is now unknown
+
+    result = runner.invoke(cli_app, ["auth:2fa-disable", "5"])
+
+    assert result.exit_code == 1
+    assert "no user with id 5" in ANSI_RE.sub("", result.output)

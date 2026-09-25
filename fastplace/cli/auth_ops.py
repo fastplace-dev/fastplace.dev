@@ -193,3 +193,58 @@ def auth_sessions(user_id: int) -> None:
             )
         console.print("[dim]ip / user agent are not populated by the middleware yet[/]")
     console.print(table)
+
+
+@auth_ops_app.command("auth:2fa-disable")
+def auth_2fa_disable(
+    user_id: int,
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Disable two-factor auth for a user and revoke their live logins."""
+    import asyncio
+
+    from fastplace.config import config, load_env
+
+    load_env()
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force
+        or typer.confirm(
+            f"Disable two-factor authentication for user {user_id} and revoke their "
+            "sessions? The user will need to re-enable 2FA."
+        )
+    ):
+        console.print("[red]aborted[/] — two-factor configuration left untouched")
+        raise typer.Exit(code=1)
+
+    async def _run() -> tuple[int, int]:
+        from fastplace.auth.remember import remember_store
+        from fastplace.cli.provisioning import _accounts_repository
+        from fastplace.http.session import session_store
+
+        try:
+            repository = _accounts_repository()
+        except ImportError:
+            console.print("[red]no accounts module found[/] — run [bold]make:auth[/] first")
+            raise typer.Exit(code=1) from None
+        user = await repository.find_by_id(user_id)
+        if user is None:
+            console.print(f"[red]no user with id {user_id}[/]")
+            raise typer.Exit(code=1)
+
+        columns = ("two_factor_secret", "two_factor_recovery_codes", "two_factor_confirmed_at")
+        if all(getattr(user, column, None) is None for column in columns):
+            console.print("[dim]no two-factor configuration to clear[/]")
+            raise typer.Exit(code=0)
+        for column in columns:
+            setattr(user, column, None)
+        await user.save()
+        remembered = await remember_store().revoke_all_for_user(user_id)
+        destroyed = await session_store().destroy_for_user(user_id)
+        return remembered, destroyed
+
+    remembered, destroyed = asyncio.run(_run())
+    console.print(
+        "cleared two_factor_secret, two_factor_recovery_codes, "
+        f"two_factor_confirmed_at for user {user_id}"
+    )
+    console.print(f"revoked {remembered} remember token(s); destroyed {destroyed} session(s)")
