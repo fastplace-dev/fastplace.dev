@@ -4,11 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from pathlib import Path
 from typing import Any
 
 import typer
 
 from fastplace.config import config, load_env
+
+
+def _project_root() -> Path:
+    """Nearest ancestor containing asgi.py, or a red exit (schedule.py guard)."""
+    from fastplace.console import console
+
+    candidate = Path.cwd()
+    for directory in (candidate, *candidate.parents):
+        if (directory / "asgi.py").is_file():
+            return directory
+    console.print(
+        "[red]not inside a Fastplace project[/] — run this from a project root "
+        "(the directory containing asgi.py)."
+    )
+    raise typer.Exit(code=1)
+
 
 queue_app = typer.Typer(help="Background queue operations.")
 
@@ -476,3 +493,271 @@ def queue_monitor(
     if breaches:
         raise typer.Exit(code=1)
     console.print(f"[green]✓[/] all queue(s) within --max {max_depth}")
+
+
+@queue_app.command("queue:list")
+def queue_list() -> None:
+    """List every registered job handler discovered in app/jobs/."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    from fastplace.console import console
+    from fastplace.queue import import_jobs, jobs
+
+    load_env()
+    root = _project_root()
+    import_jobs(root)
+    registry = jobs()
+
+    console.print(f"[dim]queue driver:[/] [bold]{escape(str(config('QUEUE_DRIVER', default='memory')))}[/]")
+    if not registry:
+        console.print("[dim]no registered jobs — define handlers with @Job in app/jobs/[/]")
+        return
+
+    table = Table(title="Registered jobs")
+    table.add_column("name", style="bold cyan", no_wrap=True)
+    table.add_column("module")
+    table.add_column("signature")
+    # no_wrap keeps a one-line docstring on one line — a folded description
+    # would split the sentence across cells (the signature may fold instead).
+    table.add_column("description", style="dim", no_wrap=True)
+    for name in sorted(registry):
+        entry = registry[name]
+        doc = (inspect.getdoc(entry.fn) or "").strip().splitlines()
+        table.add_row(
+            escape(name),
+            escape(entry.fn.__module__),
+            escape(str(inspect.signature(entry.fn))),
+            escape(doc[0]) if doc else "[dim]—[/]",
+        )
+    console.print(table)
+
+
+@queue_app.command("queue:jobs")
+def queue_jobs(
+    status: str = typer.Option(
+        "all", "--status", help="queued | active | scheduled | incomplete | all"
+    ),
+) -> None:
+    """List jobs currently on the active queue driver."""
+    import asyncio
+    import datetime as dt
+    import json
+    import time
+
+    from rich.markup import escape
+    from rich.table import Table
+
+    from fastplace.config import load_env
+    from fastplace.console import console
+
+    # The factory import is the test seam: patching fastplace.queue.queue
+    # swaps the store this command reads, whatever the env says.
+    from fastplace.queue import import_jobs
+    from fastplace.queue import queue as queue_factory
+
+    load_env()
+    root = _project_root()
+    import_jobs(root)
+
+    if status not in ("queued", "active", "scheduled", "incomplete", "all"):
+        console.print(
+            f"[red]unknown status '{escape(status)}'[/] — "
+            "queued | active | scheduled | incomplete | all"
+        )
+        raise typer.Exit(code=1)
+
+    async def _rows() -> list[tuple[str, str, str, str, str]]:
+        store = queue_factory()
+        rows: list[tuple[str, str, str, str, str]] = []
+        # Driver detection inspects the store, not the env: the memory
+        # driver carries its in-process pending deque; a saq store pages
+        # the broker instead.
+        pending = getattr(store, "pending", None)
+        if pending is not None:  # memory driver — every row is 'queued'
+            for entry in list(pending):
+                if status in ("all", "queued", "incomplete"):
+                    rows.append(("queued", entry.name, "-", "-", json.dumps(entry.kwargs)))
+        else:  # saq driver
+            from saq.job import Status
+
+            # saq knows new/queued/active/aborting/aborted/failed/complete.
+            # "scheduled" and "incomplete" are CLI concepts translated here:
+            # passing them through raw makes the broker filter match nothing.
+            statuses: Any
+            if status == "all":
+                # iter_jobs does set(statuses) — None would crash it there,
+                # so "all" passes the complete saq status list instead.
+                statuses = list(Status)
+            elif status == "incomplete":
+                statuses = [Status.NEW, Status.QUEUED, Status.ACTIVE, Status.ABORTING]
+            elif status == "scheduled":
+                # A delayed job sits in NEW/QUEUED with a future epoch; an
+                # ACTIVE job is already running, so it is never scheduled.
+                # Fetch those statuses and post-filter on the fire time.
+                statuses = [Status.NEW, Status.QUEUED]
+            else:
+                statuses = [Status(status)]
+            broker: Any = getattr(store, "queue", None)
+            now = time.time()
+            async for job in broker.iter_jobs(statuses=statuses, batch_size=500):
+                if status == "scheduled":
+                    # Due-now (or already running) jobs are not scheduled.
+                    if (getattr(job, "scheduled", 0) or 0) <= now:
+                        continue
+                # saq's Job.scheduled is absolute epoch SECONDS (its own
+                # docstring) — the same fact dispatch_delayed already encodes.
+                scheduled = getattr(job, "scheduled", 0)
+                when = (
+                    dt.datetime.fromtimestamp(scheduled).strftime("%Y-%m-%d %H:%M:%S")
+                    if scheduled
+                    else "-"
+                )
+                rows.append(
+                    (
+                        str(getattr(job, "status", "-")),
+                        str(job.function),
+                        str(getattr(job, "attempts", "-")),
+                        when,
+                        json.dumps(job.kwargs)[:120],
+                    )
+                )
+        return rows
+
+    rows = asyncio.run(_rows())
+    if not rows:
+        console.print("[dim]no jobs[/]")
+        return
+    table = Table(title="Queue jobs")
+    table.add_column("status")
+    table.add_column("function", style="cyan", no_wrap=True)
+    table.add_column("attempts", justify="right")
+    table.add_column("scheduled for")
+    table.add_column("kwargs", style="dim")
+    # Job payloads are data, not markup — a bracket tag in a name or kwargs
+    # must render literally, never style the cell it lands in.
+    for row in rows:
+        table.add_row(*(escape(cell) for cell in row))
+    console.print(table)
+
+
+@queue_app.command("queue:show")
+def queue_show(job_id: str = typer.Argument(..., help="Failed-job id.")) -> None:
+    """Show one failed job at full fidelity (full error, registration state)."""
+    import asyncio
+    import json
+
+    from rich.markup import escape
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from fastplace.console import console
+
+    load_env()
+    root = _project_root()
+
+    # The id arrives as a raw string — convert manually so 'abc' is a red
+    # message, never a typer usage error (mirrors queue:forget).
+    try:
+        numeric_id = int(job_id)
+    except ValueError:
+        console.print(
+            f"[red]'{escape(job_id)}' is not a job id[/] — "
+            "expected a number, e.g. fastplace queue:show 3"
+        )
+        raise typer.Exit(code=1) from None
+
+    from fastplace.queue_failures import failed_job_store, reset_failed_job_store
+
+    reset_failed_job_store()
+
+    async def _fetch():
+        return await failed_job_store().get(numeric_id)
+
+    record = asyncio.run(_fetch())
+    if record is None:
+        console.print(f"[red]no failed job #{numeric_id}[/]")
+        raise typer.Exit(code=1)
+
+    # Registration is the repair decision: a handler the code no longer
+    # defines is retried into the same failure, so say so in yellow.
+    from fastplace.queue import import_jobs, jobs
+
+    import_jobs(root)
+    registered = record.name in jobs()
+
+    body = Table(show_header=False, box=None)
+    body.add_column(style="dim")
+    body.add_column()
+    # Every persisted value is data, not markup — escape it all literally.
+    body.add_row("job", escape(str(record.name)))
+    body.add_row("failed at", record.failed_at.isoformat(sep=" ", timespec="seconds"))
+    body.add_row("kwargs", escape(json.dumps(record.kwargs, indent=2)))
+    body.add_row(
+        "handler",
+        "[green]registered[/]" if registered else "[yellow]no longer registered[/]",
+    )
+    console.print(Panel(body, title=f"[red]failed job #{numeric_id}[/]"))
+    console.print(escape(str(record.error)))
+    console.print(f"[cyan]fastplace queue:retry {numeric_id}[/]")
+
+
+@queue_app.command("queue:dispatch")
+def queue_dispatch(
+    name: str = typer.Argument(..., help="Registered job name."),
+    kwargs_json: str = typer.Option("{}", "--kwargs", help="JSON object of handler kwargs."),
+    delay: float = typer.Option(0.0, "--delay", help="Seconds to wait before the job runs."),
+) -> None:
+    """Enqueue one registered job without running it now."""
+    import asyncio
+    import json
+
+    from rich.markup import escape
+
+    from fastplace.console import console
+    from fastplace.queue import import_jobs, jobs
+    from fastplace.queue import queue as queue_factory
+
+    load_env()
+    root = _project_root()
+    import_jobs(root)
+    if name not in jobs():
+        console.print(
+            f"[red]unknown job '{escape(name)}'[/] — see [cyan]fastplace queue:list[/]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = json.loads(kwargs_json)
+    except ValueError as exc:
+        console.print(f"[red]invalid --kwargs JSON[/] — {escape(str(exc))}")
+        raise typer.Exit(code=1) from None
+    if not isinstance(parsed, dict):
+        console.print("[red]--kwargs must be a JSON object[/] of handler kwargs")
+        raise typer.Exit(code=1)
+
+    # The factory import is the test seam: patching fastplace.queue.queue
+    # swaps the store this command dispatches to, whatever the env says.
+    store: Any = queue_factory()
+
+    async def _run() -> None:
+        # Driver detection inspects the store, not the env (mirrors
+        # queue:jobs): the memory driver carries its in-process pending
+        # deque, a saq store pages the broker instead.
+        is_memory = hasattr(store, "pending")
+        if delay > 0:
+            if is_memory:
+                # Nothing ever comes back to run a queued job on this
+                # driver — an "in 5s" enqueue would silently never fire,
+                # so refuse before anything lands on the queue.
+                console.print(
+                    "[red]the memory driver cannot schedule delayed jobs[/] — use the saq driver"
+                )
+                raise typer.Exit(code=1)
+            await store.dispatch_delayed(name, kwargs=parsed, delay=delay)
+            return
+        await store.dispatch(name, **parsed)
+
+    asyncio.run(_run())
+    suffix = "" if delay <= 0 else f" (in {delay}s)"
+    console.print(f"[green]Dispatched '{escape(name)}'[/]{suffix}")

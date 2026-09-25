@@ -116,3 +116,49 @@ class TestDatabaseCache:
 
         with pytest.raises(FastplaceError, match="datetime"):
             await DatabaseCache().put("when", datetime.datetime.now(tz=datetime.UTC))
+
+    async def test_purge_expired_removes_only_expired_rows(self):
+        # The lazy sweep in _lookup only fires on touched keys — purge_expired
+        # must clear the expired row and leave the live one untouched.
+        from sqlalchemy import update
+
+        from fastplace.cache import _cache_table
+        from fastplace.db import db
+
+        cache = DatabaseCache()
+        await cache.put("dead", "x", ttl=60)
+        await cache.put("live", "y", ttl=60)
+
+        # Force one row into the past without sleeping (expires_at is unix seconds).
+        engine = db.manager.engine("default")
+        async with engine.begin() as conn:
+            await conn.execute(
+                update(_cache_table)
+                .where(_cache_table.c.key == cache._key("dead"))
+                .values(expires_at=1)
+            )
+
+        purged = await cache.purge_expired()
+
+        assert purged == 1
+        assert await cache.get("dead") is None
+        assert await cache.get("live") == "y"
+
+    async def test_purge_expired_with_injected_now(self):
+        # now=wall clock + 600 is past the ttl=60 deadline but inside the
+        # ttl=3600 one — the injected clock is the threshold, not time.time().
+        import time
+
+        cache = DatabaseCache()
+        await cache.put("gone", "x", ttl=60)
+        await cache.put("kept", "y", ttl=3600)
+
+        purged = await cache.purge_expired(now=int(time.time()) + 600)
+
+        assert purged == 1
+        assert await cache.get("gone") is None
+        assert await cache.get("kept") == "y"
+
+    async def test_purge_expired_empty_table_returns_zero(self):
+        cache = DatabaseCache()
+        assert await cache.purge_expired() == 0
