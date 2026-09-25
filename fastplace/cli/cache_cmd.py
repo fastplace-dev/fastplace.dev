@@ -237,3 +237,46 @@ def cache_get(key: str = typer.Argument(help="The cache key to read.")) -> None:
     # a countdown renders as whole seconds.
     suffix = "no expiry" if ttl is None else f"expires in {int(ttl)}s"
     console.print(f"{escape(rendered)} [dim]({suffix})[/]")
+
+
+@cache_app.command("cache:put")
+def cache_put(
+    key: str = typer.Argument(..., help="Cache key to write."),
+    value: str = typer.Argument(..., help="Value — parsed as JSON first, raw string otherwise."),
+    ttl: int = typer.Option(None, "--ttl", help="Seconds until expiry; omit for no expiry."),
+) -> None:
+    """Write one cache key. Omit --ttl to keep it forever."""
+    import asyncio
+    import json
+
+    from rich.markup import escape
+
+    from fastplace.config import load_env
+
+    load_env()
+    # No reset_cache() here — same reasoning as cache:get: the singleton must
+    # bind to the current config while keeping any in-process store contents.
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        parsed = value
+
+    from fastplace.cache import cache
+    from fastplace.errors import ConfigurationError
+
+    try:
+        store = cache()
+
+        async def _run() -> None:
+            await store.put(key, parsed, ttl=ttl)
+
+        asyncio.run(_run())
+    except ValueError as exc:  # _validate_ttl contract — ttl <= 0 or non-numeric
+        console.print(f"[red]invalid ttl[/] — {escape(str(exc))}")
+        raise typer.Exit(code=1) from None
+    except ConfigurationError as exc:
+        console.print(f"[red]cache misconfigured[/] — {escape(str(exc))}")
+        raise typer.Exit(code=1) from None
+
+    suffix = "" if ttl is None else f" (ttl {ttl}s)"
+    console.print(f"[green]Set cache key '{escape(key)}'[/]{suffix}")

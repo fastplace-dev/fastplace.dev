@@ -76,3 +76,38 @@ def test_get_stored_json_null_reports_not_found(store):
     result = runner.invoke(cli_app, ["cache:get", "nullkey"])
     assert result.exit_code == 1
     assert "not found" in _out(result)
+
+
+# --- cache:put ---
+def test_put_with_ttl_then_read_back(store):
+    result = runner.invoke(cli_app, ["cache:put", "temp", "42", "--ttl", "60"])
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "Set cache key 'temp'" in out
+    assert "(ttl 60s)" in out
+    assert asyncio.run(store.get("temp")) == 42
+    assert asyncio.run(store.ttl("temp")) > 0
+
+
+def test_put_without_ttl_never_expires(store):
+    result = runner.invoke(cli_app, ["cache:put", "keep", "v"])
+    assert result.exit_code == 0, result.output
+    assert "ttl" not in _out(result)  # no (ttl Ns) suffix
+    assert asyncio.run(store.ttl("keep")) is None  # adjudicated: omitted --ttl = never expires
+
+
+def test_put_json_value_is_parsed(store):
+    runner.invoke(cli_app, ["cache:put", "blob", '{"a": 1}'])
+    assert asyncio.run(store.get("blob")) == {"a": 1}
+
+
+def test_put_raw_string_fallback(store):
+    runner.invoke(cli_app, ["cache:put", "note", "just text"])
+    assert asyncio.run(store.get("note")) == "just text"
+
+
+def test_put_zero_ttl_is_a_red_error(store):
+    result = runner.invoke(cli_app, ["cache:put", "bad", "x", "--ttl", "0"])
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "Traceback" not in out
