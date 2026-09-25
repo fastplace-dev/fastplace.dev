@@ -197,3 +197,46 @@ def test_preview_flags_flow_into_the_panel(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     plain = ANSI_RE.sub("", result.output)
     assert "ada@example.com" in plain and "Welcome" in plain and "hi ada" in plain
+
+
+# ---------------------------------------------------------------------------
+# mail:clear — destructive guard + truncate
+# ---------------------------------------------------------------------------
+
+
+def test_clear_guard_blocks_in_production(outbox_log, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    outbox_log.write_text(_line("one") + "\n" + _line("two") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:clear"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "aborted" in ANSI_RE.sub("", result.output)
+    assert len(outbox_log.read_text().splitlines()) == 2  # untouched
+
+
+def test_clear_force_empties_and_reports_count(outbox_log, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    outbox_log.write_text(_line("one") + "\n" + _line("two") + "\n" + _line("three") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:clear", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert outbox_log.read_text() == ""
+    assert "dropped 3 logged message(s)" in ANSI_RE.sub("", result.output)
+
+
+def test_clear_outside_production_runs_without_prompt(outbox_log):
+    outbox_log.write_text(_line("one") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:clear"])
+
+    assert result.exit_code == 0, result.output
+    assert outbox_log.read_text() == ""
+
+
+def test_clear_missing_log_is_dim_exit_zero(outbox_log):
+    result = runner.invoke(cli_app, ["mail:clear"])
+
+    assert result.exit_code == 0, result.output
+    assert "no mail log" in ANSI_RE.sub("", result.output)

@@ -95,3 +95,29 @@ def mail_preview(
             title="Mail preview",
         )
     )
+
+
+@mail_app.command("mail:clear")
+def mail_clear(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Drop every logged outbox message (storage/logs/mail.log)."""
+    from fastplace.config import config, load_env
+
+    load_env()
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Clear the mail outbox log? This drops every logged message.")
+    ):
+        console.print("[red]aborted[/] — the outbox log is untouched")
+        raise typer.Exit(code=1)
+
+    from fastplace.mail.transports import MAIL_LOG_PATH
+
+    path = Path(MAIL_LOG_PATH)
+    if not path.is_file():
+        console.print(f"[dim]no mail log at {MAIL_LOG_PATH}[/]")
+        return
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        dropped = sum(1 for _ in handle)
+    path.write_text("")
+    console.print(f"dropped {dropped} logged message(s)")
