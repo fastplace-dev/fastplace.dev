@@ -103,6 +103,16 @@ def test_secret_looking_example_value_fails_without_printing_it(tmp_path, monkey
     assert "STAGING_TOKEN" in _out(result)
 
 
+def test_commented_secret_in_crlf_example_is_flagged(tmp_path, monkeypatch):
+    leaked = "akJ3nZk2Pq8VzR4wXb7Nc1Ym5TgH9sLd2"  # 33 chars, high entropy
+    example = f"# APP_ENV=\r\n# STAGING_TOKEN={leaked}\r\n"  # CRLF line endings
+    _make_project(tmp_path, monkeypatch, CLEAN_ENV, example)
+    result = runner.invoke(cli_app, ["env:lint"])
+    assert result.exit_code == 1
+    assert "STAGING_TOKEN" in _out(result)
+    assert leaked not in _out(result)  # the value itself NEVER printed
+
+
 def test_example_value_equal_to_live_env_secret_fails(tmp_path, monkeypatch):
     secret = "live-secret-value-0123456789abcdef"  # 34 chars
     _make_project(tmp_path, monkeypatch, CLEAN_ENV + f"SERVICE_KEY={secret}\n", f"# SERVICE_KEY={secret}\n")

@@ -378,8 +378,10 @@ def _example_secrets_check(example_text: str, live_values: dict[str, str]) -> Ch
                 flagged.append(key)
         # commented example values count too — secrets must not sit in example
         # files. Horizontal whitespace only: \s here would cross newlines and
-        # stitch "# KEY=" onto the following line as a fake value.
-        for m in re.finditer(r"^[ \t]*#[ \t]*([A-Z0-9_]+)[ \t]*=[ \t]*(\S+)[ \t]*$", example_text, re.MULTILINE):
+        # stitch "# KEY=" onto the following line as a fake value. \r is
+        # tolerated right before end-of-line so a CRLF example file cannot
+        # dodge the match.
+        for m in re.finditer(r"^[ \t]*#[ \t]*([A-Z0-9_]+)[ \t]*=[ \t]*(\S+)[ \t\r]*$", example_text, re.MULTILINE):
             key, value = m.group(1), m.group(2)
             if _secret_looking(value) or (key in live_values and value == live_values[key] and value):
                 if key not in flagged:
@@ -455,6 +457,68 @@ def env_lint(
         ],
     )
     raise typer.Exit(code=code)
+
+
+_KEY_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _sync_example_key(root: Path, key: str) -> bool:
+    """Document an absent key in .env.example as '# KEY=' (empty placeholder).
+
+    The placeholder is ALWAYS empty — live values never cross into the
+    example file, secret-looking or not. Returns True when appended.
+    """
+    example = root / ".env.example"
+    text = example.read_text(encoding="utf-8") if example.is_file() else ""
+    if re.search(rf"^\s*#?\s*{re.escape(key)}\s*=", text, re.MULTILINE):
+        return False
+    with example.open("a", encoding="utf-8") as fh:
+        fh.write(f"# {key}=\n")
+    return True
+
+
+@env_ops_app.command("env:set")
+def env_set(
+    key: str = typer.Argument(..., help="Variable name (UPPER_SNAKE)."),
+    value: str = typer.Argument(..., help="Variable value, written verbatim."),
+) -> None:
+    """Set KEY=VALUE in .env without an editor; idempotent, never touches APP_KEY."""
+    from fastplace.cli.database import _upsert_env_lines
+
+    root = _project_root()
+
+    if key == "APP_KEY":
+        console.print(
+            "[red]refusing to set APP_KEY by hand[/] — use "
+            "[bold]fastplace key:generate --force[/] so backups, .env.encrypted "
+            "re-encryption, and the rotation impact report all happen."
+        )
+        raise typer.Exit(code=1)
+
+    if not _KEY_NAME_RE.match(key):
+        console.print(
+            f"[red]{key!r} is not a valid variable name[/] — UPPER_SNAKE (A-Z, 0-9, _; starts with a letter)."
+        )
+        raise typer.Exit(code=1)
+
+    env_path = root / ".env"
+    text = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
+
+    # Idempotency pre-check: exact active value already set — no rewrite, mtime preserved.
+    if _env_values(text).get(key) == value:
+        console.print(f"{key} already [green]{value}[/] — unchanged.")
+        raise typer.Exit(code=0)
+
+    was_commented = re.search(rf"^\s*#\s*{re.escape(key)}\s*=", text, re.MULTILINE) is not None
+
+    env_path.write_text(_upsert_env_lines(text, {key: value}), encoding="utf-8")
+
+    if was_commented:
+        console.print(f"[yellow]ACTIVATED[/] {key} — it was commented out in .env; the live line now wins.")
+    console.print(f"{key} set in .env.")
+
+    if _sync_example_key(root, key):
+        console.print(f"[dim]{key} documented in .env.example as an empty placeholder.[/]")
 
 
 @env_ops_app.command("doctor")
