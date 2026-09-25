@@ -10,6 +10,7 @@ exercised against the real service registry (default + registered override).
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 
 import pytest
@@ -22,6 +23,24 @@ from fastplace.cli import app as cli_app
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_environ():
+    """Confine os.environ changes to the test that caused them.
+
+    auth:logout-everywhere and throttle:clear bootstrap config via
+    load_env(), and python-dotenv writes the cwd .env's keys straight
+    into the REAL os.environ — a mutation no monkeypatch sees or undoes.
+    At the repo root that leaks the developer's own .env (a non-production
+    APP_ENV made later test:db production-guard tests miss the guard).
+    Snapshot before, restore after: identical pattern to the project
+    fixture in test_cache_cmds.
+    """
+    env_before = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(env_before)
 
 
 # ---------------------------------------------------------------------------
