@@ -400,3 +400,111 @@ def test_agents_broken_factory_is_a_row_not_a_crash(tmp_path, monkeypatch, park_
     assert result.exit_code == 0, result.output
     plain = ANSI_RE.sub("", result.output)
     assert "broken_agent" in plain and "boom" in plain  # the failure is row-level
+
+
+# ---------------------------------------------------------------------------
+# ai:embed — stubbed _embedding_fn, --check against declared VectorField dims
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def embed_stub(monkeypatch):
+    """Stub the provider seam: 1536-float vectors, calls recorded."""
+    import fastplace.ai.embeddings as embeddings_module
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_embedding_fn(*, model=None, input=None):  # noqa: A002
+        calls.append({"model": model, "input": list(input or [])})
+        return [[0.001] * 1536 for _ in (input or [])]
+
+    monkeypatch.setattr(embeddings_module, "_embedding_fn", _fake_embedding_fn)
+    return calls
+
+
+VECTOR_MODEL_TEMPLATE = '''from fastplace.orm import Model
+from fastplace.orm import VectorField
+
+
+class Document(Model):
+    __tablename__ = "embed_documents_{suffix}"
+
+    body: "list[float] | None" = VectorField(dimensions={dims})
+'''
+
+# NOTE before writing the fixture: confirm the repo's canonical import path for
+# Model/VectorField with `git grep -n 'VectorField' tests/orm | head -5` and
+# match it — the template below assumes `from fastplace.orm import ...`; only
+# the fixture project's SOURCE is adjustable, the assertions are contractual.
+
+PG_URL = "postgresql+asyncpg://embed:embed@localhost:5432/embed"  # types build at import; no live DB contacted
+
+
+def _vector_project(tmp_path, monkeypatch, dims: int, suffix: str, url: str):
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    (tmp_path / "asgi.py").write_text("# marker — the _project_root() check\n")
+    for package in ("app", "app/models"):
+        (tmp_path / package).mkdir(parents=True, exist_ok=True)
+        (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / "app/models/document.py").write_text(
+        VECTOR_MODEL_TEMPLATE.format(dims=dims, suffix=suffix)
+    )
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def test_embed_prints_model_dimension_and_first_floats(tmp_path, monkeypatch, embed_stub):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["ai:embed", "hello world", "--model", "embed-model-x"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "embed-model-x" in plain
+    assert "1536" in plain  # dimension reported
+    assert "0.001" in plain  # first floats render
+
+
+def test_embed_check_match_exits_zero(tmp_path, monkeypatch, park_project_modules, embed_stub):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    _vector_project(tmp_path, monkeypatch, dims=1536, suffix="match", url=PG_URL)
+
+    result = runner.invoke(cli_app, ["ai:embed", "text", "--check", "Document"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "match" in plain and "Document" in plain
+
+
+def test_embed_check_mismatch_exits_one(tmp_path, monkeypatch, park_project_modules, embed_stub):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    _vector_project(tmp_path, monkeypatch, dims=512, suffix="mismatch", url=PG_URL)
+
+    result = runner.invoke(cli_app, ["ai:embed", "text", "--check", "Document"])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "mismatch" in plain
+    assert "512" in plain and "1536" in plain  # both sides of the verdict shown
+
+
+def test_embed_check_unknown_class_exits_one(tmp_path, monkeypatch, park_project_modules, embed_stub):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    _vector_project(tmp_path, monkeypatch, dims=512, suffix="unknown", url=PG_URL)
+
+    result = runner.invoke(cli_app, ["ai:embed", "text", "--check", "Teapot"])
+
+    assert result.exit_code == 1
+    assert "Teapot" in ANSI_RE.sub("", result.output)
+
+
+def test_embed_check_sqlite_backend_notes_missing_dims(
+    tmp_path, monkeypatch, park_project_modules, embed_stub  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+):
+    url = f"sqlite+aiosqlite:///{tmp_path}/embed.db"
+    _vector_project(tmp_path, monkeypatch, dims=512, suffix="sqlite", url=url)
+
+    result = runner.invoke(cli_app, ["ai:embed", "text", "--check", "Document"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "not declared" in plain  # VectorJSON carries no dims — stated, not guessed

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import typer
 
 from fastplace.console import console
@@ -203,3 +205,93 @@ def ai_agents() -> None:
         except Exception as exc:  # noqa: BLE001 — one broken factory must not kill the table
             table.add_row(factory.name, factory.module, f"[red]error: {exc}[/]", "—")
     console.print(table)
+
+
+def _vector_columns(model_cls: Any) -> list[tuple[str, int | None]]:
+    """(column name, declared dims or None) for every vector-typed column.
+
+    pgvector's Vector carries ``.dim``; the sqlite fallback VectorJSON
+    declares nothing — that None is the caller's 'backend does not store
+    dims' case.
+    """
+    from fastplace.orm.types import VectorJSON
+
+    try:
+        from pgvector.sqlalchemy import Vector
+    except ImportError:  # pragma: no cover — pgvector is a project dependency
+        Vector = None  # type: ignore[assignment,misc]
+
+    found: list[tuple[str, int | None]] = []
+    for column in model_cls.__table__.columns:
+        is_vector = isinstance(column.type, VectorJSON) or (
+            Vector is not None and isinstance(column.type, Vector)
+        )
+        if is_vector:
+            found.append((column.name, getattr(column.type, "dim", None)))
+    return found
+
+
+@ai_ops_app.command("ai:embed")
+def ai_embed(
+    text: str,
+    model: str = typer.Option("", "--model", help="Embedding model override."),
+    check: str = typer.Option("", "--check", help="Model class whose VectorField dims to verify."),
+    n: int = typer.Option(4, "--n", help="How many floats to print."),
+) -> None:
+    """Embed TEXT and report model, dimension, and the first N floats."""
+    import asyncio
+
+    from fastplace.config import config, load_env
+
+    load_env()
+    resolved = model or str(config("AI_EMBEDDING_MODEL", default="text-embedding-3-small"))
+
+    from fastplace.ai.embeddings import embed
+
+    vector = asyncio.run(embed(text, model=model or None))
+    floats = ", ".join(f"{value:.6f}" for value in vector[: max(n, 0)])
+    console.print(f"model:     {resolved}")
+    console.print(f"dimension: {len(vector)}")
+    console.print(f"first {min(max(n, 0), len(vector))}: [{floats}]")
+
+    if not check:
+        return
+
+    from fastplace.cli.inspect import collect_models
+    from fastplace.cli.system import _project_root
+
+    models = collect_models(_project_root())
+    # Same-named classes accumulate when several projects are imported in one
+    # process (the declarative registry never forgets); the class the CURRENT
+    # sys.modules state resolves to is the one this project just defined.
+    import sys
+
+    model_cls = next(
+        (
+            cls
+            for cls in models
+            if cls.__name__ == check
+            and getattr(sys.modules.get(cls.__module__), check, None) is cls
+        ),
+        None,
+    )
+    if model_cls is None:
+        console.print(f"[red]no model class named '{check}'[/]")
+        raise typer.Exit(code=1)
+
+    columns = _vector_columns(model_cls)
+    if not columns:
+        console.print(f"[dim]{check} declares no vector fields[/]")
+        return
+
+    mismatched = False
+    for name, dims in columns:
+        if dims is None:
+            console.print(f"[dim]{check}.{name}: dims not declared on this backend (sqlite/json vectors)[/]")
+        elif dims == len(vector):
+            console.print(f"[green]match[/]   {check}.{name}: {dims}")
+        else:
+            mismatched = True
+            console.print(f"[red]mismatch[/] {check}.{name}: declared {dims}, embedding returns {len(vector)}")
+    if mismatched:
+        raise typer.Exit(code=1)
