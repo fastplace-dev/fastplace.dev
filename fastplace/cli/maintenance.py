@@ -84,3 +84,70 @@ def up() -> None:
         return
     path.unlink()
     console.print("[green]up[/] — the application left maintenance mode")
+
+
+@maintenance_app.command("maintenance:status")
+def maintenance_status(
+    exit_code: bool = typer.Option(
+        False,
+        "--exit-code",
+        help="Exit 0 up / 1 down / 2 state-file unreadable-or-corrupt. Without this flag always exit 0.",
+    ),
+) -> None:
+    """Read-only 503-gate report: up, down+settings, or the two fault states."""
+    import datetime
+    import json
+
+    from fastplace.config import load_env
+    from fastplace.http.maintenance import MAINTENANCE_FILE
+
+    root = _project_root()
+    load_env()
+
+    # is_down() collapses the fault states (OSError reads as "up", non-dict
+    # JSON as the empty fail-closed state), so status reads the file itself
+    # to split all four: absent / parsed / corrupt / unreadable.
+    state_path = root / MAINTENANCE_FILE
+    if not state_path.exists():
+        console.print("status: [green]UP[/] (no state file)")
+        raise typer.Exit(code=0)
+
+    try:
+        raw = state_path.read_text(encoding="utf-8")
+    except OSError:
+        console.print(
+            "[red]state file present but UNREADABLE[/] — the gate silently "
+            "re-opens. Fix permissions on "
+            f"{MAINTENANCE_FILE} or run [bold]fastplace up[/] to reset."
+        )
+        raise typer.Exit(code=2 if exit_code else 0) from None
+
+    state = None
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        pass
+    if not isinstance(state, dict):  # matches is_down: non-object JSON is fail-closed
+        console.print(
+            "status: [yellow]DOWN — state unreadable (corrupt JSON), "
+            "fail-closed: everyone gets 503.[/]\n"
+            f"Fix {MAINTENANCE_FILE} or run [bold]fastplace up[/] to reset."
+        )
+        raise typer.Exit(code=2 if exit_code else 0)
+
+    try:
+        mtime = state_path.stat().st_mtime
+        since = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        since = "unknown"
+
+    bits = [
+        f"status: [yellow]DOWN[/] — down-since: {since} "
+        "(state-file-last-written; `down` rewrites update it)",
+    ]
+    # Settings print verbatim, but the bypass secret shows presence only —
+    # status output lands in deploy logs, never the secret value itself.
+    bits.append(f"retry={state.get('retry')} refresh={state.get('refresh')}")
+    bits.append(f"secret={'set' if state.get('secret') else 'none'}")
+    console.print("\n".join(bits))
+    raise typer.Exit(code=1 if exit_code else 0)
