@@ -117,7 +117,9 @@ def _env_types_check(root: Path) -> CheckFunc:
         if env_path.is_file():
             active = set(_active_env_keys(env_path.read_text(encoding="utf-8")))
         typed = {k for k in cfg._defaults if "." not in k}
-        untyped = sorted(active - typed)
+        # Documentation-only knobs (VITE_PORT, QUERY_*) are deliberately
+        # untyped — listing them as such is noise, not a finding.
+        untyped = sorted(k for k in active - typed if not _is_example_only(k))
         detail = f"{checked} typed overrides ok" if not bad else "coerce failed: " + ", ".join(bad[:6])
         if untyped:
             detail += f"; untyped: {', '.join(untyped[:6])}"
@@ -305,6 +307,154 @@ def _serve_check(root: Path) -> CheckFunc:
         return rows if len(rows) > 1 else rows[0]
 
     return _serve
+
+
+_EXAMPLE_ONLY_KEYS = {"VITE_PORT", "ASSET_VERSION"}
+_EXAMPLE_ONLY_PREFIXES = ("QUERY_",)
+
+
+def _is_example_only(key: str) -> bool:
+    return key in _EXAMPLE_ONLY_KEYS or key.startswith(_EXAMPLE_ONLY_PREFIXES)
+
+
+_ENV_PAIR_RE = re.compile(r"^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$", re.MULTILINE)
+
+
+def _env_values(text: str) -> dict[str, str]:
+    """Active KEY=value pairs (last wins, mirroring dotenv semantics)."""
+    values: dict[str, str] = {}
+    for m in _ENV_PAIR_RE.finditer(text):
+        key = m.group(1)
+        raw = m.group(2).strip().strip("'\"")
+        values[key] = raw
+    return values
+
+
+def _secret_looking(value: str) -> bool:
+    """Heuristic: long + high-entropy. Never printed either way."""
+    return len(value) >= 32 and len(set(value)) >= 10
+
+
+def _duplicate_check(env_keys: list[str]) -> CheckFunc:
+    def _dup() -> Check:
+        seen: set[str] = set()
+        dupes: set[str] = set()
+        for key in env_keys:
+            if key in seen:
+                dupes.add(key)
+            seen.add(key)
+        if dupes:
+            return Check(
+                "duplicates", "fail",
+                detail=f"duplicate active keys: {', '.join(sorted(dupes))} (last wins)",
+                fix="remove the earlier duplicate lines",
+            )
+        return Check("duplicates", "pass")
+
+    return _dup
+
+
+def _example_drift_check(env_keys: list[str], example_keys: set[str]) -> CheckFunc:
+    def _drift() -> Check:
+        undocumented = sorted(
+            k for k in set(env_keys) - example_keys if not _is_example_only(k)
+        )
+        if undocumented:
+            return Check(
+                "example-drift", "warn",
+                detail=f"in .env but not .env.example: {', '.join(undocumented[:8])}",
+                fix="fastplace env:lint --fix (documents them) or remove them",
+            )
+        return Check("example-drift", "pass", detail="documented")
+
+    return _drift
+
+
+def _example_secrets_check(example_text: str, live_values: dict[str, str]) -> CheckFunc:
+    def _secrets() -> Check:
+        flagged: list[str] = []
+        for key, value in _env_values(example_text).items():
+            if _secret_looking(value) or (key in live_values and value == live_values[key] and value):
+                flagged.append(key)
+        # commented example values count too — secrets must not sit in example
+        # files. Horizontal whitespace only: \s here would cross newlines and
+        # stitch "# KEY=" onto the following line as a fake value.
+        for m in re.finditer(r"^[ \t]*#[ \t]*([A-Z0-9_]+)[ \t]*=[ \t]*(\S+)[ \t]*$", example_text, re.MULTILINE):
+            key, value = m.group(1), m.group(2)
+            if _secret_looking(value) or (key in live_values and value == live_values[key] and value):
+                if key not in flagged:
+                    flagged.append(key)
+        if flagged:
+            return Check(
+                "example-secrets", "fail",
+                detail=f"secret-looking values in .env.example: {', '.join(sorted(flagged))}",
+                fix="replace with empty placeholders (# KEY=)",
+            )
+        return Check("example-secrets", "pass")
+
+    return _secrets
+
+
+def _production_placeholder_check() -> CheckFunc:
+    from fastplace.config import config
+
+    def _prod() -> Check:
+        env = str(config("APP_ENV", default="production")).lower()
+        if env != "production":
+            return Check("prod-placeholders", "pass", detail=f"env={env}")
+        key = str(config("APP_KEY", default="") or "")
+        if not key:
+            return Check(
+                "prod-placeholders", "fail",
+                detail="APP_ENV=production with an empty APP_KEY",
+                fix="fastplace key:generate",
+            )
+        return Check("prod-placeholders", "pass", detail="production key set")
+
+    return _prod
+
+
+@env_ops_app.command("env:lint")
+def env_lint(
+    fix: bool = typer.Option(False, "--fix", help="Sync .env.example placeholders (never touches .env values)."),
+) -> None:
+    """Audit .env against .env.example: duplicates, drift, leaked secrets, coercion."""
+    from fastplace.cli.database import _ensure_example_keys
+    from fastplace.config import load_env, reset_config
+
+    root = _project_root()
+    env_path = root / ".env"
+    example_path = root / ".env.example"
+    if not env_path.is_file():
+        console.print("[red]no .env to lint[/] — run this from a project root with a .env.")
+        raise typer.Exit(code=1)
+
+    env_text = env_path.read_text(encoding="utf-8")
+    example_text = example_path.read_text(encoding="utf-8") if example_path.is_file() else ""
+
+    load_env(root / ".env")
+    reset_config(root)
+
+    if fix:
+        # Empty placeholders only: copying live values would move real
+        # secrets into a file meant to be committed.
+        _ensure_example_keys(example_path, dict.fromkeys(_env_values(env_text), ""))
+        example_text = example_path.read_text(encoding="utf-8") if example_path.is_file() else ""
+        console.print("[green].env.example synced[/] (.env values untouched).")
+
+    env_keys = _active_env_keys(env_text)
+    example_keys = set(_active_env_keys(example_text)) | set(_env_values(example_text))
+    code = run_checks(
+        "env lint",
+        [
+            _duplicate_check(env_keys),
+            _example_drift_check(env_keys, example_keys),
+            _example_secrets_check(example_text, _env_values(env_text)),
+            _env_types_check(root),
+            _production_placeholder_check(),
+        ],
+    )
+    raise typer.Exit(code=code)
 
 
 @env_ops_app.command("doctor")
