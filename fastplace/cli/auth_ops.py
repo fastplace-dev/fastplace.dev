@@ -113,3 +113,83 @@ def gate_check(
         console.print(f"  {verdict['message']}")
     if not verdict["allowed"]:
         raise typer.Exit(code=1)
+
+
+def _relative(seconds: int) -> str:
+    """Coarse relative age for the last-activity column."""
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+@auth_ops_app.command("auth:sessions")
+def auth_sessions(user_id: int) -> None:
+    """List a user's active sessions on the configured durable store."""
+    import asyncio
+    import time
+
+    from fastplace.config import config, load_env
+
+    load_env()
+    driver = str(config("SESSION_DRIVER", default="") or "").strip().lower()
+    if not driver:
+        env = str(config("APP_ENV", default="local")).lower()
+        driver = "database" if env == "production" else "memory"
+
+    if driver == "memory":
+        console.print(
+            "[dim]session driver 'memory' keeps sessions inside the server process — "
+            "a CLI process cannot enumerate them (auth:logout-everywhere sees zero "
+            "rows on this driver too)[/]"
+        )
+        return
+
+    async def _run() -> list:
+        from typing import cast
+
+        from fastplace.http.session import session_store
+        from fastplace.http.session.database import DatabaseSessionStore
+        from fastplace.http.session.redis_store import RedisSessionStore
+
+        # sessions_for_user is the durable-store extension (memory opts out);
+        # the SessionStore protocol does not declare it — narrow for mypy only.
+        store = cast(DatabaseSessionStore | RedisSessionStore, session_store())
+        return await store.sessions_for_user(user_id)
+
+    try:
+        rows = asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001 — store errors report, not traceback
+        console.print(f"[red]session store error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if not rows:
+        console.print(f"[dim]no active sessions for user {user_id}[/]")
+        return
+
+    now = int(time.time())
+    from rich.table import Table
+
+    table = Table(title=f"Active sessions — user {user_id} ({driver})")
+    if driver == "redis":
+        for column in ("session", "last activity"):
+            table.add_column(column)
+        for session_id, last_activity in rows:
+            table.add_row(
+                str(session_id), f"{_relative(now - int(last_activity))} ({last_activity})"
+            )
+    else:
+        for column in ("session", "last activity", "ip", "user agent"):
+            table.add_column(column)
+        for row in rows:
+            table.add_row(
+                str(row.id),
+                f"{_relative(now - int(row.last_activity))} ({row.last_activity})",
+                row.ip_address or "—",
+                row.user_agent or "—",
+            )
+        console.print("[dim]ip / user agent are not populated by the middleware yet[/]")
+    console.print(table)

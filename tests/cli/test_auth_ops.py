@@ -151,9 +151,7 @@ def _clean_gate_registry():
 def test_gate_check_allow_prints_source_and_exits_zero(gates_project, monkeypatch):
     import fastplace.cli.provisioning as provisioning
 
-    monkeypatch.setattr(
-        provisioning, "_accounts_repository", lambda: FakeGateRepository("editor")
-    )
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: FakeGateRepository("editor"))
 
     result = runner.invoke(cli_app, ["gate:check", "1", "posts.view", "--arg", '{"post": 5}'])
 
@@ -166,9 +164,7 @@ def test_gate_check_allow_prints_source_and_exits_zero(gates_project, monkeypatc
 def test_gate_check_deny_exits_one(gates_project, monkeypatch):
     import fastplace.cli.provisioning as provisioning
 
-    monkeypatch.setattr(
-        provisioning, "_accounts_repository", lambda: FakeGateRepository("viewer")
-    )
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: FakeGateRepository("viewer"))
 
     result = runner.invoke(cli_app, ["gate:check", "1", "posts.view", "--arg", '{"post": 5}'])
 
@@ -179,9 +175,7 @@ def test_gate_check_deny_exits_one(gates_project, monkeypatch):
 def test_gate_check_unknown_ability_exits_one(gates_project, monkeypatch):
     import fastplace.cli.provisioning as provisioning
 
-    monkeypatch.setattr(
-        provisioning, "_accounts_repository", lambda: FakeGateRepository("editor")
-    )
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: FakeGateRepository("editor"))
 
     result = runner.invoke(cli_app, ["gate:check", "1", "teapot.brew"])
 
@@ -207,9 +201,7 @@ def test_gate_check_unknown_user_exits_one(gates_project, monkeypatch):
 def test_gate_check_bad_arg_json_exits_one(gates_project, monkeypatch):
     import fastplace.cli.provisioning as provisioning
 
-    monkeypatch.setattr(
-        provisioning, "_accounts_repository", lambda: FakeGateRepository("editor")
-    )
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: FakeGateRepository("editor"))
 
     result = runner.invoke(cli_app, ["gate:check", "1", "posts.view", "--arg", "{not json"])
 
@@ -229,3 +221,134 @@ def test_gate_check_without_accounts_module_exits_one(gates_project, monkeypatch
 
     assert result.exit_code == 1
     assert "accounts" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# auth:sessions
+# ---------------------------------------------------------------------------
+
+
+def _write_session(session_id: str, user_id: int) -> None:
+    from fastplace.http.session.database import DatabaseSessionStore
+
+    asyncio.run(DatabaseSessionStore().write(session_id, {"k": 1}, user_id=user_id))
+
+
+def test_sessions_database_lists_only_that_users_sessions(project, monkeypatch):
+    monkeypatch.setenv("SESSION_DRIVER", "database")
+    _write_session("sess-a", 7)
+    _write_session("sess-b", 8)
+
+    result = runner.invoke(cli_app, ["auth:sessions", "7"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "sess-a" in plain
+    assert "sess-b" not in plain
+    assert "not populated" in plain  # the ip/user-agent limitation note
+
+
+def test_sessions_database_excludes_expired_rows(project, monkeypatch):
+    """Review Focus #2 through the CLI: a row past the lifetime is missing."""
+    import time
+
+    monkeypatch.setenv("SESSION_DRIVER", "database")
+    _write_session("stale", 7)
+    import sqlalchemy as sa
+
+    from fastplace.http.session.base import session_lifetime
+    from fastplace.http.session.database import DatabaseSessionStore, sessions_table
+
+    store = DatabaseSessionStore()
+
+    async def _age_out() -> None:
+        async with store._engine().begin() as conn:
+            await conn.execute(
+                sa.update(sessions_table)
+                .where(sessions_table.c.id == "stale")
+                .values(last_activity=int(time.time()) - session_lifetime() - 10)
+            )
+
+    asyncio.run(_age_out())
+
+    result = runner.invoke(cli_app, ["auth:sessions", "7"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "stale" not in plain
+    assert "no active sessions" in plain
+
+
+def test_sessions_empty_is_dim_exit_zero(project, monkeypatch):
+    monkeypatch.setenv("SESSION_DRIVER", "database")
+
+    result = runner.invoke(cli_app, ["auth:sessions", "9"])
+
+    assert result.exit_code == 0, result.output
+    assert "no active sessions" in ANSI_RE.sub("", result.output)
+
+
+def test_sessions_memory_states_the_limitation(project, monkeypatch):
+    monkeypatch.setenv("SESSION_DRIVER", "memory")
+
+    result = runner.invoke(cli_app, ["auth:sessions", "7"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "inside the server process" in plain
+
+
+def test_sessions_redis_enumerates_via_client_seam(project, monkeypatch):
+    class FakeScanRedis:
+        """set/get/scan_iter — the enumeration surface."""
+
+        def __init__(self) -> None:
+            self.store: dict[str, str] = {}
+
+        async def set(self, key, value, ex=None):
+            self.store[key] = value
+
+        async def get(self, key):
+            return self.store.get(key)
+
+        async def scan_iter(self, match=None):
+            import fnmatch
+
+            for key in list(self.store):
+                if match is None or fnmatch.fnmatch(key, match):
+                    yield key
+
+    from fastplace.http import session as session_module
+    from fastplace.http.session.redis_store import RedisSessionStore
+
+    redis = FakeScanRedis()
+    monkeypatch.setenv("SESSION_DRIVER", "redis")
+    monkeypatch.setattr(
+        session_module, "session_store", lambda config_get=None: RedisSessionStore(client=redis)
+    )
+    seeded = RedisSessionStore(client=redis)
+    asyncio.run(seeded.write("sid-1", {"k": 1}, user_id=7))
+    asyncio.run(seeded.write("sid-2", {"k": 2}, user_id=8))
+
+    result = runner.invoke(cli_app, ["auth:sessions", "7"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "sid-1" in plain
+    assert "sid-2" not in plain
+
+
+def test_sessions_store_error_exits_one(project, monkeypatch):
+    monkeypatch.setenv("SESSION_DRIVER", "database")
+
+    def _boom(config_get=None):
+        raise RuntimeError("db unreachable")
+
+    from fastplace.http import session as session_module
+
+    monkeypatch.setattr(session_module, "session_store", _boom)
+
+    result = runner.invoke(cli_app, ["auth:sessions", "7"])
+
+    assert result.exit_code == 1
+    assert "db unreachable" in ANSI_RE.sub("", result.output)
