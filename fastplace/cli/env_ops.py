@@ -1,0 +1,334 @@
+"""Config/env/ops commands: the doctor umbrella pre-flight."""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+import typer
+
+from fastplace.cli._doctor import Check, CheckFunc, run_checks
+from fastplace.console import console
+
+env_ops_app = typer.Typer(help="Environment and operations diagnostics.")
+
+
+def _project_root() -> Path:
+    """The cwd when it is a Fastplace project; a friendly exit otherwise."""
+    root = Path.cwd()
+    if not (root / "asgi.py").is_file():
+        console.print(
+            "[red]not inside a Fastplace project[/] — run this from a project root "
+            "(the directory containing asgi.py)."
+        )
+        raise typer.Exit(code=1)
+    return root
+
+
+_ACTIVE_KEY_RE = re.compile(r"^\s*([A-Z0-9_]+)\s*=", re.MULTILINE)
+
+
+def _active_env_keys(text: str) -> list[str]:
+    """Active (uncommented) KEY= names in .env text, in order."""
+    return [m.group(1) for m in _ACTIVE_KEY_RE.finditer(text)]
+
+
+def _env_file_check(root: Path) -> CheckFunc:
+    def _env_file() -> Check:
+        env_path = root / ".env"
+        if not env_path.is_file():
+            return Check("env-file", "pass", detail="no .env — defaults only")
+        text = env_path.read_text(encoding="utf-8")
+        seen: set[str] = set()
+        dupes: set[str] = set()
+        for key in _active_env_keys(text):
+            if key in seen:
+                dupes.add(key)
+            seen.add(key)
+        if dupes:
+            return Check(
+                "env-file",
+                "fail",
+                detail=f"duplicate active keys: {', '.join(sorted(dupes))} (last wins)",
+                fix="remove the earlier duplicate lines in .env",
+            )
+        return Check("env-file", "pass", detail=f"{len(seen)} keys, no duplicates")
+
+    return _env_file
+
+
+def _app_key_check() -> CheckFunc:
+    from fastplace.config import config
+
+    def _app_key() -> Check:
+        key = str(config("APP_KEY", default="") or "")
+        env = str(config("APP_ENV", default="production")).lower()
+        if not key:
+            if env == "production":
+                return Check(
+                    "app-key", "fail", detail="empty in production (boot refuses)",
+                    fix="fastplace key:generate",
+                )
+            return Check("app-key", "warn", detail="not set", fix="fastplace key:generate")
+        if len(key) < 32:
+            return Check(
+                "app-key",
+                "warn",
+                detail=f"{len(key)} bytes — below the 32-byte HMAC threshold",
+                fix="fastplace key:generate --force",
+            )
+        return Check("app-key", "pass", detail=f"set ({len(key)} bytes)")
+
+    return _app_key
+
+
+def _config_import_check(root: Path) -> CheckFunc:
+    from fastplace.config import Config
+
+    def _config_import() -> Check:
+        try:
+            Config(root).load()
+        except (ImportError, SyntaxError) as exc:
+            return Check(
+                "config-import", "fail", detail=f"{type(exc).__name__}: {exc}"
+            )
+        return Check("config-import", "pass", detail="config/*.py import clean")
+
+    return _config_import
+
+
+def _env_types_check(root: Path) -> CheckFunc:
+    from fastplace.config import Config, _coerce
+
+    def _env_types() -> Check:
+        cfg = Config(root)
+        cfg.load()
+        bad: list[str] = []
+        checked = 0
+        for key, default in sorted(cfg._defaults.items()):
+            if "." in key or default is None or key not in os.environ:
+                continue
+            checked += 1
+            if type(_coerce(os.environ[key], default)) is not type(default):
+                bad.append(key)
+        env_path = root / ".env"
+        active: set[str] = set()
+        if env_path.is_file():
+            active = set(_active_env_keys(env_path.read_text(encoding="utf-8")))
+        typed = {k for k in cfg._defaults if "." not in k}
+        untyped = sorted(active - typed)
+        detail = f"{checked} typed overrides ok" if not bad else "coerce failed: " + ", ".join(bad[:6])
+        if untyped:
+            detail += f"; untyped: {', '.join(untyped[:6])}"
+        return Check(
+            "env-types",
+            "warn" if bad else "pass",
+            detail=detail,
+            fix="fix the listed .env values to match their config type" if bad else "",
+        )
+
+    return _env_types
+
+
+def _database_check() -> CheckFunc:
+    def _database() -> Check:
+        import asyncio
+
+        from sqlalchemy import text
+
+        from fastplace.orm.manager import get_manager, reset_manager
+
+        async def _probe() -> None:
+            engine = get_manager().engine("default")
+            try:
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+            finally:
+                await engine.dispose()
+
+        try:
+            asyncio.run(_probe())
+        except Exception as exc:  # noqa: BLE001 - report, never crash the table
+            return Check(
+                "database",
+                "fail",
+                detail=type(exc).__name__,
+                fix="check DATABASE_URL and that the database is running",
+            )
+        finally:
+            reset_manager()
+        return Check("database", "pass", detail="SELECT 1 ok")
+
+    return _database
+
+
+def _redis_check() -> CheckFunc:
+    def _redis() -> Check:
+        import asyncio
+
+        from fastplace.config import config
+
+        wanted: list[tuple[str, str]] = []
+        if str(config("CACHE_DRIVER", default="memory")).lower() == "redis":
+            wanted.append(("cache", str(config("REDIS_URL", default="redis://localhost:6379/0"))))
+        if str(config("SESSION_DRIVER", default="")).lower() == "redis":
+            wanted.append(("session", str(config("REDIS_URL", default="redis://localhost:6379/0"))))
+        if str(config("QUEUE_DRIVER", default="memory")).lower() == "saq":
+            wanted.append(("queue", str(config("QUEUE_REDIS_URL", default="redis://localhost:6379/0"))))
+        if not wanted:
+            return Check("redis", "pass", detail="not used (no redis driver configured)")
+        try:
+            import redis.asyncio as aioredis
+        except ImportError:
+            return Check(
+                "redis", "fail", detail="redis library not installed",
+                fix="pip install 'fastplace[queue]'",
+            )
+
+        async def _ping(url: str) -> None:
+            client = aioredis.from_url(url)
+            try:
+                await client.ping()
+            finally:
+                await client.aclose()
+
+        for label, url in wanted:
+            try:
+                asyncio.run(_ping(url))
+            except Exception as exc:  # noqa: BLE001
+                return Check(
+                    "redis", "fail",
+                    detail=f"{label} unreachable ({type(exc).__name__})",
+                    fix="check the redis URL and that redis is running",
+                )
+        return Check("redis", "pass", detail=f"{', '.join(label for label, _ in wanted)} reachable")
+
+    return _redis
+
+
+def _mail_check() -> CheckFunc:
+    from fastplace.config import config
+
+    def _mail() -> Check | list[Check]:
+        driver = str(config("MAIL_DRIVER", default="log")).lower()
+        if driver != "smtp":
+            return Check("mail", "pass", detail=f"driver={driver} (no smtp credentials needed)")
+        missing = [
+            name
+            for name in ("MAIL_HOST", "MAIL_USERNAME", "MAIL_PASSWORD")
+            if not str(config(name, default="") or "")
+        ]
+        if missing:
+            return Check(
+                "mail", "fail", detail=f"missing: {', '.join(missing)}",
+                fix="set MAIL_HOST / MAIL_USERNAME / MAIL_PASSWORD in .env",
+            )
+        if str(config("QUEUE_DRIVER", default="memory")).lower() == "saq":
+            return [
+                Check("mail", "pass", detail="smtp credentials present"),
+                Check(
+                    "mail-queue", "warn",
+                    detail="smtp mail is queued — it needs a running worker",
+                    fix="fastplace queue:work",
+                ),
+            ]
+        return Check("mail", "pass", detail="smtp credentials present")
+
+    return _mail
+
+
+def _ai_keys_check() -> CheckFunc:
+    from fastplace.config import config
+
+    def _ai_keys() -> Check:
+        model = str(config("AI_MODEL", default="")).lower()
+        if "gpt" in model or "openai" in model:
+            key = "OPENAI_API_KEY"
+        elif "claude" in model or "anthropic" in model:
+            key = "ANTHROPIC_API_KEY"
+        else:
+            present = [k for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY") if os.environ.get(k)]
+            if present:
+                return Check("ai-keys", "pass", detail=f"{', '.join(present)} set")
+            return Check(
+                "ai-keys", "warn", detail="no provider key in environment",
+                fix="export OPENAI_API_KEY or ANTHROPIC_API_KEY",
+            )
+        if os.environ.get(key):
+            return Check("ai-keys", "pass", detail=f"{key} set")
+        return Check("ai-keys", "warn", detail=f"{key} not set", fix=f"export {key}")
+
+    return _ai_keys
+
+
+def _storage_check(root: Path) -> CheckFunc:
+    def _storage() -> Check | list[Check]:
+        rows: list[Check] = []
+        for name in ("storage/logs", "storage/framework"):
+            target = root / name
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+                probe = target / ".doctor-probe"
+                probe.write_text("ok", encoding="utf-8")
+                probe.unlink()
+            except OSError as exc:
+                rows.append(
+                    Check(f"writable:{name}", "fail", detail=type(exc).__name__,
+                          fix=f"check permissions on {name}")
+                )
+                continue
+            rows.append(Check(f"writable:{name}", "pass"))
+        return rows
+
+    return _storage
+
+
+def _serve_check(root: Path) -> CheckFunc:
+    def _serve() -> Check | list[Check]:
+        if not (root / "package.json").is_file():
+            return Check("serve-ready", "pass", detail="no frontend (package.json absent)")
+        from fastplace.http.assets import _manifest_path
+
+        rows: list[Check] = []
+        manifest = _manifest_path(root)
+        rel = manifest.relative_to(root) if manifest else None
+        rows.append(
+            Check(
+                "build-manifest", "pass" if manifest else "warn",
+                detail=str(rel) if rel else "missing",
+                fix="" if manifest else "npm run build",
+            )
+        )
+        if not (root / "node_modules").is_dir():
+            rows.append(Check("node-modules", "warn", detail="absent", fix="npm install"))
+        return rows if len(rows) > 1 else rows[0]
+
+    return _serve
+
+
+@env_ops_app.command("doctor")
+def doctor() -> None:
+    """Project-wide pre-flight: env, config, DB, redis, mail, storage, serve readiness."""
+    from fastplace.config import load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    code = run_checks(
+        "Fastplace doctor",
+        [
+            _env_file_check(root),
+            _app_key_check(),
+            _config_import_check(root),
+            _env_types_check(root),
+            _database_check(),
+            _redis_check(),
+            _mail_check(),
+            _ai_keys_check(),
+            _storage_check(root),
+            _serve_check(root),
+        ],
+    )
+    raise typer.Exit(code=code)
