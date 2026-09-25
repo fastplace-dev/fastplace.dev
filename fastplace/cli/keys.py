@@ -84,6 +84,72 @@ def key_generate(
     console.print("[green]set[/] APP_KEY in .env")
 
 
+@keys_app.command("key:rotate")
+def key_rotate(
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation."),
+) -> None:
+    """Rotate APP_KEY: back up, decrypt .env.encrypted under the old key, re-encrypt under the new."""
+    from fastplace.auth.encryption import decrypt, encrypt
+    from fastplace.config import config, load_env
+
+    root = _project_root()
+    load_env()
+
+    env_path = root / ".env"
+    text = env_path.read_text(encoding="utf-8")
+    old_key = _active_app_key(text)
+    if old_key is None:
+        console.print("[red]no APP_KEY found in .env[/] — run [bold]fastplace key:generate[/] first.")
+        raise typer.Exit(code=1)
+
+    # A destructive command guards unless the environment explicitly says so.
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Rotate APP_KEY in production? Signed URLs, JWTs and 2FA data under the old key stop working.")
+    ):
+        console.print("[red]aborted[/] — nothing was rotated")
+        raise typer.Exit(code=1)
+
+    encrypted_path = root / ".env.encrypted"
+    encrypted_bak = root / ".env.encrypted.bak"
+    plaintext: str | None = None
+    had_encrypted = encrypted_path.is_file()
+
+    # Back up before anything mutates; decrypt under the old key BEFORE the
+    # new key is written so a wrong-key hard stop leaves nothing rotated.
+    shutil.copyfile(env_path, root / ".env.bak")
+    if had_encrypted:
+        shutil.copyfile(encrypted_path, encrypted_bak)
+        try:
+            plaintext = decrypt(encrypted_path.read_text(encoding="utf-8").strip(), key=old_key)
+        except ValueError as exc:
+            console.print(
+                "[red]ciphertext not under current APP_KEY — nothing was rotated.[/]\n"
+                f".env is untouched; the backup is at {encrypted_bak.name}. "
+                "If .env.encrypted was encrypted under an older key, decrypt it with that key first."
+            )
+            raise typer.Exit(code=1) from exc
+
+    new_key = secrets.token_urlsafe(48)
+    env_path.write_text(_upsert_env_lines(text, {"APP_KEY": new_key}), encoding="utf-8")
+
+    if had_encrypted and plaintext is not None:
+        encrypted_path.write_text(encrypt(plaintext, key=new_key) + "\n", encoding="utf-8")
+
+    console.print("[green]APP_KEY rotated.[/] backup: .env.bak")
+    if had_encrypted:
+        console.print(".env.encrypted re-encrypted under the new key (backup: .env.encrypted.bak)")
+    console.print(
+        "\n[bold]INVALIDATED[/] (raw-string HMAC under the old key):\n"
+        "  - JWT bearer tokens — users must re-login\n"
+        "  - signed URLs (email verification, password reset) — regenerate\n"
+        "  - 2FA ciphertexts (users.two_factor_secret / two_factor_recovery_codes,\n"
+        "    HKDF two_factor derivation) — [red]re-encrypt these columns under the old\n"
+        "    key BEFORE cutover, or affected users must re-enroll 2FA[/]\n"
+        "[bold]PRESERVED[/] (no APP_KEY involvement — opaque IDs + sha256-at-rest):\n"
+        "  - sessions, CSRF tokens, remember-me tokens, personal access tokens"
+    )
+
+
 @keys_app.command("env:encrypt")
 def env_encrypt(
     key: str | None = typer.Option(
