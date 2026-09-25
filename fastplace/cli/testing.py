@@ -360,3 +360,79 @@ def test_db(
             "[green]scratch database ready (no migrations configured).[/] "
             "[dim]never touched your configured database[/]"
         )
+
+
+def _render_coverage_report(json_path: Path, min_percent: float | None) -> int:
+    """Parse coverage JSON, render the 15 least-covered modules, gate on --min."""
+    import json
+
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        console.print(
+            f"[red]no parsable {json_path.name}[/] — did the pytest run produce "
+            "--cov-report=json output? (uv sync --extra dev installs pytest-cov)"
+        )
+        return 1
+
+    from rich.table import Table
+
+    rows = sorted(
+        (name, mod.get("summary", {}).get("percent_covered"))
+        for name, mod in data.get("files", {}).items()
+    )
+    table = Table(title="Least-covered modules")
+    table.add_column("MODULE")
+    table.add_column("%", justify="right")
+    shown = 0
+    for name, pct in sorted(rows, key=lambda r: (r[1] is None, r[1] or 0)):
+        if shown >= 15:
+            break
+        shown += 1
+        table.add_row(name, "—" if pct is None else f"{pct:.1f}")
+    console.print(table)
+
+    total = data.get("totals", {}).get("percent_covered")
+    if total is None:
+        console.print("[red]totals.percent_covered missing from coverage JSON[/]")
+        return 1
+    console.print(f"total: [bold]{total:.1f}%[/] covered")
+    if min_percent is not None and total < min_percent:
+        console.print(
+            f"[red]coverage {total:.1f}% below --min {min_percent:g}% "
+            f"(shortfall {min_percent - total:.1f})[/]"
+        )
+        return 1
+    return 0
+
+
+@testing_app.command("test:coverage")
+def test_coverage(
+    min_percent: float | None = typer.Option(
+        None,
+        "--min",
+        help="Exit 1 when totals.percent_covered falls below this. No default: no measured baseline exists yet.",
+    ),
+    extra_args: list[str] | None = typer.Argument(
+        None, help="Forwarded to pytest verbatim (e.g. tests/cli)."
+    ),
+) -> None:
+    """Pytest with coverage, then a least-covered report and optional --min gate."""
+    root = _project_root()
+    json_path = root / "storage" / "coverage.json"
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    proc = _subprocess_run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--cov=fastplace",
+            "--cov-report=term-missing",
+            f"--cov-report=json:{json_path}",
+            *(extra_args or []),
+        ],
+        cwd=root,
+    )
+    if proc.returncode != 0:
+        raise typer.Exit(code=proc.returncode)
+    raise typer.Exit(code=_render_coverage_report(json_path, min_percent))
