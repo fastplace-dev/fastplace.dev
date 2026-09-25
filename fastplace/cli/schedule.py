@@ -163,3 +163,78 @@ def schedule_test(
     _print_results([result])
     if not result.ok:
         raise typer.Exit(code=1)
+
+
+@schedule_app.command("schedule:preview")
+def schedule_preview(
+    hours: int = typer.Option(24, "--hours", min=1, help="Window length in hours."),
+    now: str | None = typer.Option(
+        None,
+        "--now",
+        hidden=True,
+        help="Simulate from this timestamp instead of the current time.",
+    ),
+    per_task: int = typer.Option(10, "--per-task", min=1, help="Max firings shown per task."),
+) -> None:
+    """Simulate which tasks fire in the next N hours (nothing runs)."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    from fastplace.schedule import load_schedule
+
+    moment = _frozen_now(now) or dt.datetime.now()
+    tasks = load_schedule(_project_root()).tasks()
+    if not tasks:
+        console.print("[dim]no scheduled tasks — define some in app/schedule.py[/]")
+        return
+
+    horizon = moment + dt.timedelta(hours=hours)
+    rows: list[tuple[dt.datetime, str, str]] = []
+    capped: list[str] = []
+    silent: list[str] = []
+    broken: list[str] = []
+    for task in tasks:
+        fired = 0
+        cursor = moment
+        try:
+            while fired < per_task:
+                nxt = task.next_due(cursor)
+                if nxt >= horizon:
+                    break
+                rows.append((nxt, task.name, task.expression))
+                fired += 1
+                cursor = nxt
+        except ValueError:
+            # A cron that matches no real date (Feb 30, say) — flag it and
+            # keep simulating the tasks behind it.
+            broken.append(task.name)
+            console.print(
+                f"[red]cron '{escape(task.expression)}' never matches a real date[/] "
+                f"— skipped '{escape(task.name)}'"
+            )
+            continue
+        if fired == per_task:
+            capped.append(task.name)
+        elif fired == 0:
+            silent.append(task.name)
+
+    for name in silent:
+        console.print(f"[dim]{escape(name)}: no firings within the window[/]")
+
+    if not rows:
+        console.print("[dim]no firings in the window[/]")
+        if broken:
+            # Nothing could be computed at all — the schedule is undiagnosable.
+            raise typer.Exit(code=1)
+        return
+
+    rows.sort(key=lambda row: row[0])
+    table = Table(title=f"Firings in the next {hours}h (from {moment:%Y-%m-%d %H:%M})")
+    table.add_column("when", style="cyan", no_wrap=True)
+    table.add_column("task", style="bold")
+    table.add_column("expression", style="dim")
+    for when, name, expression in rows:
+        table.add_row(when.strftime("%Y-%m-%d %H:%M"), escape(name), escape(expression))
+    console.print(table)
+    for name in capped:
+        console.print(f"[dim]+ more within window for '{escape(name)}'[/]")
