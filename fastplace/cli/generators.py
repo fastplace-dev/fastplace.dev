@@ -312,7 +312,7 @@ def _module_routes_source(
     ]
     # (action, HTTP method, path shape) — id-bound actions get /{id}.
     route_by_action = {
-        "create": ("get", ""),
+        "create": ("get", "/create"),
         "store": ("post", ""),
         "show": ("get", "/{id}"),
         "edit": ("get", "/{id}/edit"),

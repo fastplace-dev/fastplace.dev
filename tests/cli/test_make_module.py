@@ -9,6 +9,8 @@ Models); `--api`/`--resource` widen the module-local controller to CRUD,
 
 from __future__ import annotations
 
+import re
+
 # Autouse: clean db/model/module state per test (see _isolation.py) — the
 # -m path runs migration autogenerate against app.* models.
 from _isolation import isolate_project_state  # noqa: F401
@@ -162,6 +164,21 @@ def test_resource_flag_scaffolds_full_module_crud(tmp_path, monkeypatch):
     for action in ("index", "create", "store", "show", "edit", "update", "destroy"):
         assert f"async def {action}(" in source
     compile(source, "order_controller.py", "exec")
+
+
+def test_resource_routes_have_unique_method_path_pairs(tmp_path, monkeypatch):
+    """Every registered action must be reachable — create must not share
+    GET /orders with index (first-match resolution would shadow it)."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--resource"])
+
+    assert result.exit_code == 0, result.output
+    routes = (tmp_path / "app" / "modules" / "order" / "routes.py").read_text()
+    assert 'api_routes.get("/orders/create", OrderController, "create"' in routes
+    pairs = re.findall(r'api_routes\.(get|post|put|delete)\("([^"]+)"', routes)
+    assert pairs, "no api route registrations found"
+    assert len(pairs) == len(set(pairs)), f"duplicate (method, path) pairs: {pairs}"
 
 
 def test_web_flag_scaffolds_page_and_web_routes(tmp_path, monkeypatch):
