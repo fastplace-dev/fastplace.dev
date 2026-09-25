@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+import sys
 import time
 
 import typer
 
-from fastplace.config import load_env
+from fastplace.config import config, load_env
 
 db_ops_app = typer.Typer(help="Database connection operations.")
 
@@ -164,3 +167,96 @@ def migrate_check() -> None:
     console.print(table)
     console.print(f"[red]{len(diff)} pending change(s)[/] — run [cyan]fastplace make:migration[/]")
     raise typer.Exit(code=1)
+
+
+#: Statement families — the first word decides; everything not on this list
+#: is treated as a write.
+_READ_KEYWORDS = {"SELECT", "WITH", "EXPLAIN", "SHOW", "PRAGMA", "TABLE"}
+
+#: String-literal runs — single- or double-quoted, doubled-quote escapes
+#: allowed. Removed before the semicolon scan so a literal like ``'a;b'``
+#: is not mistaken for a statement separator.
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+
+
+def _statement_family(sql: str) -> str:
+    """'read' for the SELECT-family, 'write' for everything else.
+
+    Semicolons inside string literals are fine; any statement-separating
+    semicolon (non-space content after the first one) makes the whole
+    invocation 'write' so a batch cannot smuggle DML past the gate.
+    """
+    stripped = sql.strip().lstrip("(")
+    body = _STRING_LITERAL.sub("''", stripped)
+    if ";" in body:
+        head, _, tail = body.partition(";")
+        if head.strip() and tail.strip():
+            return "write"
+    first = body.split(None, 1)[0] if body else ""
+    return "read" if first.upper() in _READ_KEYWORDS else "write"
+
+
+@db_ops_app.command("db:query")
+def db_query(
+    sql: str = typer.Argument("-", help="SQL statement, or - to read from stdin."),
+    params: str = typer.Option(None, "--params", help="JSON object of named bind parameters."),
+    execute: bool = typer.Option(False, "--execute", help="Allow write statements (DML/DDL)."),
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Run one SQL statement through the app's own async engine."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    from fastplace.console import console
+    from fastplace.db import db
+
+    load_env()
+    if sql == "-":
+        sql = sys.stdin.read()
+
+    binds: dict | None = None
+    if params is not None:
+        try:
+            parsed = json.loads(params)
+        except ValueError as exc:
+            console.print(f"[red]invalid --params JSON[/] — {escape(str(exc))}")
+            raise typer.Exit(code=1) from None
+        if not isinstance(parsed, dict):
+            console.print("[red]--params must be a JSON object[/] of named binds, e.g. '{\"id\": 3}'")
+            raise typer.Exit(code=1)
+        binds = parsed
+
+    family = _statement_family(sql)
+    if family == "write" and not execute:
+        console.print("[red]write statement refused[/] — pass [cyan]--execute[/] to run it")
+        raise typer.Exit(code=1)
+    if family == "write" and str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Run a write statement against the production database?")
+    ):
+        console.print("[red]aborted[/] — the database was left untouched")
+        raise typer.Exit(code=1)
+
+    async def _run() -> list[dict]:
+        return await db.raw(sql, binds)
+
+    rows = asyncio.run(_run())
+    if not rows:
+        console.print("[dim]0 rows[/]")
+        return
+    table = Table()
+    for column in rows[0]:
+        table.add_column(str(column))
+    for row in rows:
+        table.add_row(*[_render_cell(value) for value in row.values()])
+    console.print(table)
+
+
+def _render_cell(value: object) -> str:
+    from rich.markup import escape
+
+    if isinstance(value, str):
+        return escape(value)
+    try:
+        return escape(json.dumps(value))
+    except (TypeError, ValueError):
+        return escape(repr(value))
