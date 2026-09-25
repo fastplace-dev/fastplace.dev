@@ -4,11 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from pathlib import Path
 from typing import Any
 
 import typer
 
 from fastplace.config import config, load_env
+
+
+def _project_root() -> Path:
+    """Nearest ancestor containing asgi.py, or a red exit (schedule.py guard)."""
+    from fastplace.console import console
+
+    candidate = Path.cwd()
+    for directory in (candidate, *candidate.parents):
+        if (directory / "asgi.py").is_file():
+            return directory
+    console.print(
+        "[red]not inside a Fastplace project[/] — run this from a project root "
+        "(the directory containing asgi.py)."
+    )
+    raise typer.Exit(code=1)
+
 
 queue_app = typer.Typer(help="Background queue operations.")
 
@@ -476,3 +493,41 @@ def queue_monitor(
     if breaches:
         raise typer.Exit(code=1)
     console.print(f"[green]✓[/] all queue(s) within --max {max_depth}")
+
+
+@queue_app.command("queue:list")
+def queue_list() -> None:
+    """List every registered job handler discovered in app/jobs/."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    from fastplace.console import console
+    from fastplace.queue import import_jobs, jobs
+
+    load_env()
+    root = _project_root()
+    import_jobs(root)
+    registry = jobs()
+
+    console.print(f"[dim]queue driver:[/] [bold]{escape(str(config('QUEUE_DRIVER', default='memory')))}[/]")
+    if not registry:
+        console.print("[dim]no registered jobs — define handlers with @Job in app/jobs/[/]")
+        return
+
+    table = Table(title="Registered jobs")
+    table.add_column("name", style="bold cyan", no_wrap=True)
+    table.add_column("module")
+    table.add_column("signature")
+    # no_wrap keeps a one-line docstring on one line — a folded description
+    # would split the sentence across cells (the signature may fold instead).
+    table.add_column("description", style="dim", no_wrap=True)
+    for name in sorted(registry):
+        entry = registry[name]
+        doc = (inspect.getdoc(entry.fn) or "").strip().splitlines()
+        table.add_row(
+            escape(name),
+            escape(entry.fn.__module__),
+            escape(str(inspect.signature(entry.fn))),
+            escape(doc[0]) if doc else "[dim]—[/]",
+        )
+    console.print(table)
