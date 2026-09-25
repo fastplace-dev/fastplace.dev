@@ -252,9 +252,7 @@ def test_gate_list_empty_state(fresh_project, clean_gate_registry):
 # --- outside-project guards --------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "command", [["event:list"], ["module:list"], ["gate:list"]]
-)
+@pytest.mark.parametrize("command", [["event:list"], ["module:list"], ["gate:list"]])
 def test_list_commands_outside_a_project_fail_friendly(tmp_path, monkeypatch, command):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli_app, command)

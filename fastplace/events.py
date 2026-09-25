@@ -155,4 +155,7 @@ def registered_listeners() -> dict[str, list[str]]:
         module = getattr(handler, "__module__", "") or "?"
         return f"{module}.{qualname}"
 
-    return {name: sorted(_name(handler) for handler in handlers) for name, handlers in _listeners.items()}
+    return {
+        name: sorted(_name(handler) for handler in handlers)
+        for name, handlers in _listeners.items()
+    }

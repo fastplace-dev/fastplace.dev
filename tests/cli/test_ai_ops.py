@@ -346,8 +346,8 @@ def _boom_import(root):
 
 def test_tool_run_degrades_when_project_import_fails(
     tools_project,
-    park_project_modules,
-    monkeypatch,  # noqa: F811 — fixture param
+    park_project_modules,  # noqa: F811 — fixture param; pytest resolves it by name
+    monkeypatch,
 ):
     import fastplace.ai as ai_package
 
@@ -385,8 +385,8 @@ def test_chat_stream_provider_failure_exits_one_cleanly(tmp_path, monkeypatch):
 
 def test_tool_show_degrades_when_project_import_fails(
     tools_project,
-    park_project_modules,
-    monkeypatch,  # noqa: F811 — fixture param
+    park_project_modules,  # noqa: F811 — fixture param; pytest resolves it by name
+    monkeypatch,
 ):
     import fastplace.ai as ai_package
 
@@ -402,8 +402,8 @@ def test_tool_show_degrades_when_project_import_fails(
 
 def test_agents_degrades_when_project_import_fails(
     agents_project,
-    park_project_modules,
-    monkeypatch,  # noqa: F811 — fixture param
+    park_project_modules,  # noqa: F811 — fixture param; pytest resolves it by name
+    monkeypatch,
 ):
     import fastplace.ai as ai_package
 
@@ -419,8 +419,8 @@ def test_agents_degrades_when_project_import_fails(
 
 def test_chat_agent_discovery_degrades_when_project_import_fails(
     agents_project,
-    park_project_modules,
-    monkeypatch,  # noqa: F811 — fixture param
+    park_project_modules,  # noqa: F811 — fixture param; pytest resolves it by name
+    monkeypatch,
 ):
     import fastplace.ai as ai_package
 
@@ -584,8 +584,11 @@ def test_embed_check_mismatch_exits_one(tmp_path, monkeypatch, park_project_modu
 
 
 def test_embed_check_unknown_class_exits_one(
-    tmp_path, monkeypatch, park_project_modules, embed_stub
-):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    tmp_path,
+    monkeypatch,
+    park_project_modules,  # noqa: F811 — fixture param
+    embed_stub,  # noqa: F811 — fixture param
+):
     _vector_project(tmp_path, monkeypatch, dims=512, suffix="unknown", url=PG_URL)
 
     result = runner.invoke(cli_app, ["ai:embed", "text", "--check", "Teapot"])
@@ -597,8 +600,8 @@ def test_embed_check_unknown_class_exits_one(
 def test_embed_check_sqlite_backend_notes_missing_dims(
     tmp_path,
     monkeypatch,
-    park_project_modules,
-    embed_stub,  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    park_project_modules,  # noqa: F811 — fixture param
+    embed_stub,
 ):
     url = f"sqlite+aiosqlite:///{tmp_path}/embed.db"
     _vector_project(tmp_path, monkeypatch, dims=512, suffix="sqlite", url=url)

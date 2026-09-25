@@ -92,9 +92,7 @@ def _project_root() -> Path:
 
 def _newest_log(logs_dir: Path) -> Path | None:
     """The most recently modified ``*.log`` in storage/logs, if any."""
-    return max(
-        logs_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, default=None
-    )
+    return max(logs_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, default=None)
 
 
 def _level_matches(line: str, level: str | None) -> bool:
@@ -122,8 +120,7 @@ def log_tail(
     path = file if file is not None else _newest_log(root / "storage" / "logs")
     if path is None or not path.is_file():
         console.print(
-            "[red]no log file found[/] — expected storage/logs/*.log "
-            "(or pass [cyan]--file[/])"
+            "[red]no log file found[/] — expected storage/logs/*.log (or pass [cyan]--file[/])"
         )
         raise typer.Exit(code=1)
 

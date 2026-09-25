@@ -59,9 +59,7 @@ class TestGenericScaffolds:
         assert rel in result.output
 
     @pytest.mark.parametrize(("argv", "rel", "markers"), _CASES)
-    def test_refuses_to_overwrite_without_force(
-        self, tmp_path, monkeypatch, argv, rel, markers
-    ):
+    def test_refuses_to_overwrite_without_force(self, tmp_path, monkeypatch, argv, rel, markers):
         result = _invoke(monkeypatch, tmp_path, *argv)
         assert result.exit_code == 0, result.output
 
@@ -90,9 +88,7 @@ class TestGenericScaffolds:
         assert result.exit_code == 0, result.output
         assert (tmp_path / "app" / "support" / "__init__.py").is_file()
 
-    def test_enum_stub_ships_a_member_placeholder_not_fake_values(
-        self, tmp_path, monkeypatch
-    ):
+    def test_enum_stub_ships_a_member_placeholder_not_fake_values(self, tmp_path, monkeypatch):
         result = _invoke(monkeypatch, tmp_path, "make:enum", "InvoiceStatus")
         assert result.exit_code == 0, result.output
         source = (tmp_path / "app" / "support" / "invoice_status.py").read_text()

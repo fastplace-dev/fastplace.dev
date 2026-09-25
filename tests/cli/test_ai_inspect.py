@@ -110,9 +110,7 @@ def test_ai_tools_imports_the_projects_tools(fresh_project, clean_tool_registry)
     assert "Look up internal documents" in out
 
 
-def test_ai_tools_degrades_gracefully_when_project_import_fails(
-    fresh_project, clean_tool_registry
-):
+def test_ai_tools_degrades_gracefully_when_project_import_fails(fresh_project, clean_tool_registry):
     (fresh_project / "app" / "ai" / "tools" / "broken.py").write_text(
         "raise RuntimeError('boom')\n"
     )

@@ -72,8 +72,7 @@ def key_generate(
         if current is not None and not force:
             console.print("[red]refusing to overwrite[/] APP_KEY — already set in .env")
             console.print(
-                "re-run with [cyan]--force[/] to rotate it "
-                "(the previous .env is kept as .env.bak)"
+                "re-run with [cyan]--force[/] to rotate it (the previous .env is kept as .env.bak)"
             )
             raise typer.Exit(code=1)
         if current is not None and text.strip():
