@@ -400,3 +400,44 @@ def http_check() -> None:
     load_env(root / ".env")
     reset_config(root)
     raise typer.Exit(code=_http_check_run(root))
+
+
+@http_app.command("middleware:list")
+def middleware_list() -> None:
+    """Print the resolved middleware onion (request order) + route-middleware alias table."""
+    from fastplace.cli.inspect import _load_asgi_app
+    from fastplace.config import load_env, reset_config
+    from fastplace.http.kernel import _ConfigShim, _route_middleware_registry
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    app = _load_asgi_app(root)
+
+    from rich.table import Table
+
+    onion = Table(title="Middleware onion (request order)")
+    onion.add_column("POS", justify="right")
+    onion.add_column("MIDDLEWARE")
+    onion.add_column("SOURCE")
+    # user_middleware is innermost-first (add_middleware inserts at 0);
+    # Starlette wraps with ServerErrorMiddleware (outer) / ExceptionMiddleware (inner).
+    total = len(app.user_middleware) + 1
+    onion.add_row("0", "starlette.middleware.errors.ServerErrorMiddleware", "[dim]starlette frame[/]")
+    for pos, entry in enumerate(reversed(app.user_middleware), start=1):
+        qualname = f"{entry.cls.__module__}.{entry.cls.__name__}"
+        source = "kernel" if entry.cls.__module__.startswith("fastplace.") else "MIDDLEWARE config"
+        onion.add_row(str(pos), qualname, source)
+    onion.add_row(str(total), "starlette.middleware.exceptions.ExceptionMiddleware", "[dim]starlette frame[/]")
+    console.print(onion)
+
+    registry = _route_middleware_registry({}, _ConfigShim({}, root=str(root)))
+    aliases = Table(title="ROUTE MIDDLEWARE aliases")
+    aliases.add_column("ALIAS")
+    aliases.add_column("RESOLVES TO")
+    for alias in sorted(registry):
+        resolved = registry[alias]
+        cls = resolved[0] if isinstance(resolved, tuple) else resolved
+        aliases.add_row(alias, f"{getattr(cls, '__module__', cls)}.{getattr(cls, '__name__', cls)}")
+    console.print(aliases)
