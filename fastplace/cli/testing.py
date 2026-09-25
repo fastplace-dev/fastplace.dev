@@ -251,3 +251,109 @@ def test_matrix(
         console.print(f"[red]matrix failed: {', '.join(failures)}[/]")
         raise typer.Exit(code=1)
     console.print("[green]matrix passed.[/]")
+
+
+_SCRATCH_DB_NAME = "testing.sqlite3"
+
+
+def _run_migrations(root: Path) -> bool:
+    """Real migrations; False = not configured (friendly skip, not an error)."""
+    from fastplace.orm.migrations import MigrationsManager
+
+    manager = MigrationsManager(root)
+    if not manager.configured:
+        # Same guard as `db migrate` (fastplace/cli/database.py), but a test
+        # scratch database without migrations is expected, not a refusal.
+        console.print(
+            "[yellow]Migrations are not configured — skipping migrations[/] "
+            "([cyan]fastplace db:configure[/] scaffolds them)."
+        )
+        return False
+    manager.upgrade()
+    return True
+
+
+def _run_seeders(root: Path) -> None:
+    from fastplace.orm.migrations import run_seeders
+
+    run_seeders(root)
+
+
+def _masked_url(url: str) -> str:
+    """URL with any password replaced by *** (db:cli precedent)."""
+    import re as _re
+
+    return _re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:***@", url)
+
+
+@testing_app.command("test:db")
+def test_db(
+    seed: bool = typer.Option(False, "--seed", help="Run database seeders after migrating."),
+    database_url: str = typer.Option(
+        "",
+        "--database-url",
+        help="Non-sqlite scratch target. Masked in output; production + non-local asks to confirm.",
+    ),
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation."),
+) -> None:
+    """Disposable scratch database: sqlite by default, your configured DB never touched."""
+    import os
+
+    from fastplace.config import config, load_env, reset_config
+    from fastplace.db import reset_db
+
+    root = _project_root()
+    load_env(root / ".env")  # FIRST — the scratch override must beat .env (override=False)
+    reset_config(root)
+
+    if database_url:
+        scratch_url = database_url
+        local_scratch = scratch_url.startswith("sqlite")
+    else:
+        storage = root / "storage"
+        storage.mkdir(parents=True, exist_ok=True)  # fresh worktrees lack it
+        scratch_url = f"sqlite+aiosqlite:///{storage / _SCRATCH_DB_NAME}"
+        local_scratch = True
+
+    if (
+        str(config("APP_ENV", default="production")).lower() == "production"
+        and not local_scratch
+        and not (force or typer.confirm("Point tests at this non-local database in production?"))
+    ):
+        console.print("[red]aborted[/]")
+        raise typer.Exit(code=1)
+
+    os.environ["DATABASE_URL"] = scratch_url
+    if local_scratch:
+        os.environ["DATABASE_DRIVER"] = "sqlite"
+
+    if local_scratch:
+        db_path = storage / _SCRATCH_DB_NAME
+        for stale in (
+            db_path,
+            db_path.with_name(db_path.name + "-wal"),
+            db_path.with_name(db_path.name + "-shm"),
+        ):
+            stale.unlink(missing_ok=True)
+        console.print(f"[dim]scratch database: {db_path}[/]")
+    else:
+        # Never print a raw DB URL: credentials stay out of terminals and CI logs.
+        console.print(f"[dim]scratch database: {_masked_url(scratch_url)}[/]")
+
+    reset_db()  # fresh manager picks up the scratch URL
+    ran = _run_migrations(root)
+    if seed:
+        try:
+            _run_seeders(root)
+        except ValueError as exc:
+            console.print(f"[red]seeder failed: {exc}[/]")
+            raise typer.Exit(code=1) from exc
+    if ran:
+        console.print(
+            "[green]scratch database ready.[/] [dim]never touched your configured database[/]"
+        )
+    else:
+        console.print(
+            "[green]scratch database ready (no migrations configured).[/] "
+            "[dim]never touched your configured database[/]"
+        )
