@@ -85,6 +85,24 @@ def test_live_rows_survive(database_cache):
     assert asyncio.run(database_cache.get("live")) == "y"
 
 
+def test_dry_run_on_virgin_database_self_heals(tmp_path, monkeypatch):
+    """--dry-run must not crash before the cache table exists.
+
+    The non-dry path self-heals via purge_expired()'s _ensure_table(); the
+    dry-run count SELECT must do the same on a first-run project instead of
+    raising OperationalError (no such table: cache). No seeding here — the
+    existing database_cache fixture's store.put() is what created the table
+    and hid this gap.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_ENV", "testing")
+    monkeypatch.setenv("CACHE_DRIVER", "database")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/x.db")
+    result = runner.invoke(cli_app, ["cache:gc", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "Would purge 0 expired row(s)." in _out(result)
+
+
 def test_memory_driver_is_a_no_op(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("APP_ENV", "testing")

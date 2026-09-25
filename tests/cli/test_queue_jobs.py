@@ -130,11 +130,15 @@ def test_empty_broker_is_dim(project):
 
 
 def test_saq_driver_via_fake_iter_jobs(project, monkeypatch):
+    import time
+
+    soon = int(time.time()) + 5
+
     class _FakeJob:
         status = "queued"
         function = "ping"
         attempts = 0
-        scheduled = 5000  # ms
+        scheduled = soon  # saq stores absolute epoch seconds
         kwargs = {"target": "[bold]x[/bold]"}
 
     class _FakeSaqQueue:
@@ -149,3 +153,36 @@ def test_saq_driver_via_fake_iter_jobs(project, monkeypatch):
     out = _out(result)
     assert "ping" in out
     assert "[bold]x[/bold]" in out
+
+
+def test_saq_scheduled_column_renders_epoch_seconds(project, monkeypatch):
+    """Lock the unit: saq's Job.scheduled is absolute epoch SECONDS.
+
+    Dividing by 1000 (as an early draft did) renders every scheduled job
+    as January 1970 — this test derives the expected string from the same
+    timestamp the fake carries, so a wrong unit changes the rendering and
+    fails here.
+    """
+    import datetime as dt
+    import time
+
+    ts = int(time.time()) + 5
+
+    class _FakeJob:
+        status = "scheduled"
+        function = "ping"
+        attempts = 0
+        scheduled = ts
+        kwargs = {"target": "x"}
+
+    class _FakeSaqQueue:
+        class queue:  # noqa: N801
+            @staticmethod
+            async def iter_jobs(statuses=None, batch_size=100):
+                yield _FakeJob()
+
+    monkeypatch.setattr("fastplace.queue.queue", lambda: _FakeSaqQueue())
+    result = runner.invoke(cli_app, ["queue:jobs"])
+    assert result.exit_code == 0, result.output
+    expected = dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    assert expected in _out(result)

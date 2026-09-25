@@ -182,6 +182,10 @@ def cache_gc(
             from fastplace.cache import _cache_table
             from fastplace.db import db
 
+            # A first-run project has no cache table yet; the non-dry path
+            # self-heals via purge_expired()'s own _ensure_table(), so the
+            # count SELECT must not skip it either (idempotent via _ensured).
+            await store._ensure_table()
             engine = db.manager.engine("default")
             async with engine.connect() as connection:
                 rows = await connection.execute(

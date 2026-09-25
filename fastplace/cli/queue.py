@@ -589,10 +589,12 @@ def queue_jobs(
                 statuses = (status,)
             broker: Any = getattr(store, "queue", None)
             async for job in broker.iter_jobs(statuses=statuses, batch_size=500):
-                scheduled_ms = getattr(job, "scheduled", 0)
+                # saq's Job.scheduled is absolute epoch SECONDS (its own
+                # docstring) — the same fact dispatch_delayed already encodes.
+                scheduled = getattr(job, "scheduled", 0)
                 when = (
-                    dt.datetime.fromtimestamp(scheduled_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
-                    if scheduled_ms
+                    dt.datetime.fromtimestamp(scheduled).strftime("%Y-%m-%d %H:%M:%S")
+                    if scheduled
                     else "-"
                 )
                 rows.append(
