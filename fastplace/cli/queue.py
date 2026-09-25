@@ -682,3 +682,64 @@ def queue_show(job_id: str = typer.Argument(..., help="Failed-job id.")) -> None
     console.print(Panel(body, title=f"[red]failed job #{numeric_id}[/]"))
     console.print(escape(str(record.error)))
     console.print(f"[cyan]fastplace queue:retry {numeric_id}[/]")
+
+
+@queue_app.command("queue:dispatch")
+def queue_dispatch(
+    name: str = typer.Argument(..., help="Registered job name."),
+    kwargs_json: str = typer.Option("{}", "--kwargs", help="JSON object of handler kwargs."),
+    delay: float = typer.Option(0.0, "--delay", help="Seconds to wait before the job runs."),
+) -> None:
+    """Enqueue one registered job without running it now."""
+    import asyncio
+    import json
+
+    from rich.markup import escape
+
+    from fastplace.console import console
+    from fastplace.queue import import_jobs, jobs
+    from fastplace.queue import queue as queue_factory
+
+    load_env()
+    root = _project_root()
+    import_jobs(root)
+    if name not in jobs():
+        console.print(
+            f"[red]unknown job '{escape(name)}'[/] — see [cyan]fastplace queue:list[/]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = json.loads(kwargs_json)
+    except ValueError as exc:
+        console.print(f"[red]invalid --kwargs JSON[/] — {escape(str(exc))}")
+        raise typer.Exit(code=1) from None
+    if not isinstance(parsed, dict):
+        console.print("[red]--kwargs must be a JSON object[/] of handler kwargs")
+        raise typer.Exit(code=1)
+
+    # The factory import is the test seam: patching fastplace.queue.queue
+    # swaps the store this command dispatches to, whatever the env says.
+    store: Any = queue_factory()
+
+    async def _run() -> None:
+        # Driver detection inspects the store, not the env (mirrors
+        # queue:jobs): the memory driver carries its in-process pending
+        # deque, a saq store pages the broker instead.
+        is_memory = hasattr(store, "pending")
+        if delay > 0:
+            if is_memory:
+                # Nothing ever comes back to run a queued job on this
+                # driver — an "in 5s" enqueue would silently never fire,
+                # so refuse before anything lands on the queue.
+                console.print(
+                    "[red]the memory driver cannot schedule delayed jobs[/] — use the saq driver"
+                )
+                raise typer.Exit(code=1)
+            await store.dispatch_delayed(name, kwargs=parsed, delay=delay)
+            return
+        await store.dispatch(name, **parsed)
+
+    asyncio.run(_run())
+    suffix = "" if delay <= 0 else f" (in {delay}s)"
+    console.print(f"[green]Dispatched '{escape(name)}'[/]{suffix}")
