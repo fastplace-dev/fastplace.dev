@@ -121,6 +121,38 @@ def test_fix_hint_rendered_dim():
     assert "run: fastplace key:generate" in _out(c)
 
 
+def test_markup_in_cells_renders_literally():
+    c = _capture()
+    code = run_checks(
+        "markup",
+        [
+            lambda: Check(
+                "na[me]",
+                "warn",
+                detail="got [/] stray tag",
+                fix="see [docs] first",
+            )
+        ],
+        console=c,
+    )
+    assert code == 0
+    out = _out(c)
+    assert "na[me]" in out
+    assert "got [/] stray tag" in out
+    assert "see [docs] first" in out
+
+
+def test_raising_check_message_with_markup_renders_literally():
+    c = _capture()
+
+    def _check_stray():
+        raise RuntimeError("bad closing [/] tag")
+
+    code = run_checks("markup raise", [_check_stray], console=c)
+    assert code == 1
+    assert "RuntimeError: bad closing [/] tag" in _out(c)
+
+
 def test_default_console_path_smoke(capsys):
     code = run_checks("default console", [lambda: Check("d", "pass")])
     assert code == 0

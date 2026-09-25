@@ -51,6 +51,7 @@ def run_checks(
     crashes mid-table; remaining checks still run. Any FAIL returns 1;
     WARN alone returns 0 (warnings must not block CI).
     """
+    from rich.markup import escape
     from rich.table import Table
 
     if console is None:
@@ -77,11 +78,15 @@ def run_checks(
     table.add_column("DETAIL")
     table.add_column("FIX", style="dim")
     for check in rows:
+        # Check data renders literally — a stray ``[/]`` in a name/detail/fix
+        # (or in a captured exception message) must not raise MarkupError.
+        # The STATUS cell stays raw: its [green]/[yellow]/[red] styling is
+        # intentional.
         table.add_row(
-            check.name,
+            escape(check.name),
             f"[{_STATUS_STYLE[check.status]}]{_STATUS_LABEL[check.status]}[/]",
-            check.detail,
-            check.fix,
+            escape(check.detail),
+            escape(check.fix),
         )
     console.print(table)
 
