@@ -2,8 +2,9 @@
 
 Fastplace is a modular monolith: feature code lives in bounded modules under
 ``app/modules/<name>`` with a fixed CSR layout (``models/``,
-``repositories/``, ``services/``). The seam between modules is the *service*
-layer — anything deeper (models, repositories) is private. :func:`lint_imports`
+``repositories/``, ``http/``, ``services/``). The seam between modules is the
+*service* layer — anything deeper (models, repositories, http) is private.
+:func:`lint_imports`
 enforces that boundary statically over the AST, and `fastplace lint:modules`
 reports it (exit 1 on violation) so CI keeps modules honest.
 """
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 #: Layers that are private to their module — the service seam is public.
-_PRIVATE_LAYERS = frozenset({"models", "repositories"})
+_PRIVATE_LAYERS = frozenset({"models", "repositories", "http"})
 
 
 @dataclass(frozen=True)
@@ -184,7 +185,7 @@ def _check(root: Path, file: Path, line: int, target: str, package: str) -> Impo
     pkg_parts = package.split(".")
     own = pkg_parts[2] if pkg_parts[:2] == ["app", "modules"] else None
     if own == target_module:
-        return None  # same module — models/repositories stay importable inside
+        return None  # same module — models/repositories/http stay importable inside
 
     rel_file = file.relative_to(root)
     if own is None:
@@ -194,8 +195,8 @@ def _check(root: Path, file: Path, line: int, target: str, package: str) -> Impo
             import_target=target,
             rule="csr:outside-module",
             message=(
-                f"{rel_file} is outside module '{target_module}' — models and "
-                "repositories are module-private; go through its services."
+                f"{rel_file} is outside module '{target_module}' — its models, "
+                "repositories and http layers are module-private; go through its services."
             ),
         )
     return ImportViolation(

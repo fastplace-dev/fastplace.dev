@@ -230,3 +230,91 @@ def test_star_import_of_a_module_root_is_flagged(tmp_path):
     violations = lint_imports(make_project(tmp_path, files))
     assert len(violations) >= 1
     assert any(v.import_target.endswith("models") for v in violations)
+
+
+# ---------------------------------------------------------------------------
+# module http layer is private — controllers/requests are a module's own edge
+# ---------------------------------------------------------------------------
+
+
+def test_cross_module_http_import_flagged(tmp_path):
+    """Another module importing billing's http layer is a boundary violation."""
+    project = make_project(
+        tmp_path,
+        {
+            "app/modules/billing/__init__.py": "",
+            "app/modules/billing/http/__init__.py": "",
+            "app/modules/billing/http/controllers/__init__.py": "",
+            "app/modules/billing/services/__init__.py": "",
+            "app/modules/accounts/__init__.py": "",
+            "app/modules/accounts/services/__init__.py": "",
+            "app/modules/accounts/services/account_service.py": (
+                "from app.modules.billing.http.controllers.billing_controller import BillingController\n"
+            ),
+        },
+    )
+
+    violations = lint_imports(project)
+
+    assert any(v.rule == "module:private-layer" for v in violations)
+
+
+def test_centralized_controller_importing_module_http_flagged(tmp_path):
+    """app/http may not reach into a module's private http edge either."""
+    project = make_project(
+        tmp_path,
+        {
+            "app/http/controllers/__init__.py": "",
+            "app/http/controllers/invoice_controller.py": (
+                "from app.modules.billing.http.requests.store_billing_request import StoreBillingRequest\n"
+            ),
+            "app/modules/billing/__init__.py": "",
+            "app/modules/billing/http/__init__.py": "",
+            "app/modules/billing/http/requests/__init__.py": "",
+        },
+    )
+
+    violations = lint_imports(project)
+
+    assert any(v.rule == "csr:outside-module" for v in violations)
+
+
+def test_same_module_http_imports_clean(tmp_path):
+    """A module's own routes/controller may import its own http layer freely."""
+    project = make_project(
+        tmp_path,
+        {
+            "app/modules/billing/__init__.py": "",
+            "app/modules/billing/http/__init__.py": "",
+            "app/modules/billing/http/controllers/__init__.py": "",
+            "app/modules/billing/http/controllers/billing_controller.py": "",
+            "app/modules/billing/http/requests/__init__.py": "",
+            "app/modules/billing/http/requests/store_billing_request.py": "",
+            "app/modules/billing/services/__init__.py": "",
+            "app/modules/billing/routes.py": (
+                "from app.modules.billing.http.controllers.billing_controller import BillingController\n"
+            ),
+        },
+    )
+
+    assert lint_imports(project) == []
+
+
+def test_from_module_import_http_alias_flagged(tmp_path):
+    """`from app.modules.billing import http` must not slip past the rule."""
+    project = make_project(
+        tmp_path,
+        {
+            "app/modules/billing/__init__.py": "",
+            "app/modules/billing/http/__init__.py": "",
+            "app/modules/accounts/__init__.py": "",
+            "app/modules/accounts/services/__init__.py": "",
+            "app/modules/accounts/services/account_service.py": (
+                "from app.modules.billing import http\n"
+            ),
+        },
+    )
+
+    violations = lint_imports(project)
+
+    assert any(v.rule == "module:private-layer" for v in violations)
