@@ -436,3 +436,83 @@ def test_coverage(
     if proc.returncode != 0:
         raise typer.Exit(code=proc.returncode)
     raise typer.Exit(code=_render_coverage_report(json_path, min_percent))
+
+
+def _relevant_change(path: str) -> bool:
+    """A .py under tests/ app/ fastplace/ routes/ — the trees whose saves
+    can change test outcomes. e2e/ and node_modules/ are excluded."""
+    from pathlib import PurePath
+
+    parts = PurePath(path).parts
+    return path.endswith(".py") and any(
+        top in parts for top in ("tests", "app", "fastplace", "routes")
+    )
+
+
+def _watch_dirs(root: Path) -> list[Path]:
+    """Existing watch roots only — never the repo root (watchfiles would
+    take thousands of handles through .venv/node_modules/.git)."""
+    return [
+        d for d in (root / "tests", root / "app", root / "fastplace", root / "routes") if d.is_dir()
+    ]
+
+
+def _suite_for(path: Path) -> list[str]:
+    """Changed test file → that file; changed source → whole suite with -x
+    (conservative: a source save is boundary-relevant everywhere)."""
+    name = path.name
+    if name.startswith("test_") and name.endswith(".py") and "tests" in path.parts:
+        return [str(path)]
+    return ["-x"]
+
+
+def _run_suite(extra: list[str]) -> int:
+    import sys
+
+    proc = _subprocess_run([sys.executable, "-m", "pytest", "-q", *extra])
+    return proc.returncode
+
+
+@testing_app.command("test:watch")
+def test_watch(
+    once: bool = typer.Option(
+        False, "--once", help="Run a single pass now and exit (no watching)."
+    ),
+) -> None:
+    """Re-run the affected tests on every .py save under tests/ app/ fastplace/ routes/.
+
+    Changed test file → pytest that file; changed source → the whole suite
+    with -x. Ctrl-C stops the watcher.
+    """
+    from fastplace.config import load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    def _pass() -> int:
+        console.print("[dim]running full suite (-x)…[/]")
+        return _run_suite(["-x"])
+
+    if once:
+        raise typer.Exit(code=_pass())
+
+    dirs = _watch_dirs(root)
+    if not dirs:
+        console.print(
+            "[red]nothing to watch[/] — no tests/ app/ fastplace/ routes/ directories exist."
+        )
+        raise typer.Exit(code=1)
+    console.print(f"watching {', '.join(str(d) for d in dirs)} — Ctrl-C to stop.")
+    try:
+        from watchfiles import watch
+
+        for changes in watch(*dirs, watch_filter=lambda _change, path: _relevant_change(str(path))):
+            for _kind, path in changes:
+                target = Path(path)
+                if _relevant_change(str(target)):
+                    console.print(f"[bold]changed:[/] {target}")
+                    code = _run_suite(_suite_for(target))
+                    console.print(f"[dim]exit {code}[/]")
+    except KeyboardInterrupt:
+        pass
