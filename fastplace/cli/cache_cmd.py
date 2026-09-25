@@ -280,3 +280,36 @@ def cache_put(
 
     suffix = "" if ttl is None else f" (ttl {ttl}s)"
     console.print(f"[green]Set cache key '{escape(key)}'[/]{suffix}")
+
+
+@cache_app.command("throttle:status")
+def throttle_status(
+    key: str = typer.Argument(..., help="Rate-limiter key to inspect."),
+    max_attempts: int = typer.Option(60, "--max", help="Attempt ceiling the middleware enforces."),
+) -> None:
+    """Show attempts and block state for one throttle key. Reads only."""
+    import asyncio
+
+    from rich.markup import escape
+
+    from fastplace.config import load_env
+
+    load_env()
+
+    async def _run() -> tuple[int, int]:
+        # Imported here so tests can monkeypatch the limiter symbol —
+        # the same seam throttle:clear uses; the limiter applies the
+        # ratelimit: key prefix itself, so reads match middleware writes.
+        from fastplace.ratelimit import RateLimiter
+
+        limiter = RateLimiter()
+        attempts = await limiter.attempts(key)
+        free_in = await limiter.available_in(key)
+        return attempts, free_in
+
+    attempts, free_in = asyncio.run(_run())
+    console.print(f"{escape(key)}: [bold]{attempts}/{max_attempts}[/] attempts")
+    if attempts >= max_attempts:
+        console.print(f"[yellow]blocked — free in {free_in}s[/]")
+    else:
+        console.print("[green]not blocked[/]")
