@@ -121,3 +121,58 @@ def mail_clear(
         dropped = sum(1 for _ in handle)
     path.write_text("")
     console.print(f"dropped {dropped} logged message(s)")
+
+
+@mail_app.command("mail:resend")
+def mail_resend(
+    line: int,
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Replay one logged message (a mail:outbox line number) through the active transport."""
+    import asyncio
+    import json
+
+    from fastplace.config import config, load_env
+
+    load_env()
+    driver = str(config("MAIL_DRIVER", default="log") or "log").strip().lower()
+    from fastplace.mail.transports import MAIL_LOG_PATH
+
+    payload = None
+    path = Path(MAIL_LOG_PATH)
+    if path.is_file():
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for lineno, text in enumerate(handle, start=1):  # stream-count: bounded memory
+                if lineno == line:
+                    try:
+                        payload = json.loads(text)
+                    except json.JSONDecodeError:
+                        console.print(f"[red]line {line} is not valid JSON[/]")
+                        raise typer.Exit(code=1) from None
+                    break
+    if payload is None:
+        console.print(f"[red]no message at line {line}[/] — check mail:outbox")
+        raise typer.Exit(code=1)
+
+    recipient = str(payload.get("to", ""))
+    subject = str(payload.get("subject", ""))
+    if driver == "smtp":
+        question = f"Resend '{subject}' to {recipient}? Real mail will be sent."
+    else:
+        question = f"Replay logged message {line} through the active transport?"
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm(question)
+    ):
+        console.print("[red]aborted[/] — nothing was sent")
+        raise typer.Exit(code=1)
+
+    async def _run() -> None:
+        from fastplace.mail import Mail, message_from_dict
+
+        await Mail.deliver(message_from_dict(payload))
+
+    asyncio.run(_run())
+    if driver == "log":
+        console.print(f"replayed line {line} — appended a duplicate entry to the log")
+    else:
+        console.print(f"resent '{subject}' to {recipient} via {driver}")

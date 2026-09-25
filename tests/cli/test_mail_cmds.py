@@ -240,3 +240,96 @@ def test_clear_missing_log_is_dim_exit_zero(outbox_log):
 
     assert result.exit_code == 0, result.output
     assert "no mail log" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# mail:resend — guarded replay through the active transport
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def deliver_journal(monkeypatch):
+    """Record every Mail.deliver call; the command imports Mail at call time."""
+    from fastplace.mail import Mail
+
+    journal: list = []
+
+    async def _deliver(message):
+        journal.append(message)
+        return None
+
+    monkeypatch.setattr(Mail, "deliver", _deliver)
+    return journal
+
+
+def test_resend_log_driver_appends_duplicate(outbox_log, monkeypatch):
+    monkeypatch.setenv("MAIL_DRIVER", "log")
+    outbox_log.write_text(_line("first") + "\n" + _line("second") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:resend", "2"])
+
+    assert result.exit_code == 0, result.output
+    lines = outbox_log.read_text().splitlines()
+    assert len(lines) == 3  # the replay appended a duplicate entry
+    assert json.loads(lines[-1])["subject"] == "second"
+    plain = ANSI_RE.sub("", result.output)
+    assert "duplicate" in plain
+
+
+def test_resend_smtp_guard_blocks_with_real_mail_statement(
+    outbox_log, monkeypatch, deliver_journal
+):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    outbox_log.write_text(_line("invoice", to="payer@example.com") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:resend", "1"], input="n\n")
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "aborted" in plain
+    assert "payer@example.com" in plain and "real mail" in plain.lower()
+    assert deliver_journal == []  # nothing left the process
+
+
+def test_resend_smtp_force_delivers_rebuilt_message(outbox_log, monkeypatch, deliver_journal):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    outbox_log.write_text(_line("invoice", to="payer@example.com") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:resend", "1", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert len(deliver_journal) == 1
+    assert deliver_journal[0].to == "payer@example.com"
+    assert deliver_journal[0].subject == "invoice"
+    assert "payer@example.com" in ANSI_RE.sub("", result.output)
+
+
+def test_resend_missing_line_exits_one(outbox_log, monkeypatch):
+    monkeypatch.setenv("MAIL_DRIVER", "log")
+    outbox_log.write_text(_line("only") + "\n")
+
+    result = runner.invoke(cli_app, ["mail:resend", "7"])
+
+    assert result.exit_code == 1
+    assert "no message at line 7" in ANSI_RE.sub("", result.output)
+
+
+def test_resend_missing_log_exits_one(outbox_log, monkeypatch):
+    monkeypatch.setenv("MAIL_DRIVER", "log")
+
+    result = runner.invoke(cli_app, ["mail:resend", "1"])
+
+    assert result.exit_code == 1
+    assert "no message at line 1" in ANSI_RE.sub("", result.output)
+
+
+def test_resend_malformed_json_at_line_exits_one(outbox_log, monkeypatch):
+    monkeypatch.setenv("MAIL_DRIVER", "log")
+    outbox_log.write_text("{not json}\n")
+
+    result = runner.invoke(cli_app, ["mail:resend", "1"])
+
+    assert result.exit_code == 1
+    assert "not valid JSON" in ANSI_RE.sub("", result.output)
