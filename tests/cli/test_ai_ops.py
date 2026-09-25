@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Any
 
 import pytest
 from _isolation import isolate_project_state, park_project_modules  # noqa: F401
@@ -135,3 +136,199 @@ def test_tool_run_invalid_json_exits_one(tools_project, park_project_modules):  
 
     assert result.exit_code == 1
     assert "invalid --args JSON" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# ai:chat — every path through the _completion_fn seam, zero network
+# ---------------------------------------------------------------------------
+
+
+class _Function:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _Message:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _Choice:
+    def __init__(self, message):
+        self.message = message
+        self.finish_reason = "tool_calls" if message.tool_calls else "stop"
+
+
+class _Response:
+    def __init__(self, message):
+        self.choices = [_Choice(message)]
+
+
+class _ScriptedCompletions:
+    """Returns queued responses in order, recording every request."""
+
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, **kwargs: Any):
+        self.calls.append(kwargs)
+        if not self.responses:
+            raise AssertionError("completion seam called more times than scripted")
+        return self.responses.pop(0)
+
+
+@pytest.fixture()
+def scripted(monkeypatch):
+    def _install(*responses):
+        import fastplace.ai.agent as agent_module
+
+        seam = _ScriptedCompletions(*responses)
+        monkeypatch.setattr(agent_module, "_completion_fn", seam)
+        return seam
+
+    return _install
+
+
+AGENTS_MODULE = '''from fastplace.ai import Agent
+
+
+def helper_agent() -> Agent:
+    return Agent(model="factory-model-x")
+'''
+
+
+@pytest.fixture()
+def agents_project(tmp_path, monkeypatch):
+    (tmp_path / "asgi.py").write_text("# marker — the _project_root() check\n")
+    for package in ("app", "app/ai", "app/ai/agents"):
+        (tmp_path / package).mkdir(parents=True, exist_ok=True)
+        (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / "app/ai/agents/helper.py").write_text(AGENTS_MODULE)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def test_chat_prints_the_completion_reply(tmp_path, monkeypatch, scripted):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+    scripted(_Response(_Message(content="hello back")))
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi"])
+
+    assert result.exit_code == 0, result.output
+    assert "hello back" in ANSI_RE.sub("", result.output)
+
+
+def test_chat_uses_the_factory_agent_when_named(agents_project, park_project_modules, scripted):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    scripted(_Response(_Message(content="from factory")))
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi", "--agent", "helper_agent"])
+
+    assert result.exit_code == 0, result.output
+    assert "from factory" in ANSI_RE.sub("", result.output)
+
+
+def test_chat_agent_flag_needs_a_project(tmp_path, monkeypatch, scripted):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)  # no asgi.py — bare chat works, --agent must not
+    scripted(_Response(_Message(content="unused")))
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi", "--agent", "helper_agent"])
+
+    assert result.exit_code == 1
+    assert "not inside a Fastplace project" in ANSI_RE.sub("", result.output)
+
+
+def test_chat_unknown_agent_lists_known_factories(agents_project, park_project_modules, scripted):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    scripted(_Response(_Message(content="unused")))
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi", "--agent", "nope"])
+
+    assert result.exit_code == 1
+    plain = ANSI_RE.sub("", result.output)
+    assert "nope" in plain and "helper_agent" in plain
+
+
+def test_chat_model_overrides_the_agent_model(agents_project, park_project_modules, scripted):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    seam = scripted(_Response(_Message(content="ok")))
+
+    result = runner.invoke(
+        cli_app, ["ai:chat", "hi", "--agent", "helper_agent", "--model", "gpt-override"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seam.calls[0]["model"] == "gpt-override"
+
+
+def test_chat_provider_failure_exits_one(tmp_path, monkeypatch, scripted):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    class _Boom:
+        async def __call__(self, **kwargs):
+            raise RuntimeError("provider down")
+
+    import fastplace.ai.agent as agent_module
+
+    monkeypatch.setattr(agent_module, "_completion_fn", _Boom())
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi"])
+
+    assert result.exit_code == 1
+    assert "provider down" in ANSI_RE.sub("", result.output)
+
+
+class _Delta:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _ChunkChoice:
+    def __init__(self, delta):
+        self.delta = delta
+
+
+class _Chunk:
+    def __init__(self, content):
+        self.choices = [_ChunkChoice(_Delta(content=content))]
+
+
+class _StreamingCompletions:
+    """stream=True calls get an async iterator of chunks."""
+
+    def __init__(self, *chunks):
+        self.chunks = list(chunks)
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, **kwargs: Any):
+        self.calls.append(kwargs)
+
+        async def _aiter():
+            for chunk in self.chunks:
+                yield chunk
+
+        return _aiter()
+
+
+def test_chat_stream_prints_deltas_then_done(tmp_path, monkeypatch):
+    import fastplace.ai.agent as agent_module
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        agent_module,
+        "_completion_fn",
+        _StreamingCompletions(_Chunk("hel"), _Chunk("lo")),
+    )
+
+    result = runner.invoke(cli_app, ["ai:chat", "hi", "--stream"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "hello" in plain  # both delta tokens printed inline
+    assert "done" in plain
