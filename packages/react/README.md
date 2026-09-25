@@ -5,6 +5,8 @@ The React side of the Fastplace bridge — a server-driven SPA over the
 `render(...)` Python-side; this package mounts the right page component
 with the server-supplied props on the client.
 
+- **ESM-only**: the package ships ECMAScript modules (no CommonJS build);
+  use a bundler (Vite, webpack, esbuild) to consume it.
 - **Install**: the Fastplace app template wires this in for you
   (`npm install @fastplace/react` in a manual setup)
 - **Docs**: <https://fastplace.dev>

@@ -38,6 +38,32 @@ Feature knobs worth knowing: monkeypatch `request.set_user(...)` instead
 of building auth fixtures; `.env` is never read by the suite (config
 comes from explicit test config).
 
+## Running the test matrix
+
+```bash
+python -m pytest -q
+```
+
+A plain run is SQLite-only: 2118 tests, plus 23 env-gated tests that skip
+with self-explanatory reasons. The remaining backends are opt-in through
+three environment variables:
+
+- **`TEST_POSTGRES_URL`** — the PostgreSQL dialect suite plus the tenancy
+  RLS suite.
+- **`TEST_MYSQL_URL`** — the MySQL dialect suite.
+- **`TEST_MONGODB_URL`** — the MongoDB contract suite (9 tests).
+
+```bash
+TEST_POSTGRES_URL="postgresql://user@localhost/fastplace_test" \
+TEST_MYSQL_URL="mysql://root@localhost:3306/fastplace_test" \
+TEST_MONGODB_URL="mongodb://localhost:27017" python -m pytest tests/orm/ tests/tenancy/ -q
+```
+
+The parametrized `backend` fixture also skips pairings that do not apply
+to the backend at hand — native-RLS tests skip on non-PostgreSQL backends —
+so a fully green matrix run can still print skips. `pytest -rs` lists
+every skip reason.
+
 ## Frontend — vitest + testing-library
 
 ```bash

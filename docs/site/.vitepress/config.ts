@@ -13,9 +13,18 @@ export default defineConfig({
   description:
     "An opinionated, full-stack, AI-native web framework built on Python and React — a productive developer experience, one modular-monolith deployable.",
   base,
-  head: [["link", { rel: "canonical", href: "https://fastplace.dev/" }]],
   cleanUrls: true,
+  sitemap: { hostname: "https://fastplace.dev" },
+  // Per-page canonical: a single static <link rel="canonical"> pointing at
+  // "/" tells search engines every page duplicates the homepage.
+  transformHead({ pageData, head }) {
+    const path = pageData.relativePath
+      .replace(/\.md$/, "")
+      .replace(/(^|\/)index$/, "$1");
+    head.push(["link", { rel: "canonical", href: `https://fastplace.dev/${path}` }]);
+  },
   themeConfig: {
+    search: { provider: "local" },
     siteTitle: "Fastplace",
     nav: [
       { text: "Docs", activeMatch: "/(getting-started|guides|api)/", items: [
@@ -44,6 +53,7 @@ export default defineConfig({
           { text: "Background jobs & cache", link: "/guides/background-and-cache" },
           { text: "Testing", link: "/guides/testing" },
           { text: "Deployment", link: "/guides/deployment" },
+          { text: "Versioning", link: "/guides/versioning" },
         ],
       },
       {

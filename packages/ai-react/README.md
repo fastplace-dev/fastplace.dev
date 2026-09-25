@@ -4,6 +4,8 @@ Streaming AI hooks for Fastplace — React bindings for the framework's
 `/ai/*` SSE endpoints. Agents stream tokens as they are produced; these
 hooks consume the stream and hand you reactive state for it.
 
+- **ESM-only**: the package ships ECMAScript modules (no CommonJS build);
+  use a bundler (Vite, webpack, esbuild) to consume it.
 - **Install**: wired into the Fastplace app template
   (`npm install @fastplace/ai-react` in a manual setup)
 - **Docs**: <https://fastplace.dev>

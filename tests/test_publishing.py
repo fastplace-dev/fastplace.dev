@@ -36,6 +36,7 @@ SITE_PAGES = {
     "guides/background-and-cache.md",
     "guides/testing.md",
     "guides/deployment.md",
+    "guides/versioning.md",
     "api/overview.md",
 }
 
@@ -172,8 +173,10 @@ def test_frontend_packages_declare_repository_links():
 
 def test_frontend_packages_ship_readmes():
     expectations = {
-        "react": ("usePage", "render(", "X-Fastplace-Request"),
-        "ai-react": ("useAIStream", "useAgent", "SSE"),
+        # "ESM-only": the packages ship no CJS build — CommonJS hosts need a
+        # bundler, and the README must say so before install time.
+        "react": ("usePage", "render(", "X-Fastplace-Request", "ESM"),
+        "ai-react": ("useAIStream", "useAgent", "SSE", "ESM"),
     }
     for name, needles in expectations.items():
         readme = (ROOT / "packages" / name / "README.md").read_text()
