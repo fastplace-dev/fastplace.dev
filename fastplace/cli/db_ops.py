@@ -11,12 +11,15 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO
+from typing import IO, TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
 import typer
 
 from fastplace.config import config, load_env
+
+if TYPE_CHECKING:  # annotations stay lazy; runtime imports remain function-local
+    from fastplace.cli._doctor import Check
 
 db_ops_app = typer.Typer(help="Database connection operations.")
 
@@ -567,3 +570,174 @@ def db_export() -> None:
 
     size = dest.stat().st_size if dest.is_file() else _dir_size(dest)
     console.print(f"[green]exported[/] — {escape(str(dest))} ({size} bytes)")
+
+
+#: (driver module, fastplace extra) per connection family. sqlite ships with
+#: the dev dependency set — no extra to install, hence ``None``.
+_DB_DRIVER_EXTRAS: dict[str, tuple[str, str] | None] = {
+    "sqlite": None,
+    "postgresql": ("asyncpg", "postgresql"),
+    "postgres": ("asyncpg", "postgresql"),
+    "mysql": ("asyncmy", "mysql"),
+    "mariadb": ("asyncmy", "mysql"),
+    "mongodb": ("pymongo", "mongodb"),
+}
+
+
+def _db_url_family() -> tuple[str, str]:
+    """(family, raw DATABASE_URL) — family is "" when the URL is unset."""
+    url = str(config("DATABASE_URL", default="") or "")
+    if not url:
+        return "", url
+    return _driver_family(url), url
+
+
+def _check_driver_url() -> Check:
+    from fastplace.cli._doctor import Check
+
+    family, url = _db_url_family()
+    if not family:
+        return Check(
+            "driver_url",
+            "fail",
+            "DATABASE_URL is not set",
+            "set DATABASE_URL in .env (sqlite+aiosqlite:///… for zero-config)",
+        )
+    if family not in _DB_DRIVER_EXTRAS:
+        return Check(
+            "driver_url",
+            "fail",
+            f"unknown scheme '{family}://' — expected sqlite, postgresql, mysql, or mongodb",
+            f"check the DATABASE_URL scheme in .env: {url.partition('://')[0]}:// is not supported",
+        )
+    return Check("driver_url", "pass", family)
+
+
+def _check_driver_extra() -> Check:
+    import importlib.util
+
+    from fastplace.cli._doctor import Check
+
+    family, _ = _db_url_family()
+    extra = _DB_DRIVER_EXTRAS.get(family or "sqlite")
+    if extra is None:
+        return Check("driver_extra", "pass", "sqlite — built in, no extra needed")
+    module, extra_name = extra
+    if importlib.util.find_spec(module) is None:
+        return Check(
+            "driver_extra",
+            "fail",
+            f"{family} URLs need the '{module}' driver, which is not installed",
+            f'pip install "fastplace[{extra_name}]"',
+        )
+    return Check("driver_extra", "pass", f"{module} importable")
+
+
+def _check_migrations(root: Path) -> Check:
+    from fastplace.cli._doctor import Check
+
+    versions = Path(root) / "database" / "migrations" / "versions"
+    if not versions.is_dir():
+        return Check(
+            "migrations",
+            "fail",
+            "database/migrations/versions/ does not exist",
+            "fastplace db:configure",
+        )
+    revisions = [p for p in versions.iterdir() if p.suffix == ".py" and p.name != "__init__.py"]
+    if not revisions:
+        return Check(
+            "migrations",
+            "warn",
+            "scaffold present but no revisions yet",
+            "fastplace make:migration <name>",
+        )
+    return Check("migrations", "pass", f"{len(revisions)} revision file(s)")
+
+
+def _check_vector_capability(root: Path) -> Check:
+    from fastplace.cli._doctor import Check
+    from fastplace.cli.ai_ops import _vector_columns
+    from fastplace.cli.inspect import collect_models
+
+    family, _ = _db_url_family()
+    declared: list[str] = []
+    for model_cls in collect_models(Path(root)):  # type: ignore[arg-type]
+        for column, _dims in _vector_columns(model_cls):
+            declared.append(f"{model_cls.__name__}.{column}")
+    if not declared:
+        return Check("vector_capability", "pass", "no vector columns declared")
+    if family != "postgresql":
+        return Check(
+            "vector_capability",
+            "fail",
+            f"vector columns {', '.join(declared)} need pgvector",
+            "switch DATABASE_URL to postgresql:// and run CREATE EXTENSION vector",
+        )
+
+    async def _probe() -> bool:
+        from sqlalchemy import text
+
+        from fastplace.db import db
+
+        engine = db.manager.engine("default")
+        try:
+            async with engine.connect() as connection:
+                row = await connection.execute(
+                    text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                )
+                return row.scalar() is not None
+        finally:
+            await engine.dispose()
+
+    try:
+        present = asyncio.run(_probe())
+    except Exception as exc:  # noqa: BLE001 — unreachability is itself the finding
+        return Check(
+            "vector_capability",
+            "fail",
+            f"cannot probe pg_extension: {type(exc).__name__}",
+            "run fastplace db:health — the database must be reachable to verify pgvector",
+        )
+    if present:
+        return Check("vector_capability", "pass", f"pgvector live for {', '.join(declared)}")
+    return Check(
+        "vector_capability",
+        "fail",
+        f"vector columns {', '.join(declared)} but extension 'vector' is not installed",
+        "CREATE EXTENSION vector;",
+    )
+
+
+@db_ops_app.command("db:doctor")
+def db_doctor() -> None:
+    """DB stack diagnosis: driver coherence, extras, migrations, vector capability."""
+    from fastplace.cli._doctor import run_checks
+    from fastplace.cli.system import _project_root
+    from fastplace.config import reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    # Bind the config registry to the invoked project — otherwise the
+    # process singleton keeps whatever defaults an earlier command loaded,
+    # and driver_url would PASS against a foreign project's DATABASE_URL.
+    reset_config(root)
+
+    # Named closures (not lambdas) so a raising check degrades to a readable
+    # row name — run_checks' fallback derives it from __name__.
+    def _migrations_check() -> Check:
+        return _check_migrations(root)
+
+    def _vector_check() -> Check:
+        return _check_vector_capability(root)
+
+    code = run_checks(
+        "Database doctor",
+        [
+            _check_driver_url,
+            _check_driver_extra,
+            _migrations_check,
+            _vector_check,
+        ],
+    )
+    raise typer.Exit(code=code)

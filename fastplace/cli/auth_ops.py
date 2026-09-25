@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import typer
 
 from fastplace.console import console
+
+if TYPE_CHECKING:  # annotations stay lazy; runtime imports remain function-local
+    from fastplace.cli._doctor import Check, Status
 
 auth_ops_app = typer.Typer(help="Auth & security operations (tokens, gates, sessions, 2FA).")
 
@@ -332,3 +337,157 @@ def auth_reset_link(
             "[dim]reset mail dispatched through the active transport "
             "(queued when smtp+saq — run queue:work)[/]"
         )
+
+
+# ---------------------------------------------------------------------------
+# auth:doctor — roadmap app plane doctor
+# ---------------------------------------------------------------------------
+
+
+def _check_app_key() -> Check:
+    """APP_KEY present and strong enough to sign session cookies."""
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    status: Status
+    detail: str
+    key = str(config("APP_KEY", default="") or "")
+    env = str(config("APP_ENV", default="local")).lower()
+    if not key:
+        status, detail = (
+            ("fail", "APP_KEY empty in production — session cookies cannot be signed")
+            if env == "production"
+            else ("warn", "APP_KEY not set — session cookies cannot be signed")
+        )
+        return Check("app_key", status, detail, "fastplace key:generate")
+    if len(key) < 32:
+        return Check(
+            "app_key",
+            "warn",
+            f"{len(key)} bytes — below the 32-byte HMAC threshold",
+            "fastplace key:generate --force",
+        )
+    return Check("app_key", "pass", f"set ({len(key)} bytes)")
+
+
+def _check_session_driver() -> Check:
+    """SESSION_DRIVER resolves; silent in-memory fallback in production is a WARN."""
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+    from fastplace.errors import ConfigurationError
+    from fastplace.http.session import session_store
+
+    try:
+        store = session_store()
+    except ConfigurationError as exc:
+        return Check(
+            "session_driver",
+            "fail",
+            str(exc),
+            "set SESSION_DRIVER to database, redis, or memory in .env",
+        )
+    driver = type(store).__name__.removesuffix("SessionStore").lower()
+    env = str(config("APP_ENV", default="local")).lower()
+    if driver == "memory" and env == "production":
+        return Check(
+            "session_driver",
+            "warn",
+            "memory sessions in production — auth:logout-everywhere destroys nothing",
+            "set SESSION_DRIVER=database (or redis) in .env",
+        )
+    return Check("session_driver", "pass", driver)
+
+
+def _check_auth_windows() -> Check:
+    """Throttle + expiry knobs stay inside defensible windows."""
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    warnings: list[str] = []
+    expire = int(config("AUTH_PASSWORD_EXPIRE", default=60) or 0)
+    throttle = int(config("AUTH_RESET_THROTTLE", default=60) or 0)
+    attempts = int(config("AUTH_LOGIN_MAX_ATTEMPTS", default=5) or 0)
+    if expire > 120:
+        warnings.append(f"AUTH_PASSWORD_EXPIRE={expire}m — reset tokens live over 2h")
+    if throttle < 30:
+        warnings.append(f"AUTH_RESET_THROTTLE={throttle}s — under 30s invites reset-email flooding")
+    if attempts < 3:
+        warnings.append(f"AUTH_LOGIN_MAX_ATTEMPTS={attempts} — lockout kicks in too early")
+    if warnings:
+        return Check(
+            "auth_windows", "warn", "; ".join(warnings), "tighten the listed knobs in .env"
+        )
+    return Check(
+        "auth_windows",
+        "pass",
+        f"reset {expire}m / throttle {throttle}s / lockout after {attempts} attempts",
+    )
+
+
+#: Framework auth ledger tables the doctor probes (created lazily on first
+#: use — absence is a heads-up, not an error; unreachability is).
+_AUTH_TABLES = (
+    "personal_access_tokens",
+    "password_reset_tokens",
+    "remember_tokens",
+    "sessions",
+)
+
+
+def _check_auth_tables() -> Check:
+    """PAT / reset / remember / session tables are reachable on the default DB."""
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+
+    async def _probe() -> list[str]:
+        from sqlalchemy import inspect as sa_inspect
+
+        from fastplace.db import db
+
+        engine = db.manager.engine("default")
+        try:
+            async with engine.connect() as connection:
+                names = await connection.run_sync(lambda conn: sa_inspect(conn).get_table_names())
+        finally:
+            await engine.dispose()
+        return names
+
+    try:
+        existing = asyncio.run(_probe())
+    except Exception as exc:  # noqa: BLE001 — unreachability is itself the finding
+        return Check(
+            "auth_tables",
+            "fail",
+            f"cannot probe the database: {type(exc).__name__}",
+            "run fastplace db:health — the database must be reachable",
+        )
+    missing = [name for name in _AUTH_TABLES if name not in existing]
+    if missing:
+        return Check(
+            "auth_tables",
+            "warn",
+            f"created on first use: {', '.join(missing)}",
+            "no action — tables appear when first written",
+        )
+    return Check("auth_tables", "pass", "4/4 present")
+
+
+@auth_ops_app.command("auth:doctor")
+def auth_doctor() -> None:
+    """Auth stack diagnosis: APP_KEY, session driver, windows, ledger tables."""
+
+    from fastplace.cli._doctor import run_checks
+    from fastplace.cli.system import _project_root
+    from fastplace.config import load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    # Bind the config registry to the invoked project (doctor umbrella pattern).
+    reset_config(root)
+
+    code = run_checks(
+        "Auth doctor",
+        [_check_app_key, _check_session_driver, _check_auth_windows, _check_auth_tables],
+    )
+    raise typer.Exit(code=code)

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from fastplace.console import console
+
+if TYPE_CHECKING:  # annotations stay lazy; runtime imports remain function-local
+    from fastplace.cli._doctor import Check
 
 mail_app = typer.Typer(help="Mail operations (outbox log, preview, replay).")
 
@@ -178,3 +182,181 @@ def mail_resend(
         console.print(f"replayed line {line} — appended a duplicate entry to the log")
     else:
         console.print(f"resent '{subject}' to {recipient} via {driver}")
+
+
+# ---------------------------------------------------------------------------
+# mail:doctor — roadmap app plane doctor
+# ---------------------------------------------------------------------------
+
+
+def _mail_driver() -> str:
+    from fastplace.config import config
+
+    return str(config("MAIL_DRIVER", default="log") or "log").lower()
+
+
+def _check_mail_driver() -> Check:
+    from fastplace.cli._doctor import Check
+    from fastplace.errors import ConfigurationError
+    from fastplace.mail.transports import transport_for
+
+    try:
+        transport_for()
+    except ConfigurationError as exc:
+        return Check("driver", "fail", str(exc), "set MAIL_DRIVER to log, memory, or smtp in .env")
+    return Check("driver", "pass", _mail_driver())
+
+
+def _check_smtp_extra() -> Check:
+    import importlib.util
+
+    from fastplace.cli._doctor import Check
+
+    if _mail_driver() != "smtp":
+        return Check("smtp_extra", "pass", f"not needed (driver={_mail_driver()})")
+    if importlib.util.find_spec("aiosmtplib") is None:
+        return Check(
+            "smtp_extra",
+            "fail",
+            "MAIL_DRIVER=smtp requires aiosmtplib, which is not installed",
+            'pip install "fastplace[mail]"',
+        )
+    return Check("smtp_extra", "pass", "aiosmtplib importable")
+
+
+def _check_smtp_config() -> Check:
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    if _mail_driver() != "smtp":
+        return Check("smtp_config", "pass", f"driver={_mail_driver()} — no smtp credentials needed")
+    missing = [
+        name
+        for name in ("MAIL_HOST", "MAIL_USERNAME", "MAIL_PASSWORD")
+        if not str(config(name, default="") or "")
+    ]
+    if missing:
+        return Check(
+            "smtp_config",
+            "fail",
+            f"missing: {', '.join(missing)}",
+            "set MAIL_HOST / MAIL_USERNAME / MAIL_PASSWORD in .env",
+        )
+    # Masked summary: host and user are operational data; the password is
+    # only ever reported as hidden — never rendered, even partially.
+    host = str(config("MAIL_HOST", default=""))
+    port = str(config("MAIL_PORT", default="25") or "25")
+    user = str(config("MAIL_USERNAME", default=""))
+    return Check("smtp_config", "pass", f"{host}:{port} {user} (password hidden)")
+
+
+def _check_queued_worker() -> Check:
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    queued = (
+        _mail_driver() == "smtp" and str(config("QUEUE_DRIVER", default="memory")).lower() == "saq"
+    )
+    if not queued:
+        return Check("queued_worker", "pass", "inline delivery (not queued)")
+    return Check(
+        "queued_worker",
+        "warn",
+        "smtp mail is queued — without a running worker nothing is delivered",
+        "fastplace queue:work",
+    )
+
+
+def _check_mail_send_registration(root: Path) -> Check:
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    queued = (
+        _mail_driver() == "smtp" and str(config("QUEUE_DRIVER", default="memory")).lower() == "saq"
+    )
+    if not queued:
+        return Check("mail_send", "pass", "not queued — no handler needed")
+    from fastplace.queue import import_jobs, jobs
+
+    import_jobs(root)
+    if "mail_send" in jobs():
+        return Check("mail_send", "pass", "handler registered")
+    return Check(
+        "mail_send",
+        "warn",
+        "no mail_send handler registered — queued mail would be dropped",
+        'register a @Job(name="mail_send") handler in app/jobs/',
+    )
+
+
+def _check_connect(host: str, port: str, enabled: bool) -> Check:
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+
+    if not enabled:
+        return Check("connect", "pass", "skipped (pass --connect for a live wire check)")
+    if _mail_driver() != "smtp":
+        return Check("connect", "pass", f"skipped (driver={_mail_driver()})")
+
+    async def _wire() -> bytes:
+        # Raw socket probe — dependency-free, so --connect works even before
+        # the aiosmtplib extra is installed: banner in = wire live.
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, int(port)), timeout=5.0
+        )
+        try:
+            return await asyncio.wait_for(reader.readline(), timeout=5.0)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    try:
+        asyncio.run(_wire())
+    except Exception as exc:  # noqa: BLE001 — the refused wire is the finding
+        return Check(
+            "connect",
+            "fail",
+            f"{host}:{port} unreachable ({type(exc).__name__})",
+            "check MAIL_HOST / MAIL_PORT and that the SMTP server accepts connections",
+        )
+    return Check("connect", "pass", f"{host}:{port} answered the SMTP banner")
+
+
+@mail_app.command("mail:doctor")
+def mail_doctor(
+    connect: bool = typer.Option(False, "--connect", help="Open a live wire to the SMTP server."),
+) -> None:
+    """Mail stack diagnosis: driver, extra, masked config, queue readiness, wire."""
+    from fastplace.cli._doctor import run_checks
+    from fastplace.cli.system import _project_root
+    from fastplace.config import config, load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    # Bind the config registry to the invoked project (doctor umbrella pattern).
+    reset_config(root)
+
+    host = str(config("MAIL_HOST", default="127.0.0.1"))
+    port = str(config("MAIL_PORT", default="25") or "25")
+
+    # Named closures (not lambdas) so a raising check degrades to a readable
+    # row name — run_checks derives it from __name__.
+    def _mail_send_check() -> Check:
+        return _check_mail_send_registration(root)
+
+    def _connect_check() -> Check:
+        return _check_connect(host, port, connect)
+
+    code = run_checks(
+        "Mail doctor",
+        [
+            _check_mail_driver,
+            _check_smtp_extra,
+            _check_smtp_config,
+            _check_queued_worker,
+            _mail_send_check,
+            _connect_check,
+        ],
+    )
+    raise typer.Exit(code=code)

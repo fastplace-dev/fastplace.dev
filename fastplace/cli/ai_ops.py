@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 from fastplace.console import console
+
+if TYPE_CHECKING:  # annotations stay lazy; runtime imports remain function-local
+    from fastplace.cli._doctor import Check
 
 ai_ops_app = typer.Typer(help="AI operations (chat, tools, agents, embeddings).")
 
@@ -310,3 +313,173 @@ def ai_embed(
             )
     if mismatched:
         raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# ai:doctor — roadmap app plane doctor
+# ---------------------------------------------------------------------------
+
+#: Known output dimensions for shipped embedding models. Anything outside
+#: this table cannot be statically checked — the live check is `ai:embed
+#: --verify`, which embeds and measures.
+_EMBEDDING_DIMS: dict[str, int] = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+}
+
+
+def _check_provider_key() -> Check:
+    import os
+
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    model = str(config("AI_MODEL", default="")).lower()
+    if "gpt" in model or "openai" in model:
+        key_name = "OPENAI_API_KEY"
+    elif "claude" in model or "anthropic" in model:
+        key_name = "ANTHROPIC_API_KEY"
+    else:
+        present = [k for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY") if os.environ.get(k)]
+        if present:
+            key_name = present[0]
+        else:
+            return Check(
+                "provider_key",
+                "warn",
+                "no provider key in environment (AI calls will fail)",
+                "export OPENAI_API_KEY or ANTHROPIC_API_KEY",
+            )
+    key = os.environ.get(key_name, "")
+    if not key:
+        return Check("provider_key", "warn", f"{key_name} not set", f"export {key_name}")
+    # Masked tail only — the body of a key never reaches the table.
+    return Check("provider_key", "pass", f"{key_name} …{key[-4:]}")
+
+
+def _check_models() -> Check:
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    chat = str(config("AI_MODEL", default="gpt-4o-mini") or "gpt-4o-mini")
+    embed = str(
+        config("AI_EMBEDDING_MODEL", default="text-embedding-3-small") or "text-embedding-3-small"
+    )
+    return Check("models", "pass", f"chat={chat} embed={embed}")
+
+
+def _check_vector_store(root) -> Check:  # noqa: ANN001 — Path, imported lazily
+    from fastplace.ai.vectors import active_vector_store, import_vector_stores
+    from fastplace.cli._doctor import Check
+    from fastplace.errors import ConfigurationError
+
+    import_vector_stores(root)
+    try:
+        store = active_vector_store()
+    except ConfigurationError as exc:
+        return Check(
+            "vector_store",
+            "fail",
+            str(exc),
+            "fix AI_VECTOR_STORE in .env or register the store in app/ai/vectors/",
+        )
+    return Check(
+        "vector_store", "pass", type(store).__name__.removesuffix("Store").lower() or "pgvector"
+    )
+
+
+def _declared_vector_columns(root):  # noqa: ANN001 — Path, imported lazily
+    from fastplace.cli.inspect import collect_models
+
+    declared: list[tuple[str, int | None]] = []
+    for model_cls in collect_models(root):
+        for column, dims in _vector_columns(model_cls):
+            declared.append((f"{model_cls.__name__}.{column}", dims))
+    return declared
+
+
+def _check_vector_capability(root) -> Check:  # noqa: ANN001 — Path, imported lazily
+    from fastplace.cli._doctor import Check
+    from fastplace.cli.db_ops import _db_url_family
+
+    declared = _declared_vector_columns(root)
+    if not declared:
+        return Check("vector_capability", "pass", "no vector columns declared")
+    family, url = _db_url_family()
+    if family and family != "postgresql":
+        return Check(
+            "vector_capability",
+            "fail",
+            f"vector columns {', '.join(name for name, _ in declared)} need pgvector, but DATABASE_URL is {family}",
+            "switch DATABASE_URL to postgresql:// and run CREATE EXTENSION vector",
+        )
+    return Check(
+        "vector_capability", "pass", f"pgvector stack for {', '.join(name for name, _ in declared)}"
+    )
+
+
+def _check_dimensions(root) -> Check:  # noqa: ANN001 — Path, imported lazily
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+
+    declared = _declared_vector_columns(root)
+    if not declared:
+        return Check("dimensions", "pass", "no vector columns declared")
+    model = str(
+        config("AI_EMBEDDING_MODEL", default="text-embedding-3-small") or "text-embedding-3-small"
+    )
+    expected = _EMBEDDING_DIMS.get(model)
+    if expected is None:
+        return Check(
+            "dimensions",
+            "warn",
+            f"unknown output dimensions for {model} — verify VectorField sizes",
+            "check the provider docs, or run fastplace ai:embed --verify",
+        )
+    mismatched = [
+        f"{name}({dims})" for name, dims in declared if dims is not None and dims != expected
+    ]
+    if mismatched:
+        return Check(
+            "dimensions",
+            "fail",
+            f"{model} emits {expected} dims but declared: {', '.join(mismatched)}",
+            f"declare VectorField(dimensions={expected}) or switch AI_EMBEDDING_MODEL",
+        )
+    return Check("dimensions", "pass", f"{len(declared)} column(s) at {expected} dims")
+
+
+@ai_ops_app.command("ai:doctor")
+def ai_doctor() -> None:
+    """AI stack diagnosis: keys, models, vector store, DB capability, dimensions."""
+    from fastplace.cli._doctor import run_checks
+    from fastplace.cli.system import _project_root
+    from fastplace.config import load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    # Bind the config registry to the invoked project (doctor umbrella pattern).
+    reset_config(root)
+
+    # Named closures (not lambdas) so a raising check degrades to a readable
+    # row name — run_checks derives it from __name__.
+    def _vector_store_check() -> Check:
+        return _check_vector_store(root)
+
+    def _vector_capability_check() -> Check:
+        return _check_vector_capability(root)
+
+    def _dimensions_check() -> Check:
+        return _check_dimensions(root)
+
+    code = run_checks(
+        "AI doctor",
+        [
+            _check_provider_key,
+            _check_models,
+            _vector_store_check,
+            _vector_capability_check,
+            _dimensions_check,
+        ],
+    )
+    raise typer.Exit(code=code)

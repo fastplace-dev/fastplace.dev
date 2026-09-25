@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 from fastplace.config import config, load_env
+
+if TYPE_CHECKING:  # annotations stay lazy; runtime imports remain function-local
+    from fastplace.cli._doctor import Check
 
 
 def _project_root() -> Path:
@@ -761,3 +764,193 @@ def queue_dispatch(
     asyncio.run(_run())
     suffix = "" if delay <= 0 else f" (in {delay}s)"
     console.print(f"[green]Dispatched '{escape(name)}'[/]{suffix}")
+
+
+# ---------------------------------------------------------------------------
+# queue:health — roadmap data plane doctor
+# ---------------------------------------------------------------------------
+
+
+def _check_queue_driver() -> Check:
+    """QUEUE_DRIVER resolves to a known driver (memory or saq)."""
+    from fastplace.cli._doctor import Check
+    from fastplace.errors import ConfigurationError
+    from fastplace.queue import queue
+
+    try:
+        driver = queue()
+    except ConfigurationError as exc:
+        wanted = str(config("QUEUE_DRIVER", default=""))
+        return Check(
+            "driver",
+            "fail",
+            f"unknown QUEUE_DRIVER '{wanted}' — expected memory or saq ({exc})",
+            "set QUEUE_DRIVER=memory or QUEUE_DRIVER=saq in .env",
+        )
+    return Check("driver", "pass", type(driver).__name__.lower().removesuffix("queue") or "memory")
+
+
+def _check_redis_reachable() -> Check:
+    """Driver=saq needs a reachable redis; memory needs nothing."""
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config as cfg
+
+    driver = str(cfg("QUEUE_DRIVER", default="memory")).lower()
+    if driver != "saq":
+        return Check("redis", "pass", "not used (driver is memory)")
+    try:
+        import redis.asyncio as aioredis
+    except ImportError:
+        return Check(
+            "redis",
+            "fail",
+            "redis library not installed",
+            'pip install "fastplace[queue]"',
+        )
+    url = str(cfg("QUEUE_REDIS_URL", default="redis://localhost:6379/0"))
+
+    async def _ping() -> None:
+        client = aioredis.from_url(url)
+        try:
+            await client.ping()
+        finally:
+            await client.aclose()
+
+    try:
+        asyncio.run(_ping())
+    except Exception as exc:  # noqa: BLE001 — unreachability is itself the finding
+        return Check(
+            "redis",
+            "fail",
+            f"{url} unreachable ({type(exc).__name__})",
+            "check QUEUE_REDIS_URL and that redis is running",
+        )
+    return Check("redis", "pass", f"{url} reachable")
+
+
+def _check_depth() -> Check:
+    """Current queue depth via the configured driver."""
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+    from fastplace.queue import queue
+
+    async def _probe() -> int:
+        return int(await queue().queue_depth())
+
+    try:
+        depth = asyncio.run(_probe())
+    except Exception as exc:  # noqa: BLE001 — unreachable queue is the finding
+        return Check(
+            "depth",
+            "fail",
+            f"cannot read queue depth: {type(exc).__name__}",
+            "check QUEUE_REDIS_URL and that redis is running",
+        )
+    detail = f"{depth} pending job(s)"
+    if depth > 1000:
+        return Check(
+            "depth", "warn", detail, "fastplace queue:clear or queue:work to drain the backlog"
+        )
+    return Check("depth", "pass", detail)
+
+
+def _check_restart_sentinel() -> Check:
+    """A published restart sentinel means workers exit at the next boundary."""
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+    from fastplace.queue import restart_requested_at
+
+    requested = asyncio.run(restart_requested_at())
+    if requested is None:
+        return Check("restart", "pass", "no restart pending")
+    return Check(
+        "restart",
+        "warn",
+        f"restart requested at {requested.isoformat(sep=' ', timespec='seconds')}",
+        "workers exit at the next job boundary — queue:restart already issued",
+    )
+
+
+def _check_failed_jobs() -> Check:
+    """Failed-job ledger count; any row is a WARN with the retry fix."""
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+    from fastplace.queue_failures import failed_job_store, reset_failed_job_store
+
+    reset_failed_job_store()
+
+    async def _count() -> int:
+        return len(await failed_job_store().list(limit=10_000))
+
+    try:
+        count = asyncio.run(_count())
+    except Exception as exc:  # noqa: BLE001 — unreachable ledger is the finding
+        return Check(
+            "failed_jobs",
+            "fail",
+            f"cannot read the failed-job ledger: {type(exc).__name__}",
+            "check DATABASE_URL and that the database is running",
+        )
+    if count:
+        return Check(
+            "failed_jobs",
+            "warn",
+            f"{count} failed job(s)",
+            "fastplace queue:retry <id> (inspect with queue:failed)",
+        )
+    return Check("failed_jobs", "pass", "0 failed jobs")
+
+
+def _check_schedule(root: Path) -> Check:
+    """app/schedule.py loads; absent is a fresh project's empty schedule."""
+    from fastplace.cli._doctor import Check
+    from fastplace.schedule import load_schedule
+
+    if not (root / "app" / "schedule.py").is_file():
+        return Check("schedule", "pass", "no app/schedule.py — no scheduled tasks")
+    try:
+        tasks = load_schedule(root).tasks()
+    except Exception as exc:  # noqa: BLE001 — broken project code is the finding
+        return Check(
+            "schedule",
+            "fail",
+            f"{type(exc).__name__}: {exc}",
+            "fix app/schedule.py — it must define def schedule(s: Schedule) -> None",
+        )
+    plural = "task" if len(tasks) == 1 else "tasks"
+    return Check("schedule", "pass", f"{len(tasks)} {plural}")
+
+
+@queue_app.command("queue:health")
+def queue_health() -> None:
+    """Queue stack diagnosis: driver, redis, depth, restart, failures, schedule."""
+    from fastplace.cli._doctor import run_checks
+    from fastplace.config import reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    # Bind the config registry to the invoked project (doctor umbrella pattern).
+    reset_config(root)
+
+    # Named closures (not lambdas) so a raising check degrades to a readable
+    # row name — run_checks derives it from __name__.
+    def _schedule_check() -> Check:
+        return _check_schedule(root)
+
+    code = run_checks(
+        "Queue doctor",
+        [
+            _check_queue_driver,
+            _check_redis_reachable,
+            _check_depth,
+            _check_restart_sentinel,
+            _check_failed_jobs,
+            _schedule_check,
+        ],
+    )
+    raise typer.Exit(code=code)
