@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import typer
+
+if TYPE_CHECKING:
+    from asgi_lifespan import LifespanManager
+    from httpx import AsyncClient
+    from starlette.applications import Starlette
 
 from fastplace.cli._doctor import Check, run_checks
 from fastplace.console import console
@@ -179,12 +184,13 @@ def http_doctor() -> None:
     raise typer.Exit(code=code)
 
 
-def _boot_client(root: Path) -> tuple[Any, Any, Any]:
+def _boot_client(root: Path) -> tuple[Starlette, LifespanManager, AsyncClient]:
     """Boot the project's asgi app in-process: (app, LifespanManager, client).
 
     raise_app_exceptions=False is mandatory — an unhandled 500 surfaces as
     the JSON envelope, never a traceback in the CLI (test_kernel idiom).
-    Shared with ``http:request`` (roadmap Task 14).
+    Shared with ``http:request`` (roadmap Task 14); annotation imports are
+    TYPE_CHECKING-only, matching this module's import-deferral pattern.
     """
     import httpx
     from asgi_lifespan import LifespanManager
@@ -228,17 +234,15 @@ def _session_cookie_check(app: Any, response: Any) -> Check:
             detail="; ".join(problems) or "flags ok",
         )
     # No cookie minted by this probe — assert the middleware wiring instead.
-    # ServerSessionMiddleware hardcodes SameSite=Lax in _cookie_header and
-    # takes `secure` from the kernel wiring, so the kwargs carry the truth.
+    # SameSite is hardcoded Lax inside ServerSessionMiddleware._cookie_header
+    # (nothing on the wiring can change it, and the constructor takes no
+    # https_only), so only the `secure` kwarg varies here.
     for entry in app.user_middleware:
         if entry.cls.__name__ != "ServerSessionMiddleware":
             continue
         kwargs = entry.kwargs or {}
-        samesite = str(kwargs.get("samesite", "lax")).lower()
-        secure = bool(kwargs.get("secure", False)) or bool(kwargs.get("https_only", False))
+        secure = bool(kwargs.get("secure", False))
         problems = []
-        if samesite != "lax":
-            problems.append(f"SameSite={samesite}")
         if env == "production" and not secure:
             problems.append("Secure not wired for production")
         return Check(
