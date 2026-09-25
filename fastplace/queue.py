@@ -26,6 +26,7 @@ import importlib
 import inspect
 import logging
 import pkgutil
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
@@ -350,6 +351,29 @@ class SaqQueue:
         # its Job dataclass fields (timeout, ttl, kwargs…) into job
         # properties, which would silently drop handler arguments.
         await self.queue.enqueue(name, kwargs=kwargs)
+
+    async def dispatch_delayed(
+        self, name: str, kwargs: dict[str, Any] | None = None, delay: float = 1.0
+    ) -> None:
+        """Enqueue a named job for execution ``delay`` seconds from now.
+
+        Installed saq (0.26.4) holds a job until its ``scheduled`` field — an
+        absolute epoch-seconds timestamp, not a relative delay — comes due
+        (the worker's schedule sweep promotes jobs with
+        ``1 <= scheduled <= now``), so the due time is ``now + delay``; a
+        small relative value would fall in the past and fire immediately.
+        The Job is built explicitly rather than riding ``enqueue(kwargs=…)``
+        because enqueue hijacks any kwarg matching its Job dataclass fields
+        (timeout, ttl, kwargs…) into job properties, which would silently
+        drop handler arguments. The method-local ``Job`` import shadows the
+        @Job decorator on purpose — they share the name by saq's design.
+        """
+        from saq.job import Job
+
+        if name not in registry:
+            raise ValueError(f"unknown job '{name}' — is it registered with @Job?")
+        job = Job(function=name, kwargs=dict(kwargs or {}), scheduled=int(time.time() + delay))
+        await self.queue.enqueue(job)
 
     async def clear(self) -> int:
         """Delete queued and scheduled jobs; running jobs are left alone.

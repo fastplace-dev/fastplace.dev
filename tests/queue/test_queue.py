@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import textwrap
+import time
 
 import pytest
 from typer.testing import CliRunner
@@ -353,6 +354,72 @@ def test_saq_worker_assembly_registers_jobs_by_name():
     driver = SaqQueue(url="redis://localhost:6379/2", name="fastplace")
     worker = driver.build_worker()
     assert "billing.reconcile" in worker.functions
+
+
+# ---------------------------------------------------------------------------
+# SaqQueue.dispatch_delayed — scheduled enqueue via an explicit Job
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSaqQueue:
+    """Fake saq queue: enqueue records the Job object — no redis, no network."""
+
+    def __init__(self):
+        self.recorded = []
+
+    async def enqueue(self, job):
+        self.recorded.append(job)
+        return job
+
+
+@pytest.fixture
+def fake_saq_queue():
+    """SaqQueue over the recording fake, with a handler registered for dispatch.
+
+    Registry isolation rides the autouse ``_fresh_queue`` fixture.
+    """
+
+    @Job()
+    async def resize(path: str = "", size: int = 0):
+        return None
+
+    return SaqQueue(queue=_RecordingSaqQueue())
+
+
+async def test_dispatch_delayed_builds_explicit_job_with_epoch_seconds_schedule(fake_saq_queue):
+    recorded = fake_saq_queue.queue.recorded
+
+    before = time.time()
+    await fake_saq_queue.dispatch_delayed("resize", {"path": "a.png", "size": 64}, delay=5.0)
+    after = time.time()
+
+    (job,) = recorded
+    assert job.function == "resize"
+    assert job.kwargs == {"path": "a.png", "size": 64}  # intact — no field hijack
+    # Installed saq (0.26.4) holds a job until its ``scheduled`` field — an
+    # absolute epoch-seconds timestamp — comes due, so the value must be
+    # now + delay. Adding an integer shifts the floor exactly, so the window
+    # is closed-form with no sleep.
+    assert int(before) + 5 <= job.scheduled <= int(after) + 5
+
+
+async def test_dispatch_delayed_defaults(fake_saq_queue):
+    recorded = fake_saq_queue.queue.recorded
+
+    before = time.time()
+    await fake_saq_queue.dispatch_delayed("resize")  # both defaults ride
+    after = time.time()
+
+    (job,) = recorded
+    assert job.function == "resize"
+    assert job.kwargs == {}  # None normalized to empty dict
+    assert int(before) + 1 <= job.scheduled <= int(after) + 1  # delay=1.0 default
+
+
+async def test_dispatch_delayed_unknown_name_raises(fake_saq_queue):
+    with pytest.raises(ValueError, match="unknown job 'nope'"):
+        await fake_saq_queue.dispatch_delayed("nope")
+    assert fake_saq_queue.queue.recorded == []  # validation fired before any enqueue
 
 
 # ---------------------------------------------------------------------------
