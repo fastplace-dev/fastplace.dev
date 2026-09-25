@@ -531,3 +531,93 @@ def queue_list() -> None:
             escape(doc[0]) if doc else "[dim]—[/]",
         )
     console.print(table)
+
+
+@queue_app.command("queue:jobs")
+def queue_jobs(
+    status: str = typer.Option(
+        "all", "--status", help="queued | active | scheduled | incomplete | all"
+    ),
+) -> None:
+    """List jobs currently on the active queue driver."""
+    import asyncio
+    import datetime as dt
+    import json
+
+    from rich.markup import escape
+    from rich.table import Table
+
+    from fastplace.config import load_env
+    from fastplace.console import console
+
+    # The factory import is the test seam: patching fastplace.queue.queue
+    # swaps the store this command reads, whatever the env says.
+    from fastplace.queue import import_jobs
+    from fastplace.queue import queue as queue_factory
+
+    load_env()
+    root = _project_root()
+    import_jobs(root)
+
+    if status not in ("queued", "active", "scheduled", "incomplete", "all"):
+        console.print(
+            f"[red]unknown status '{escape(status)}'[/] — "
+            "queued | active | scheduled | incomplete | all"
+        )
+        raise typer.Exit(code=1)
+
+    async def _rows() -> list[tuple[str, str, str, str, str]]:
+        store = queue_factory()
+        rows: list[tuple[str, str, str, str, str]] = []
+        # Driver detection inspects the store, not the env: the memory
+        # driver carries its in-process pending deque; a saq store pages
+        # the broker instead.
+        pending = getattr(store, "pending", None)
+        if pending is not None:  # memory driver — every row is 'queued'
+            for entry in list(pending):
+                if status in ("all", "queued"):
+                    rows.append(("queued", entry.name, "-", "-", json.dumps(entry.kwargs)))
+        else:  # saq driver
+            statuses: Any
+            if status == "all":
+                from saq.job import Status
+
+                # iter_jobs does set(statuses) — None would crash it there,
+                # so "all" passes the complete saq status list instead.
+                statuses = list(Status)
+            else:
+                statuses = (status,)
+            broker: Any = getattr(store, "queue", None)
+            async for job in broker.iter_jobs(statuses=statuses, batch_size=500):
+                scheduled_ms = getattr(job, "scheduled", 0)
+                when = (
+                    dt.datetime.fromtimestamp(scheduled_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                    if scheduled_ms
+                    else "-"
+                )
+                rows.append(
+                    (
+                        str(getattr(job, "status", "-")),
+                        str(job.function),
+                        str(getattr(job, "attempts", "-")),
+                        when,
+                        json.dumps(job.kwargs)[:120],
+                    )
+                )
+        return rows
+
+    rows = asyncio.run(_rows())
+    if not rows:
+        console.print("[dim]no jobs[/]")
+        return
+    table = Table(title="Queue jobs")
+    table.add_column("status")
+    table.add_column("function", style="cyan", no_wrap=True)
+    table.add_column("attempts", justify="right")
+    table.add_column("scheduled for")
+    table.add_column("kwargs", style="dim")
+    # Job payloads are data, not markup — a bracket tag in a name or kwargs
+    # must render literally, never style the cell it lands in.
+    for row in rows:
+        table.add_row(*(escape(cell) for cell in row))
+    console.print(table)
