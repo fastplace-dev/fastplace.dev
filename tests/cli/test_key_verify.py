@@ -102,8 +102,14 @@ def test_wrong_key_exits_one_with_rotated_hint(tmp_path, monkeypatch):
 
 
 def test_empty_app_key_exits_one_with_missing_message(tmp_path, monkeypatch):
+    import importlib
+
     root = _make_project(tmp_path, monkeypatch, app_key="")
-    (root / ".env.encrypted").write_text("gibberish-token\n")
+    enc = importlib.import_module(_keys_encrypt_module())
+    # Structured token (not gibberish): it passes decrypt()'s fpaes1 prefix and
+    # framing checks, reaches _key(None), and raises ConfigurationError there —
+    # genuinely exercising the missing-APP_KEY handler.
+    (root / ".env.encrypted").write_text(enc.encrypt("SECRET=1\n", key="good" * 16) + "\n")
     result = runner.invoke(cli_app, ["key:verify"])
     assert result.exit_code == 1
     assert "APP_KEY" in _out(result)
@@ -119,8 +125,10 @@ def test_verify_writes_nothing(tmp_path, monkeypatch):
     encrypted.write_text(token + "\n")
     env_before = (root / ".env").read_text()
     mtime = encrypted.stat().st_mtime_ns
+    env_mtime = (root / ".env").stat().st_mtime_ns
     result = runner.invoke(cli_app, ["key:verify"])
     assert result.exit_code == 0, result.stdout
     assert encrypted.read_text() == token + "\n"   # ciphertext untouched
     assert encrypted.stat().st_mtime_ns == mtime   # no rewrite
+    assert (root / ".env").stat().st_mtime_ns == env_mtime   # .env untouched too
     assert (root / ".env").read_text() == env_before
