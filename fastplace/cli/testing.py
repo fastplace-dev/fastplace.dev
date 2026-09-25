@@ -606,3 +606,142 @@ def test_e2e(
 
     proc = _subprocess_run(["npx", "playwright", "test", *(args or [])])
     raise typer.Exit(code=proc.returncode)
+
+
+def _probe_import(name: str) -> str | None:
+    """None when importable; the ImportError text otherwise."""
+    import importlib
+
+    try:
+        importlib.import_module(name)
+    except ImportError as exc:
+        return str(exc)
+    return None
+
+
+def _probe_write(path: Path) -> bool:
+    """mkdir -p + probe-write + unlink; False when the OS refuses."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".fastplace-write-probe"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+_DEV_EXTRAS: tuple[str, ...] = ("httpx", "asgi_lifespan", "pytest", "pytest_asyncio")
+
+
+@testing_app.command("test:doctor")
+def test_doctor() -> None:
+    """Preflight the test environment: dev extras, matrix extras, node, browsers, storage, DATABASE_URL."""
+    import shutil
+    from urllib.parse import urlparse
+
+    from fastplace.cli._doctor import Check, run_checks
+    from fastplace.config import config, load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    def dev_extras() -> list[Check]:
+        rows = []
+        for name in _DEV_EXTRAS:
+            error = _probe_import(name)
+            rows.append(
+                Check(
+                    name=f"dev:{name}",
+                    status="pass" if error is None else "fail",
+                    detail=error or "importable",
+                    fix="" if error is None else "pip install -e '.[dev]'",
+                )
+            )
+        return rows
+
+    def matrix_extras() -> list[Check]:
+        # The foundation's Status is pass/warn/fail only — matrix extras are
+        # a report, not a demand, so a missing extra warns instead of
+        # failing (a doctor of optional backends must never block CI).
+        rows = []
+        for label, modules, activates in (
+            ("postgresql", ("asyncpg", "pgvector"), "portable matrix + tests/orm/postgresql (pgvector extension required)"),
+            ("mysql", ("asyncmy",), "portable matrix + tests/orm/mysql"),
+            ("mongodb", ("pymongo",), "tests/orm/mongodb contract suite ONLY — NOT in the portable matrix"),
+            ("queue", ("saq", "redis"), "queue integration suites"),
+        ):
+            missing = [m for m in modules if _probe_import(m) is not None]
+            rows.append(
+                Check(
+                    name=f"matrix:{label}",
+                    status="pass" if not missing else "warn",
+                    detail=activates if not missing else f"not installed ({', '.join(missing)}) — {activates}",
+                    fix="" if not missing else f"pip install -e '.[{label}]'",
+                )
+            )
+        return rows
+
+    def node_binaries() -> Check:
+        missing = [b for b in ("node", "npm", "npx") if shutil.which(b) is None]
+        return Check(
+            name="node",
+            status="warn" if missing else "pass",
+            detail="all on PATH" if not missing else f"missing: {', '.join(missing)} (test:e2e needs them)",
+            fix="" if not missing else "install Node.js (https://nodejs.org)",
+        )
+
+    def browsers() -> Check:
+        npx = shutil.which("npx")
+        if not npx:
+            return Check(name="browsers", status="warn", detail="npx absent — cannot probe", fix="install Node.js")
+        dry = _subprocess_run([npx, "playwright", "install", "--dry-run"], stdout=subprocess.PIPE, text=True)
+        if _chromium_missing(dry.stdout or ""):
+            return Check(
+                name="browsers",
+                status="warn",
+                detail="chromium not installed",
+                fix="npx playwright install chromium",
+            )
+        return Check(name="browsers", status="pass", detail="chromium installed")
+
+    def storage_writable() -> Check:
+        ok = _probe_write(root / "storage")
+        return Check(
+            name="storage",
+            status="pass" if ok else "fail",
+            detail="writable" if ok else "cannot write under storage/",
+            fix="" if ok else "check permissions on storage/",
+        )
+
+    def database_url_sanity() -> Check:
+        url = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3") or "")
+        shown = _masked_url(url)
+        # Conservative default, like every destructive guard in the CLI:
+        # an unset APP_ENV reads as production, so the warning fires.
+        app_env = str(config("APP_ENV", default="production")).lower()
+        host = urlparse(url).hostname or ""
+        local = url.startswith("sqlite") or host in ("localhost", "127.0.0.1", "::1", "")
+        if app_env == "production":
+            return Check(
+                name="database-url",
+                status="warn",
+                detail=f"APP_ENV=production — running tests against {shown}",
+                fix="point DATABASE_URL at a scratch DB",
+            )
+        if not local:
+            return Check(
+                name="database-url",
+                status="warn",
+                detail=f"non-local host {shown}",
+                fix="tests should target a local/scratch database",
+            )
+        return Check(name="database-url", status="pass", detail=shown)
+
+    raise typer.Exit(
+        code=run_checks(
+            "test environment",
+            [dev_extras, matrix_extras, node_binaries, browsers, storage_writable, database_url_sanity],
+        )
+    )
