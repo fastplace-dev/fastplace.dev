@@ -3,7 +3,8 @@
 Default creates the module directories plus a Model, Repository, Service
 and the module's own http edge (controller, store request, route table)
 wired by naming convention (Controllers → Services → Repositories →
-Models); `--bare` keeps the old packages-only behavior, `-m` a migration.
+Models); `--api`/`--resource` widen the module-local controller to CRUD,
+`--bare` keeps the old packages-only behavior, `-m` a migration.
 """
 
 from __future__ import annotations
@@ -123,6 +124,44 @@ def test_module_only_name_rejected(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert not (tmp_path / "app" / "modules" / "module").exists()
+
+
+def test_api_flag_scaffolds_module_crud(tmp_path, monkeypatch):
+    """--api: CRUD controller + routes, module-local, no form actions."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--api"])
+
+    assert result.exit_code == 0, result.output
+    base = tmp_path / "app" / "modules" / "order"
+    source = (base / "http" / "controllers" / "order_controller.py").read_text()
+    for action in ("index", "store", "show", "update", "destroy"):
+        assert f"async def {action}(" in source
+    assert "async def create(" not in source
+    assert "async def edit(" not in source
+    assert "data = await request.validate(StoreOrderRequest)" in source
+    routes = (base / "routes.py").read_text()
+    assert 'api_routes.post("/orders", OrderController, "store"' in routes
+    assert 'api_routes.get("/orders/{id}", OrderController, "show"' in routes
+    assert 'api_routes.put("/orders/{id}", OrderController, "update"' in routes
+    assert 'api_routes.delete("/orders/{id}", OrderController, "destroy"' in routes
+    compile(routes, str(base / "routes.py"), "exec")
+    assert not (tmp_path / "app" / "http" / "controllers" / "order_controller.py").exists()
+
+
+def test_resource_flag_scaffolds_full_module_crud(tmp_path, monkeypatch):
+    """--resource: the seven-action controller inside the module."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--resource"])
+
+    assert result.exit_code == 0, result.output
+    source = (
+        tmp_path / "app" / "modules" / "order" / "http" / "controllers" / "order_controller.py"
+    ).read_text()
+    for action in ("index", "create", "store", "show", "edit", "update", "destroy"):
+        assert f"async def {action}(" in source
+    compile(source, "order_controller.py", "exec")
 
 
 def test_migration_flag_creates_version(tmp_path, monkeypatch):

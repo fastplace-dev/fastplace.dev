@@ -436,6 +436,16 @@ def make_module(
         "--bare",
         help="Only the package directories — skip the Model/Repository/Service stubs.",
     ),
+    resource: bool = typer.Option(
+        False,
+        "--resource",
+        help="Widen the module controller to the full seven CRUD actions.",
+    ),
+    api: bool = typer.Option(
+        False,
+        "--api",
+        help="Widen the module controller to CRUD without the create/edit form actions.",
+    ),
     migration: bool = typer.Option(
         False, "--migration", "-m", help="Also autogenerate a migration."
     ),
@@ -481,7 +491,18 @@ def make_module(
     make_service(name=entity, module=clean)
     make_repository(name=entity, module=clean)
 
-    # Module-local http edge: controller, store request, route table.
+    # Module-local http edge: controller, store request, route table. The
+    # default wires only index; --api widens to CRUD minus the create/edit
+    # form actions, --resource to the full seven (spec flag matrix).
+    if resource or api:
+        actions = frozenset(a for a, _ in _RESOURCE_ACTIONS)
+        api_actions = tuple(a for a, _ in _RESOURCE_ACTIONS)
+        if api:
+            actions -= _FORM_ACTIONS
+            api_actions = tuple(a for a in api_actions if a not in _FORM_ACTIONS)
+    else:
+        actions = frozenset({"index"})
+        api_actions = ("index",)
     http = base / "http"
     for marker in (
         http / "__init__.py",
@@ -492,7 +513,7 @@ def make_module(
         _write(marker, "", root)
     _write(
         http / "controllers" / f"{clean}_controller.py",
-        _module_controller_source(entity, clean, actions=frozenset({"index"})),
+        _module_controller_source(entity, clean, actions=actions),
         root,
     )
     _write(
@@ -502,7 +523,7 @@ def make_module(
     )
     _write(
         base / "routes.py",
-        _module_routes_source(entity, clean, api_actions=("index",), web=False),
+        _module_routes_source(entity, clean, api_actions=api_actions, web=False),
         root,
     )
     if migration:
