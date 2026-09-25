@@ -71,7 +71,7 @@ def keys_encrypt_module() -> str:
     for line in keys_file.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("from ") and " import " in stripped and "decrypt" in stripped:
-            return stripped[len("from "):].split(" import ")[0].strip()
+            return stripped[len("from ") :].split(" import ")[0].strip()
     raise AssertionError("decrypt/encrypt import not found in keys.py")
 
 

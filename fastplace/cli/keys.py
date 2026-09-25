@@ -101,12 +101,17 @@ def key_rotate(
     text = env_path.read_text(encoding="utf-8")
     old_key = _active_app_key(text)
     if old_key is None:
-        console.print("[red]no APP_KEY found in .env[/] — run [bold]fastplace key:generate[/] first.")
+        console.print(
+            "[red]no APP_KEY found in .env[/] — run [bold]fastplace key:generate[/] first."
+        )
         raise typer.Exit(code=1)
 
     # A destructive command guards unless the environment explicitly says so.
     if str(config("APP_ENV", default="production")).lower() == "production" and not (
-        force or typer.confirm("Rotate APP_KEY in production? Signed URLs, JWTs and 2FA data under the old key stop working.")
+        force
+        or typer.confirm(
+            "Rotate APP_KEY in production? Signed URLs, JWTs and 2FA data under the old key stop working."
+        )
     ):
         console.print("[red]aborted[/] — nothing was rotated")
         raise typer.Exit(code=1)

@@ -39,8 +39,9 @@ def _writable_probe(target: Path, name: str) -> Check:
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as exc:
-        return Check(name, "fail", detail=type(exc).__name__,
-                     fix=f"check permissions on {target.name}")
+        return Check(
+            name, "fail", detail=type(exc).__name__, fix=f"check permissions on {target.name}"
+        )
     return Check(name, "pass")
 
 
@@ -51,7 +52,8 @@ def _app_key_check() -> Check:
     env = str(config("APP_ENV", default="production")).lower()
     if env == "production" and not key:
         return Check(
-            "app-key", "fail",
+            "app-key",
+            "fail",
             detail="empty in production — boot refuses (kernel gate)",
             fix="fastplace key:generate",
         )
@@ -59,7 +61,8 @@ def _app_key_check() -> Check:
         return Check("app-key", "warn", detail="not set", fix="fastplace key:generate")
     if len(key) < 32:
         return Check(
-            "app-key", "warn",
+            "app-key",
+            "warn",
             detail=f"{len(key)} bytes — below the 32-byte HMAC threshold",
             fix="fastplace key:generate --force",
         )
@@ -75,7 +78,8 @@ def _app_url_check() -> Check:
     if not raw:
         if trusted:
             return Check(
-                "app-url", "warn",
+                "app-url",
+                "warn",
                 detail="APP_URL empty; TRUSTED_HOSTS set — request-ful URLs only",
                 fix="set APP_URL=https://your.domain",
             )
@@ -83,12 +87,14 @@ def _app_url_check() -> Check:
             # A fresh local scaffold ships both empty; that must not fail the
             # doctor. It still raises for links, so surface it as a warning.
             return Check(
-                "app-url", "warn",
+                "app-url",
+                "warn",
                 detail="APP_URL and TRUSTED_HOSTS both empty — absolute links raise",
                 fix="set APP_URL=https://your.domain",
             )
         return Check(
-            "app-url", "fail",
+            "app-url",
+            "fail",
             detail="APP_URL and TRUSTED_HOSTS both empty — build_absolute_url raises",
             fix="set APP_URL (or TRUSTED_HOSTS) in .env",
         )
@@ -96,7 +102,8 @@ def _app_url_check() -> Check:
     if parsed.scheme in ("http", "https") and parsed.netloc:
         return Check("app-url", "pass", detail=parsed.netloc)
     return Check(
-        "app-url", "fail",
+        "app-url",
+        "fail",
         detail="set but unparseable — needs scheme://netloc",
         fix="set APP_URL=https://your.domain",
     )
@@ -113,13 +120,15 @@ def _maintenance_check(root: Path) -> Check:
     state = is_down(root)
     if state is None:
         return Check(
-            "maintenance", "fail",
+            "maintenance",
+            "fail",
             detail="state file present but unreadable — gate silently re-opens",
             fix=f"fix permissions on {MAINTENANCE_FILE}",
         )
     if state == {}:
         return Check(
-            "maintenance", "warn",
+            "maintenance",
+            "warn",
             detail="down, state unreadable — fail-closed (503 for everyone)",
             fix="fastplace up to reset, or fix the state file JSON",
         )
@@ -136,7 +145,9 @@ def _manifest_check(root: Path) -> Check:
         return Check("manifest", "pass", detail=str(manifest.relative_to(root)))
     if (root / "package.json").is_file():
         return Check(
-            "manifest", "warn", detail="missing (package.json present)",
+            "manifest",
+            "warn",
+            detail="missing (package.json present)",
             fix="npm run build",
         )
     return Check("manifest", "pass", detail="no frontend")
@@ -221,7 +232,8 @@ def _session_cookie_check(app: Any, response: Any) -> Check:
         if env != "production" and secure:
             problems.append("Secure set outside production (harmless but unusual)")
         return Check(
-            "session-cookie", "fail" if problems else "pass",
+            "session-cookie",
+            "fail" if problems else "pass",
             detail="; ".join(problems) or "flags ok",
         )
     # No cookie minted by this probe — assert the middleware wiring instead.
@@ -237,11 +249,13 @@ def _session_cookie_check(app: Any, response: Any) -> Check:
         if env == "production" and not secure:
             problems.append("Secure not wired for production")
         return Check(
-            "session-cookie", "fail" if problems else "pass",
+            "session-cookie",
+            "fail" if problems else "pass",
             detail="; ".join(problems) or "wiring ok (no cookie minted by probe)",
         )
     return Check(
-        "session-cookie", "fail",
+        "session-cookie",
+        "fail",
         detail="ServerSessionMiddleware not installed",
         fix="check the app's middleware stack",
     )
@@ -251,13 +265,15 @@ def _gate_check(*, down: bool, clone_503: bool | None) -> Check:
     """Verdict for the 503 gate: live DOWN state warns; else the clone probe decides."""
     if down:
         return Check(
-            "503-gate", "warn",
+            "503-gate",
+            "warn",
             detail="app is currently DOWN — every request answers 503",
             fix="fastplace up (when intentional) or fix the state file",
         )
     ok = bool(clone_503)
     return Check(
-        "503-gate", "pass" if ok else "fail",
+        "503-gate",
+        "pass" if ok else "fail",
         detail="clone probe answered 503" if ok else "down clone did NOT answer 503",
     )
 
@@ -313,8 +329,7 @@ def _http_check_run(root: Path) -> int:
                 missing = [
                     name.decode("ascii")
                     for name, value in _SECURITY_HEADERS
-                    if probe.headers.get(name.decode("ascii").lower())
-                    != value.decode("ascii")
+                    if probe.headers.get(name.decode("ascii").lower()) != value.decode("ascii")
                 ]
                 checks.append(
                     lambda: Check(
@@ -361,7 +376,8 @@ def _http_check_run(root: Path) -> int:
                 if down:
                     checks.append(
                         lambda: Check(
-                            "api-docs", "warn",
+                            "api-docs",
+                            "warn",
                             detail=f"unverifiable while DOWN (env={env})",
                         )
                     )
@@ -371,7 +387,8 @@ def _http_check_run(root: Path) -> int:
                     docs_ok = docs_status == 404 if env == "production" else docs_status == 200
                     checks.append(
                         lambda: Check(
-                            "api-docs", "pass" if docs_ok else "fail",
+                            "api-docs",
+                            "pass" if docs_ok else "fail",
                             detail=f"status={docs_status} (env={env})",
                         )
                     )
@@ -558,12 +575,16 @@ def middleware_list() -> None:
     # user_middleware is innermost-first (add_middleware inserts at 0);
     # Starlette wraps with ServerErrorMiddleware (outer) / ExceptionMiddleware (inner).
     total = len(app.user_middleware) + 1
-    onion.add_row("0", "starlette.middleware.errors.ServerErrorMiddleware", "[dim]starlette frame[/]")
+    onion.add_row(
+        "0", "starlette.middleware.errors.ServerErrorMiddleware", "[dim]starlette frame[/]"
+    )
     for pos, entry in enumerate(reversed(app.user_middleware), start=1):
         qualname = f"{entry.cls.__module__}.{entry.cls.__name__}"
         source = "kernel" if entry.cls.__module__.startswith("fastplace.") else "MIDDLEWARE config"
         onion.add_row(str(pos), qualname, source)
-    onion.add_row(str(total), "starlette.middleware.exceptions.ExceptionMiddleware", "[dim]starlette frame[/]")
+    onion.add_row(
+        str(total), "starlette.middleware.exceptions.ExceptionMiddleware", "[dim]starlette frame[/]"
+    )
     console.print(onion)
 
     registry = _route_middleware_registry({}, _ConfigShim({}, root=str(root)))

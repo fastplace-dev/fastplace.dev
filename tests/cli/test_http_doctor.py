@@ -44,14 +44,10 @@ def _wide_output(monkeypatch):
 
 
 def _make_project(tmp_path, monkeypatch, env_text="APP_ENV=local\nAPP_KEY=" + "k" * 48 + "\n"):
-    (tmp_path / "asgi.py").write_text(
-        "from fastplace.http import create_app\napp = create_app()\n"
-    )
+    (tmp_path / "asgi.py").write_text("from fastplace.http import create_app\napp = create_app()\n")
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "app.py").write_text(
-        'APP_ENV = "local"\nAPP_KEY = ""\nAPP_URL = ""\n'
-    )
-    (tmp_path / "config" / "auth.py").write_text('TRUSTED_HOSTS: list[str] = []\n')
+    (tmp_path / "config" / "app.py").write_text('APP_ENV = "local"\nAPP_KEY = ""\nAPP_URL = ""\n')
+    (tmp_path / "config" / "auth.py").write_text("TRUSTED_HOSTS: list[str] = []\n")
     (tmp_path / ".env").write_text(env_text)
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -81,7 +77,11 @@ def test_production_empty_app_key_fails(tmp_path, monkeypatch):
 
 
 def test_garbage_app_url_fails(tmp_path, monkeypatch):
-    _make_project(tmp_path, monkeypatch, env_text="APP_ENV=local\nAPP_KEY=" + "k" * 48 + "\nAPP_URL=not a url\n")
+    _make_project(
+        tmp_path,
+        monkeypatch,
+        env_text="APP_ENV=local\nAPP_KEY=" + "k" * 48 + "\nAPP_URL=not a url\n",
+    )
     result = runner.invoke(cli_app, ["http:doctor"])
     assert result.exit_code == 1
     assert "app-url" in _out(result)
@@ -89,7 +89,8 @@ def test_garbage_app_url_fails(tmp_path, monkeypatch):
 
 def test_empty_app_url_with_trusted_hosts_warns_not_fails(tmp_path, monkeypatch):
     _make_project(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         env_text="APP_ENV=local\nAPP_KEY=" + "k" * 48 + "\nTRUSTED_HOSTS=localhost\n",
     )
     result = runner.invoke(cli_app, ["http:doctor"])

@@ -50,7 +50,9 @@ def test_warn_alone_exits_zero():
 
 def test_any_fail_exits_one():
     c = _capture()
-    code = run_checks("bad", [lambda: Check("ok", "pass"), lambda: Check("bad", "fail", "boom")], console=c)
+    code = run_checks(
+        "bad", [lambda: Check("ok", "pass"), lambda: Check("bad", "fail", "boom")], console=c
+    )
     assert code == 1
     assert "FAIL" in _out(c)
 
@@ -117,7 +119,9 @@ def test_summary_line_counts():
 
 def test_fix_hint_rendered_dim():
     c = _capture()
-    run_checks("fix", [lambda: Check("k", "fail", "broken", fix="run: fastplace key:generate")], console=c)
+    run_checks(
+        "fix", [lambda: Check("k", "fail", "broken", fix="run: fastplace key:generate")], console=c
+    )
     assert "run: fastplace key:generate" in _out(c)
 
 

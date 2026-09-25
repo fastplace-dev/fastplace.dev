@@ -116,8 +116,10 @@ def test_mysqldump_writes_file(seeded, monkeypatch):
         dest = kwargs.get("stdout")
         if dest is not None:
             dest.write(b"-- mysqldump output\n")
+
         class _R:
             returncode = 0
+
         return _R()
 
     monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)

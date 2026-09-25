@@ -87,7 +87,9 @@ def test_env_key_missing_from_example_warns(tmp_path, monkeypatch):
 
 
 def test_example_only_keys_do_not_warn(tmp_path, monkeypatch):
-    _make_project(tmp_path, monkeypatch, CLEAN_ENV + "VITE_PORT=5173\nQUERY_SLOW_MS=50\n", "# APP_ENV=\n")
+    _make_project(
+        tmp_path, monkeypatch, CLEAN_ENV + "VITE_PORT=5173\nQUERY_SLOW_MS=50\n", "# APP_ENV=\n"
+    )
     result = runner.invoke(cli_app, ["env:lint"])
     assert result.exit_code == 0
     out = _out(result)
@@ -115,7 +117,9 @@ def test_commented_secret_in_crlf_example_is_flagged(tmp_path, monkeypatch):
 
 def test_example_value_equal_to_live_env_secret_fails(tmp_path, monkeypatch):
     secret = "live-secret-value-0123456789abcdef"  # 34 chars
-    _make_project(tmp_path, monkeypatch, CLEAN_ENV + f"SERVICE_KEY={secret}\n", f"# SERVICE_KEY={secret}\n")
+    _make_project(
+        tmp_path, monkeypatch, CLEAN_ENV + f"SERVICE_KEY={secret}\n", f"# SERVICE_KEY={secret}\n"
+    )
     result = runner.invoke(cli_app, ["env:lint"])
     assert result.exit_code == 1
     assert secret not in _out(result)
@@ -128,14 +132,18 @@ def test_low_entropy_long_value_not_flagged(tmp_path, monkeypatch):
 
 
 def test_coercion_failure_warns(tmp_path, monkeypatch):
-    _make_project(tmp_path, monkeypatch, CLEAN_ENV + "SESSION_LIFETIME=abc\n", "# SESSION_LIFETIME=\n")
+    _make_project(
+        tmp_path, monkeypatch, CLEAN_ENV + "SESSION_LIFETIME=abc\n", "# SESSION_LIFETIME=\n"
+    )
     result = runner.invoke(cli_app, ["env:lint"])
     assert result.exit_code == 0
     assert "SESSION_LIFETIME" in _out(result)
 
 
 def test_production_placeholder_key_fails(tmp_path, monkeypatch):
-    _make_project(tmp_path, monkeypatch, "APP_ENV=production\nAPP_KEY=\n", "# APP_ENV=\n# APP_KEY=\n")
+    _make_project(
+        tmp_path, monkeypatch, "APP_ENV=production\nAPP_KEY=\n", "# APP_ENV=\n# APP_KEY=\n"
+    )
     result = runner.invoke(cli_app, ["env:lint"])
     assert result.exit_code == 1
     assert "production" in _out(result)

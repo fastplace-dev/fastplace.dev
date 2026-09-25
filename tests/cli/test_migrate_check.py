@@ -32,13 +32,13 @@ def _out(result) -> str:
 
 # The field import is the project fixture's exact pattern (test_db_wipe.py):
 # `Field` from fastplace.orm — there is no StringField in this framework.
-POST_MODEL = '''\
+POST_MODEL = """\
 from fastplace.orm import Field, Model
 
 
 class Post(Model):
     title: str = Field()
-'''
+"""
 
 
 def _scaffold(tmp_path, monkeypatch, models: dict[str, str]) -> None:

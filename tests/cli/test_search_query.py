@@ -53,13 +53,13 @@ def _out(result) -> str:
 
 # The field import is the branch's proven fixture shape (test_db_truncate.py):
 # `Field` from fastplace.orm — there is no StringField in this framework.
-POST_MODEL = '''\
+POST_MODEL = """\
 from fastplace.orm import Field, Model
 
 
 class Post(Model):
     title: str = Field()
-'''
+"""
 
 
 @pytest.fixture

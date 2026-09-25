@@ -45,9 +45,7 @@ def _wide_output(monkeypatch):
 
 
 def _make_project(tmp_path, monkeypatch):
-    (tmp_path / "asgi.py").write_text(
-        "from fastplace.http import create_app\napp = create_app()\n"
-    )
+    (tmp_path / "asgi.py").write_text("from fastplace.http import create_app\napp = create_app()\n")
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "app.py").write_text(
         'APP_ENV = "local"\nAPP_KEY = "k" * 48\nAPP_URL = "http://fastplace.local"\n'
@@ -80,10 +78,10 @@ def test_exact_path_deep_dive(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.stdout
     out = _out(result)
     assert "GET" in out
-    assert "show_item" in out          # handler qualname
-    assert "routes.web" in out         # handler module
-    assert "throttle:5,60" in out      # alias tuple, declaration order
-    assert "throttle" in out           # resolved middleware chain
+    assert "show_item" in out  # handler qualname
+    assert "routes.web" in out  # handler module
+    assert "throttle:5,60" in out  # alias tuple, declaration order
+    assert "throttle" in out  # resolved middleware chain
 
 
 def test_param_pattern_fallback_matches_concrete_path(tmp_path, monkeypatch):

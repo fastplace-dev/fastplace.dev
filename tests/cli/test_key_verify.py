@@ -52,7 +52,7 @@ def _keys_encrypt_module() -> str:
     for line in keys_file.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("from ") and " import " in stripped and "decrypt" in stripped:
-            return stripped[len("from "):].split(" import ")[0].strip()
+            return stripped[len("from ") :].split(" import ")[0].strip()
     raise AssertionError("decrypt/encrypt import not found in keys.py")
 
 
@@ -128,7 +128,7 @@ def test_verify_writes_nothing(tmp_path, monkeypatch):
     env_mtime = (root / ".env").stat().st_mtime_ns
     result = runner.invoke(cli_app, ["key:verify"])
     assert result.exit_code == 0, result.stdout
-    assert encrypted.read_text() == token + "\n"   # ciphertext untouched
-    assert encrypted.stat().st_mtime_ns == mtime   # no rewrite
-    assert (root / ".env").stat().st_mtime_ns == env_mtime   # .env untouched too
+    assert encrypted.read_text() == token + "\n"  # ciphertext untouched
+    assert encrypted.stat().st_mtime_ns == mtime  # no rewrite
+    assert (root / ".env").stat().st_mtime_ns == env_mtime  # .env untouched too
     assert (root / ".env").read_text() == env_before

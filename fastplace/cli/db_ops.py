@@ -253,7 +253,9 @@ def db_query(
             console.print(f"[red]invalid --params JSON[/] — {escape(str(exc))}")
             raise typer.Exit(code=1) from None
         if not isinstance(parsed, dict):
-            console.print("[red]--params must be a JSON object[/] of named binds, e.g. '{\"id\": 3}'")
+            console.print(
+                "[red]--params must be a JSON object[/] of named binds, e.g. '{\"id\": 3}'"
+            )
             raise typer.Exit(code=1)
         binds = parsed
 
@@ -261,8 +263,10 @@ def db_query(
     if family == "write" and not execute:
         console.print("[red]write statement refused[/] — pass [cyan]--execute[/] to run it")
         raise typer.Exit(code=1)
-    if family == "write" and str(config("APP_ENV", default="production")).lower() == "production" and not (
-        force or typer.confirm("Run a write statement against the production database?")
+    if (
+        family == "write"
+        and str(config("APP_ENV", default="production")).lower() == "production"
+        and not (force or typer.confirm("Run a write statement against the production database?"))
     ):
         console.print("[red]aborted[/] — the database was left untouched")
         raise typer.Exit(code=1)

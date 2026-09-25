@@ -152,9 +152,7 @@ def test_production_sqlite_default_needs_no_confirm(tmp_path, monkeypatch, migra
     assert result.exit_code == 0, result.stdout  # local sqlite scratch: no prompt
 
 
-def test_user_sqlite_url_completes_and_keeps_default_triple(
-    tmp_path, monkeypatch, migrations_stub
-):
+def test_user_sqlite_url_completes_and_keeps_default_triple(tmp_path, monkeypatch, migrations_stub):
     root = _make_project(tmp_path, monkeypatch)
     stale = root / "storage" / "testing.sqlite3"
     stale.parent.mkdir()

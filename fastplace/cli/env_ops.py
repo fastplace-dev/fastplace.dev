@@ -67,7 +67,9 @@ def _app_key_check() -> CheckFunc:
         if not key:
             if env == "production":
                 return Check(
-                    "app-key", "fail", detail="empty in production (boot refuses)",
+                    "app-key",
+                    "fail",
+                    detail="empty in production (boot refuses)",
                     fix="fastplace key:generate",
                 )
             return Check("app-key", "warn", detail="not set", fix="fastplace key:generate")
@@ -90,9 +92,7 @@ def _config_import_check(root: Path) -> CheckFunc:
         try:
             Config(root).load()
         except (ImportError, SyntaxError) as exc:
-            return Check(
-                "config-import", "fail", detail=f"{type(exc).__name__}: {exc}"
-            )
+            return Check("config-import", "fail", detail=f"{type(exc).__name__}: {exc}")
         return Check("config-import", "pass", detail="config/*.py import clean")
 
     return _config_import
@@ -120,7 +120,9 @@ def _env_types_check(root: Path) -> CheckFunc:
         # Documentation-only knobs (VITE_PORT, QUERY_*) are deliberately
         # untyped — listing them as such is noise, not a finding.
         untyped = sorted(k for k in active - typed if not _is_example_only(k))
-        detail = f"{checked} typed overrides ok" if not bad else "coerce failed: " + ", ".join(bad[:6])
+        detail = (
+            f"{checked} typed overrides ok" if not bad else "coerce failed: " + ", ".join(bad[:6])
+        )
         if untyped:
             detail += f"; untyped: {', '.join(untyped[:6])}"
         return Check(
@@ -177,14 +179,18 @@ def _redis_check() -> CheckFunc:
         if str(config("SESSION_DRIVER", default="")).lower() == "redis":
             wanted.append(("session", str(config("REDIS_URL", default="redis://localhost:6379/0"))))
         if str(config("QUEUE_DRIVER", default="memory")).lower() == "saq":
-            wanted.append(("queue", str(config("QUEUE_REDIS_URL", default="redis://localhost:6379/0"))))
+            wanted.append(
+                ("queue", str(config("QUEUE_REDIS_URL", default="redis://localhost:6379/0")))
+            )
         if not wanted:
             return Check("redis", "pass", detail="not used (no redis driver configured)")
         try:
             import redis.asyncio as aioredis
         except ImportError:
             return Check(
-                "redis", "fail", detail="redis library not installed",
+                "redis",
+                "fail",
+                detail="redis library not installed",
                 fix="pip install 'fastplace[queue]'",
             )
 
@@ -200,7 +206,8 @@ def _redis_check() -> CheckFunc:
                 asyncio.run(_ping(url))
             except Exception as exc:  # noqa: BLE001
                 return Check(
-                    "redis", "fail",
+                    "redis",
+                    "fail",
                     detail=f"{label} unreachable ({type(exc).__name__})",
                     fix="check the redis URL and that redis is running",
                 )
@@ -223,14 +230,17 @@ def _mail_check() -> CheckFunc:
         ]
         if missing:
             return Check(
-                "mail", "fail", detail=f"missing: {', '.join(missing)}",
+                "mail",
+                "fail",
+                detail=f"missing: {', '.join(missing)}",
                 fix="set MAIL_HOST / MAIL_USERNAME / MAIL_PASSWORD in .env",
             )
         if str(config("QUEUE_DRIVER", default="memory")).lower() == "saq":
             return [
                 Check("mail", "pass", detail="smtp credentials present"),
                 Check(
-                    "mail-queue", "warn",
+                    "mail-queue",
+                    "warn",
                     detail="smtp mail is queued — it needs a running worker",
                     fix="fastplace queue:work",
                 ),
@@ -254,7 +264,9 @@ def _ai_keys_check() -> CheckFunc:
             if present:
                 return Check("ai-keys", "pass", detail=f"{', '.join(present)} set")
             return Check(
-                "ai-keys", "warn", detail="no provider key in environment",
+                "ai-keys",
+                "warn",
+                detail="no provider key in environment",
                 fix="export OPENAI_API_KEY or ANTHROPIC_API_KEY",
             )
         if os.environ.get(key):
@@ -276,8 +288,12 @@ def _storage_check(root: Path) -> CheckFunc:
                 probe.unlink()
             except OSError as exc:
                 rows.append(
-                    Check(f"writable:{name}", "fail", detail=type(exc).__name__,
-                          fix=f"check permissions on {name}")
+                    Check(
+                        f"writable:{name}",
+                        "fail",
+                        detail=type(exc).__name__,
+                        fix=f"check permissions on {name}",
+                    )
                 )
                 continue
             rows.append(Check(f"writable:{name}", "pass"))
@@ -297,7 +313,8 @@ def _serve_check(root: Path) -> CheckFunc:
         rel = manifest.relative_to(root) if manifest else None
         rows.append(
             Check(
-                "build-manifest", "pass" if manifest else "warn",
+                "build-manifest",
+                "pass" if manifest else "warn",
                 detail=str(rel) if rel else "missing",
                 fix="" if manifest else "npm run build",
             )
@@ -345,7 +362,8 @@ def _duplicate_check(env_keys: list[str]) -> CheckFunc:
             seen.add(key)
         if dupes:
             return Check(
-                "duplicates", "fail",
+                "duplicates",
+                "fail",
                 detail=f"duplicate active keys: {', '.join(sorted(dupes))} (last wins)",
                 fix="remove the earlier duplicate lines",
             )
@@ -356,12 +374,11 @@ def _duplicate_check(env_keys: list[str]) -> CheckFunc:
 
 def _example_drift_check(env_keys: list[str], example_keys: set[str]) -> CheckFunc:
     def _drift() -> Check:
-        undocumented = sorted(
-            k for k in set(env_keys) - example_keys if not _is_example_only(k)
-        )
+        undocumented = sorted(k for k in set(env_keys) - example_keys if not _is_example_only(k))
         if undocumented:
             return Check(
-                "example-drift", "warn",
+                "example-drift",
+                "warn",
                 detail=f"in .env but not .env.example: {', '.join(undocumented[:8])}",
                 fix="fastplace env:lint --fix (documents them) or remove them",
             )
@@ -374,21 +391,28 @@ def _example_secrets_check(example_text: str, live_values: dict[str, str]) -> Ch
     def _secrets() -> Check:
         flagged: list[str] = []
         for key, value in _env_values(example_text).items():
-            if _secret_looking(value) or (key in live_values and value == live_values[key] and value):
+            if _secret_looking(value) or (
+                key in live_values and value == live_values[key] and value
+            ):
                 flagged.append(key)
         # commented example values count too — secrets must not sit in example
         # files. Horizontal whitespace only: \s here would cross newlines and
         # stitch "# KEY=" onto the following line as a fake value. \r is
         # tolerated right before end-of-line so a CRLF example file cannot
         # dodge the match.
-        for m in re.finditer(r"^[ \t]*#[ \t]*([A-Z0-9_]+)[ \t]*=[ \t]*(\S+)[ \t\r]*$", example_text, re.MULTILINE):
+        for m in re.finditer(
+            r"^[ \t]*#[ \t]*([A-Z0-9_]+)[ \t]*=[ \t]*(\S+)[ \t\r]*$", example_text, re.MULTILINE
+        ):
             key, value = m.group(1), m.group(2)
-            if _secret_looking(value) or (key in live_values and value == live_values[key] and value):
+            if _secret_looking(value) or (
+                key in live_values and value == live_values[key] and value
+            ):
                 if key not in flagged:
                     flagged.append(key)
         if flagged:
             return Check(
-                "example-secrets", "fail",
+                "example-secrets",
+                "fail",
                 detail=f"secret-looking values in .env.example: {', '.join(sorted(flagged))}",
                 fix="replace with empty placeholders (# KEY=)",
             )
@@ -407,7 +431,8 @@ def _production_placeholder_check() -> CheckFunc:
         key = str(config("APP_KEY", default="") or "")
         if not key:
             return Check(
-                "prod-placeholders", "fail",
+                "prod-placeholders",
+                "fail",
                 detail="APP_ENV=production with an empty APP_KEY",
                 fix="fastplace key:generate",
             )
@@ -418,7 +443,9 @@ def _production_placeholder_check() -> CheckFunc:
 
 @env_ops_app.command("env:lint")
 def env_lint(
-    fix: bool = typer.Option(False, "--fix", help="Sync .env.example placeholders (never touches .env values)."),
+    fix: bool = typer.Option(
+        False, "--fix", help="Sync .env.example placeholders (never touches .env values)."
+    ),
 ) -> None:
     """Audit .env against .env.example: duplicates, drift, leaked secrets, coercion."""
     from fastplace.cli.database import _ensure_example_keys
@@ -514,7 +541,9 @@ def env_set(
     env_path.write_text(_upsert_env_lines(text, {key: value}), encoding="utf-8")
 
     if was_commented:
-        console.print(f"[yellow]ACTIVATED[/] {key} — it was commented out in .env; the live line now wins.")
+        console.print(
+            f"[yellow]ACTIVATED[/] {key} — it was commented out in .env; the live line now wins."
+        )
     console.print(f"{key} set in .env.")
 
     if _sync_example_key(root, key):
@@ -569,9 +598,10 @@ def _log_inventory(root: Path) -> list[tuple[Path, int]]:
 @env_ops_app.command("log:prune")
 def log_prune(
     days: float | None = typer.Option(
-        None, "--days",
+        None,
+        "--days",
         help="Delete whole log FILES whose mtime is older than N days (file granularity — "
-             "never partial files). Omit --days to list only, deleting nothing.",
+        "never partial files). Omit --days to list only, deleting nothing.",
     ),
     force: bool = typer.Option(False, "--force", help="Skip the production confirmation."),
 ) -> None:
@@ -599,7 +629,9 @@ def log_prune(
         console.print(f"  {path.name}  {size} bytes  ({age_days:.0f}d old)")
 
     if days is None:
-        console.print("[dim]list-only — pass --days N (and --force in production) to remove stale files.[/]")
+        console.print(
+            "[dim]list-only — pass --days N (and --force in production) to remove stale files.[/]"
+        )
         raise typer.Exit(code=0)
 
     if str(config("APP_ENV", default="production")).lower() == "production" and not (

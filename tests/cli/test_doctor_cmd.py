@@ -45,9 +45,7 @@ def _wide_output(monkeypatch):
 
 
 def _make_project(tmp_path, monkeypatch, env_text="APP_ENV=local\n"):
-    (tmp_path / "asgi.py").write_text(
-        "from fastplace.http import create_app\napp = create_app()\n"
-    )
+    (tmp_path / "asgi.py").write_text("from fastplace.http import create_app\napp = create_app()\n")
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "app.py").write_text(
         'APP_ENV = "local"\n'
@@ -110,8 +108,7 @@ def test_db_failure_fails_without_printing_the_url(tmp_path, monkeypatch):
         tmp_path,
         monkeypatch,
         env_text=(
-            "APP_ENV=local\n"
-            "DATABASE_URL=sqlite+aiosqlite:////nonexistent-parent/testing.sqlite3\n"
+            "APP_ENV=local\nDATABASE_URL=sqlite+aiosqlite:////nonexistent-parent/testing.sqlite3\n"
         ),
     )
     result = runner.invoke(cli_app, ["doctor"])

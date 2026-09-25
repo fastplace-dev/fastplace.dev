@@ -89,9 +89,7 @@ NEVER_CRON = (
 
 def test_chronological_rows_and_per_task_cap(fresh_project):
     _define_schedule(fresh_project, TWO_TASKS)
-    code, out = _run(
-        "schedule:preview", "--now", FROZEN_NOW, "--hours", "24", "--per-task", "3"
-    )
+    code, out = _run("schedule:preview", "--now", FROZEN_NOW, "--hours", "24", "--per-task", "3")
     assert code == 0, out
     assert "nightly_report" in out
     assert "heartbeat" in out

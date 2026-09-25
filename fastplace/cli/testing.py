@@ -667,9 +667,17 @@ def test_doctor() -> None:
         # failing (a doctor of optional backends must never block CI).
         rows = []
         for label, modules, activates in (
-            ("postgresql", ("asyncpg", "pgvector"), "portable matrix + tests/orm/postgresql (pgvector extension required)"),
+            (
+                "postgresql",
+                ("asyncpg", "pgvector"),
+                "portable matrix + tests/orm/postgresql (pgvector extension required)",
+            ),
             ("mysql", ("asyncmy",), "portable matrix + tests/orm/mysql"),
-            ("mongodb", ("pymongo",), "tests/orm/mongodb contract suite ONLY — NOT in the portable matrix"),
+            (
+                "mongodb",
+                ("pymongo",),
+                "tests/orm/mongodb contract suite ONLY — NOT in the portable matrix",
+            ),
             ("queue", ("saq", "redis"), "queue integration suites"),
         ):
             missing = [m for m in modules if _probe_import(m) is not None]
@@ -677,7 +685,9 @@ def test_doctor() -> None:
                 Check(
                     name=f"matrix:{label}",
                     status="pass" if not missing else "warn",
-                    detail=activates if not missing else f"not installed ({', '.join(missing)}) — {activates}",
+                    detail=activates
+                    if not missing
+                    else f"not installed ({', '.join(missing)}) — {activates}",
                     fix="" if not missing else f"pip install -e '.[{label}]'",
                 )
             )
@@ -688,15 +698,24 @@ def test_doctor() -> None:
         return Check(
             name="node",
             status="warn" if missing else "pass",
-            detail="all on PATH" if not missing else f"missing: {', '.join(missing)} (test:e2e needs them)",
+            detail="all on PATH"
+            if not missing
+            else f"missing: {', '.join(missing)} (test:e2e needs them)",
             fix="" if not missing else "install Node.js (https://nodejs.org)",
         )
 
     def browsers() -> Check:
         npx = shutil.which("npx")
         if not npx:
-            return Check(name="browsers", status="warn", detail="npx absent — cannot probe", fix="install Node.js")
-        dry = _subprocess_run([npx, "playwright", "install", "--dry-run"], stdout=subprocess.PIPE, text=True)
+            return Check(
+                name="browsers",
+                status="warn",
+                detail="npx absent — cannot probe",
+                fix="install Node.js",
+            )
+        dry = _subprocess_run(
+            [npx, "playwright", "install", "--dry-run"], stdout=subprocess.PIPE, text=True
+        )
         if _chromium_missing(dry.stdout or ""):
             return Check(
                 name="browsers",
@@ -742,6 +761,13 @@ def test_doctor() -> None:
     raise typer.Exit(
         code=run_checks(
             "test environment",
-            [dev_extras, matrix_extras, node_binaries, browsers, storage_writable, database_url_sanity],
+            [
+                dev_extras,
+                matrix_extras,
+                node_binaries,
+                browsers,
+                storage_writable,
+                database_url_sanity,
+            ],
         )
     )

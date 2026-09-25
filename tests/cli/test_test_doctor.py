@@ -58,7 +58,11 @@ def _healthy_shell(monkeypatch, tmp_path):
     installed, storage writable, local sqlite DB. Individual tests break
     exactly one thing."""
     monkeypatch.setattr(testing_mod, "_probe_import", lambda name: None)
-    monkeypatch.setattr("shutil.which", lambda name: f"/bin/{name}" if name in ("node", "npm", "npx") else None, raising=False)
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: f"/bin/{name}" if name in ("node", "npm", "npx") else None,
+        raising=False,
+    )
     monkeypatch.setattr(testing_mod, "_subprocess_run", lambda argv, *a, **k: _Proc())
     monkeypatch.setattr(testing_mod, "_probe_write", lambda path: True)
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -87,7 +91,11 @@ def test_healthy_environment_exits_zero(tmp_path, monkeypatch):
 
 def test_missing_dev_extra_fails_hard(tmp_path, monkeypatch):
     _make_project(tmp_path, monkeypatch)
-    monkeypatch.setattr(testing_mod, "_probe_import", lambda name: "No module named 'x'" if name == "pytest_asyncio" else None)
+    monkeypatch.setattr(
+        testing_mod,
+        "_probe_import",
+        lambda name: "No module named 'x'" if name == "pytest_asyncio" else None,
+    )
     result = runner.invoke(cli_app, ["test:doctor"])
     assert result.exit_code == 1
     assert "pytest_asyncio" in _out(result)
@@ -98,7 +106,11 @@ def test_missing_matrix_extra_is_info_not_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(
         testing_mod,
         "_probe_import",
-        lambda name: "No module named 'x'" if name in ("asyncpg", "pgvector", "asyncmy", "pymongo", "saq", "redis") else None,
+        lambda name: (
+            "No module named 'x'"
+            if name in ("asyncpg", "pgvector", "asyncmy", "pymongo", "saq", "redis")
+            else None
+        ),
     )
     result = runner.invoke(cli_app, ["test:doctor"])
     assert result.exit_code == 0, result.stdout  # report, not demand
@@ -130,7 +142,9 @@ def test_unwritable_storage_fails(tmp_path, monkeypatch):
 
 def test_production_database_url_warns_masked(tmp_path, monkeypatch):
     _make_project(tmp_path, monkeypatch, env_text="APP_ENV=production\n")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://fastplace:sup3rs3cret@db.internal.example/fastplace")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://fastplace:sup3rs3cret@db.internal.example/fastplace"
+    )
     result = runner.invoke(cli_app, ["test:doctor"])
     out = _out(result)
     assert "sup3rs3cret" not in out  # credentials never printed

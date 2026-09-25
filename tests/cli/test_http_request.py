@@ -44,9 +44,7 @@ def _wide_output(monkeypatch):
 
 
 def _make_project(tmp_path, monkeypatch):
-    (tmp_path / "asgi.py").write_text(
-        "from fastplace.http import create_app\napp = create_app()\n"
-    )
+    (tmp_path / "asgi.py").write_text("from fastplace.http import create_app\napp = create_app()\n")
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "app.py").write_text(
         'APP_ENV = "local"\nAPP_KEY = "k" * 48\nAPP_URL = "http://fastplace.local"\n'

@@ -57,9 +57,12 @@ def test_select_renders_rows(db_file):
 def test_named_params_reach_the_statement(db_file):
     runner.invoke(cli_app, ["db:query", "CREATE TABLE t (id INTEGER)", "--execute"])
     runner.invoke(
-        cli_app, ["db:query", "INSERT INTO t (id) VALUES (:id)", "--params", '{"id": 3}', "--execute"]
+        cli_app,
+        ["db:query", "INSERT INTO t (id) VALUES (:id)", "--params", '{"id": 3}', "--execute"],
     )
-    result = runner.invoke(cli_app, ["db:query", "SELECT id FROM t WHERE id = :id", "--params", '{"id": 3}'])
+    result = runner.invoke(
+        cli_app, ["db:query", "SELECT id FROM t WHERE id = :id", "--params", '{"id": 3}']
+    )
     assert result.exit_code == 0, result.output
     assert _rows(db_file, "SELECT id FROM t") == [(3,)]
 
@@ -74,16 +77,22 @@ def test_write_without_execute_refused(db_file):
 def test_write_with_execute_runs_in_testing(db_file):
     result = runner.invoke(cli_app, ["db:query", "CREATE TABLE t (id INTEGER)", "--execute"])
     assert result.exit_code == 0, result.output
-    assert _rows(db_file, "SELECT name FROM sqlite_master WHERE type='table' AND name='t'") == [("t",)]
+    assert _rows(db_file, "SELECT name FROM sqlite_master WHERE type='table' AND name='t'") == [
+        ("t",)
+    ]
 
 
 def test_production_guard_triple(db_file, monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    declined = runner.invoke(cli_app, ["db:query", "CREATE TABLE a (id INTEGER)", "--execute"], input="n\n")
+    declined = runner.invoke(
+        cli_app, ["db:query", "CREATE TABLE a (id INTEGER)", "--execute"], input="n\n"
+    )
     assert declined.exit_code == 1
     assert "aborted" in _out(declined)
     assert _rows(db_file, "SELECT name FROM sqlite_master WHERE type='table' AND name='a'") == []
-    accepted = runner.invoke(cli_app, ["db:query", "CREATE TABLE a (id INTEGER)", "--execute"], input="y\n")
+    accepted = runner.invoke(
+        cli_app, ["db:query", "CREATE TABLE a (id INTEGER)", "--execute"], input="y\n"
+    )
     assert accepted.exit_code == 0, accepted.output
     forced = runner.invoke(cli_app, ["db:query", "DROP TABLE a", "--execute", "--force"])
     assert forced.exit_code == 0, forced.output
@@ -145,9 +154,10 @@ def test_statement_family_data_modifying_cte_is_write():
     """A data-modifying CTE is a write even though it ends in SELECT."""
     from fastplace.cli.db_ops import _statement_family
 
-    assert _statement_family(
-        "WITH gone AS (DELETE FROM users RETURNING *) SELECT count(*) FROM gone"
-    ) == "write"
+    assert (
+        _statement_family("WITH gone AS (DELETE FROM users RETURNING *) SELECT count(*) FROM gone")
+        == "write"
+    )
 
 
 def test_statement_family_explain_analyze_is_write():

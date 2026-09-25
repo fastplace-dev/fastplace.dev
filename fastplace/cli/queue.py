@@ -509,7 +509,9 @@ def queue_list() -> None:
     import_jobs(root)
     registry = jobs()
 
-    console.print(f"[dim]queue driver:[/] [bold]{escape(str(config('QUEUE_DRIVER', default='memory')))}[/]")
+    console.print(
+        f"[dim]queue driver:[/] [bold]{escape(str(config('QUEUE_DRIVER', default='memory')))}[/]"
+    )
     if not registry:
         console.print("[dim]no registered jobs — define handlers with @Job in app/jobs/[/]")
         return
@@ -722,9 +724,7 @@ def queue_dispatch(
     root = _project_root()
     import_jobs(root)
     if name not in jobs():
-        console.print(
-            f"[red]unknown job '{escape(name)}'[/] — see [cyan]fastplace queue:list[/]"
-        )
+        console.print(f"[red]unknown job '{escape(name)}'[/] — see [cyan]fastplace queue:list[/]")
         raise typer.Exit(code=1)
 
     try:

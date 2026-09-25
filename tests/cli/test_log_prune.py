@@ -141,7 +141,7 @@ def test_bytes_and_count_reported(tmp_path, monkeypatch):
     result = runner.invoke(cli_app, ["log:prune", "--days", "7", "--force"])
     assert result.exit_code == 0, result.stdout
     out = _out(result)
-    assert "3072" in out          # bytes freed (2048 + 1024)
+    assert "3072" in out  # bytes freed (2048 + 1024)
     assert re.search(r"2 (log )?files?", out)  # files removed
 
 

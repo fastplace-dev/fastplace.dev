@@ -64,9 +64,7 @@ def run_checks(
         try:
             outcome = fn()
         except Exception as exc:  # noqa: BLE001 - a doctor never dies mid-table
-            outcome = Check(
-                _fallback_name(fn), "fail", detail=f"{type(exc).__name__}: {exc}"
-            )
+            outcome = Check(_fallback_name(fn), "fail", detail=f"{type(exc).__name__}: {exc}")
         if isinstance(outcome, Check):
             rows.append(outcome)
         else:

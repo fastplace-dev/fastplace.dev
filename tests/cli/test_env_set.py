@@ -65,8 +65,8 @@ def test_new_key_appended_verbatim(tmp_path, monkeypatch):
     result = runner.invoke(cli_app, ["env:set", "CACHE_DRIVER", "redis"])
     assert result.exit_code == 0, result.stdout
     text = (root / ".env").read_text()
-    assert "APP_ENV=local" in text            # existing line untouched
-    assert "CACHE_DRIVER=redis" in text       # new line present verbatim
+    assert "APP_ENV=local" in text  # existing line untouched
+    assert "CACHE_DRIVER=redis" in text  # new line present verbatim
 
 
 def test_existing_key_value_replaced(tmp_path, monkeypatch):
@@ -120,10 +120,10 @@ def test_secret_value_documented_as_empty_placeholder(tmp_path, monkeypatch):
     secret = "sk-live-akJ3nZk2Pq8VzR4wXb7Nc1Ym5Tg"  # 32+ chars, high entropy
     result = runner.invoke(cli_app, ["env:set", "STAGING_TOKEN", secret])
     assert result.exit_code == 0, result.stdout
-    assert secret in (root / ".env").read_text()            # value IS in .env
+    assert secret in (root / ".env").read_text()  # value IS in .env
     example = (root / ".env.example").read_text()
-    assert "STAGING_TOKEN" in example                       # key documented
-    assert secret not in example                            # value NEVER copied
+    assert "STAGING_TOKEN" in example  # key documented
+    assert secret not in example  # value NEVER copied
 
 
 def test_plain_value_documented_as_empty_placeholder_too(tmp_path, monkeypatch):

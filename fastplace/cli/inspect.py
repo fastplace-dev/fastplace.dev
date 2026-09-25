@@ -239,9 +239,7 @@ def route_show(
     app = _load_asgi_app(root)
     route = _match_route(app, path)
     if route is None:
-        console.print(
-            f"[red]no route matches {path}[/] — try [bold]fastplace route:list[/]."
-        )
+        console.print(f"[red]no route matches {path}[/] — try [bold]fastplace route:list[/].")
         raise typer.Exit(code=1)
 
     declared = _declared_route(root, getattr(route, "path", path))

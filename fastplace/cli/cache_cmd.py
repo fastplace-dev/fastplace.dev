@@ -149,7 +149,9 @@ def cache_status() -> None:
 
 @cache_app.command("cache:gc")
 def cache_gc(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be purged, delete nothing."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be purged, delete nothing."
+    ),
 ) -> None:
     """Sweep expired rows from the database cache driver (the whole cache table)."""
     import asyncio
@@ -161,9 +163,7 @@ def cache_gc(
     load_env()
     driver = str(config("CACHE_DRIVER", default="memory"))
     if driver != "database":
-        console.print(
-            f"[dim]driver '{escape(driver)}' expires keys natively — nothing to sweep[/]"
-        )
+        console.print(f"[dim]driver '{escape(driver)}' expires keys natively — nothing to sweep[/]")
         return
 
     from fastplace.cache import DatabaseCache, cache, reset_cache

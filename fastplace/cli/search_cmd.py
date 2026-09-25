@@ -53,9 +53,7 @@ def search_query(
     if resolved is None:
         known = sorted(models, key=lambda candidate: candidate.__name__)
         console.print(f"[red]unknown model '{escape(model)}'[/]")
-        console.print(
-            f"known models: {', '.join(escape(c.__name__) for c in known) or 'none'}"
-        )
+        console.print(f"known models: {', '.join(escape(c.__name__) for c in known) or 'none'}")
         raise typer.Exit(code=1)
 
     async def _run():
