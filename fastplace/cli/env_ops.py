@@ -546,3 +546,82 @@ def doctor() -> None:
         ],
     )
     raise typer.Exit(code=code)
+
+
+def _log_inventory(root: Path) -> list[tuple[Path, int]]:
+    """(path, size-bytes) for every *.log under storage/logs, newest-last.
+
+    Stat races tolerated: a log rotated away between glob and stat is
+    skipped, never fatal.
+    """
+    logs_dir = root / "storage" / "logs"
+    if not logs_dir.is_dir():
+        return []
+    inventory: list[tuple[Path, int]] = []
+    for path in sorted(logs_dir.glob("*.log")):
+        try:
+            inventory.append((path, path.stat().st_size))
+        except OSError:
+            continue  # rotated away mid-scan
+    return inventory
+
+
+@env_ops_app.command("log:prune")
+def log_prune(
+    days: float | None = typer.Option(
+        None, "--days",
+        help="Delete whole log FILES whose mtime is older than N days (file granularity — "
+             "never partial files). Omit --days to list only, deleting nothing.",
+    ),
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation."),
+) -> None:
+    """Inventory storage/logs/*.log; with --days, remove the stale ones. Content is never printed."""
+    import time
+
+    from fastplace.config import config, load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    inventory = _log_inventory(root)
+    if not inventory:
+        console.print("no log files under storage/logs — nothing to prune.")
+        raise typer.Exit(code=0)
+
+    total = sum(size for _, size in inventory)
+    console.print(f"{len(inventory)} log file(s), {total} bytes under storage/logs:")
+    for path, size in inventory:
+        try:
+            age_days = (time.time() - path.stat().st_mtime) / 86400
+        except OSError:
+            age_days = -1
+        console.print(f"  {path.name}  {size} bytes  ({age_days:.0f}d old)")
+
+    if days is None:
+        console.print("[dim]list-only — pass --days N (and --force in production) to remove stale files.[/]")
+        raise typer.Exit(code=0)
+
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm(f"Delete log files older than {days:g} days in production?")
+    ):
+        console.print("[red]aborted[/]")
+        raise typer.Exit(code=1)
+
+    removed = 0
+    freed = 0
+    for path, size in inventory:
+        try:
+            age_days = (time.time() - path.stat().st_mtime) / 86400
+        except OSError:
+            continue
+        if age_days < days:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue  # vanished or locked — report what actually went
+        removed += 1
+        freed += size
+
+    console.print(f"[green]removed {removed} log file(s)[/], freed {freed} bytes.")
