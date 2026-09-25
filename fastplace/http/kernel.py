@@ -187,6 +187,7 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     auth = _load_router_module(root, "routes.auth")
     api = _load_router_module(root, "routes.api")
     ai = _load_router_module(root, "routes.ai")
+    web, api = _merge_module_routers(root, web, api)
 
     middleware = _middleware_from_config(root)
     app = get_app(
@@ -256,6 +257,35 @@ def _load_router_module(root: Path, dotted: str) -> Router | None:
     if router is None and dotted == "routes.web":
         return None
     return router
+
+
+def _merge_module_routers(
+    root: Path, web: Router | None, api: Router | None
+) -> tuple[Router | None, Router | None]:
+    """Fold each module's routes.py (web_routes/api_routes) into the central routers.
+
+    Central routes keep first-match priority: module routes append after them.
+    A module routes.py that fails to import fails the boot loudly — same
+    contract as import_vector_stores/import_jobs/import_gates. A module
+    without routes.py, or with None attributes, is skipped silently.
+    """
+    from fastplace.modules import discover_modules
+
+    for info in discover_modules(root).values():
+        if not (info.path / "routes.py").is_file():
+            continue
+        module = importlib.import_module(info.dotted("routes"))
+        web_extra = getattr(module, "web_routes", None)
+        api_extra = getattr(module, "api_routes", None)
+        if web_extra is not None:
+            web = web or Router()
+            web.routes.extend(web_extra.routes)
+            web.websocket_routes.extend(web_extra.websocket_routes)
+        if api_extra is not None:
+            api = api or Router()
+            api.routes.extend(api_extra.routes)
+            api.websocket_routes.extend(api_extra.websocket_routes)
+    return web, api
 
 
 def _middleware_from_config(root: Path) -> list[Middleware]:
