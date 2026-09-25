@@ -134,6 +134,14 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     except ImportError:
         pass
 
+    # --- roadmap: data plane (db / cache / queue) ---
+    try:
+        from fastplace.cli.db_ops import db_ops_app
+
+        app.add_typer(db_ops_app, name="")
+    except ImportError:
+        pass
+
 
 _register_phase_commands()
 app.add_typer(shell_app, name="")
