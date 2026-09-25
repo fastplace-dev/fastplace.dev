@@ -402,6 +402,149 @@ def http_check() -> None:
     raise typer.Exit(code=_http_check_run(root))
 
 
+def _find_session_entry(app: Any) -> Any:
+    """The live ServerSessionMiddleware entry — None when not installed."""
+    for entry in app.user_middleware:
+        if entry.cls.__name__ == "ServerSessionMiddleware":
+            return entry
+    return None
+
+
+async def _forge_session(app: Any, user_id: int | str) -> tuple[str, str]:
+    """Write a session for user_id through the LIVE middleware store.
+
+    Never session_store() fresh: the memory driver mints a new store per
+    call, so a forged cookie would never be seen by the app
+    (session/__init__.py:45-46 hazard). Returns (cookie value, csrf token).
+    """
+    import secrets
+
+    entry = _find_session_entry(app)
+    if entry is None:
+        raise RuntimeError("ServerSessionMiddleware not installed on this app")
+    kwargs = entry.kwargs or {}
+    store = kwargs["store"]
+    cookie_name = kwargs.get("cookie_name", "fastplace_session")
+
+    sid = secrets.token_hex(32)
+    csrf_token = secrets.token_urlsafe(32)
+    payload = {"user_id": user_id, "_token": csrf_token}
+    await store.write(sid, payload, user_id=user_id)
+    return f"{cookie_name}={sid}", csrf_token
+
+
+async def _resolve_user(identifier: str) -> int:
+    """id-or-email to user id: numeric passes through; email via the project's repository."""
+    if identifier.isdigit():
+        return int(identifier)
+    # The project's own user model/repo — discover it the way auth middleware does.
+    try:
+        from app.models.user import User  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            f"--user {identifier!r} is an email but no app.models.user.User exists to resolve it"
+            " — pass the numeric id"
+        ) from exc
+    from sqlalchemy import select
+
+    from fastplace.orm.manager import get_manager
+
+    engine = get_manager().engine("default")
+    try:
+        async with engine.connect() as conn:
+            row = (await conn.execute(select(User.id).where(User.email == identifier))).first()
+            if row is None:
+                raise RuntimeError(f"no user with email {identifier!r}")
+            return int(row[0])
+    finally:
+        await engine.dispose()
+
+
+@http_app.command("http:request")
+def http_request(
+    method: str = typer.Argument(..., help="HTTP method: GET, POST, PUT, PATCH, DELETE, ..."),
+    path: str = typer.Argument(..., help="Request path, e.g. /api/v1/items"),
+    user: str = typer.Option(
+        "",
+        "--user",
+        help="Forge a session for this user id or email (resolves email via the project's user repository).",
+    ),
+    header: list[str] | None = typer.Option(
+        None, "--header", help="Extra header 'Name: value' (repeatable)."
+    ),
+    data: str = typer.Option("", "--data", help="Request body: JSON string or form 'k=v&k2=v2'."),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print status + headers + JSON-decoded body."
+    ),
+) -> None:
+    """Send one request through the booted app: full middleware, session, CSRF machinery."""
+    import asyncio
+    import json as _json
+
+    from fastplace.config import load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    method = method.upper()
+    headers: dict[str, str] = {}
+    for raw in header or []:
+        name, _, value = raw.partition(":")
+        if not value:
+            console.print(f"[red]bad --header {raw!r}[/] — expected 'Name: value'")
+            raise typer.Exit(code=1)
+        headers[name.strip()] = value.strip()
+
+    async def _run() -> int:
+        app, manager, client = _boot_client(root)
+        async with manager:
+            async with client:
+                csrf_token = ""
+                if user:
+                    resolved = await _resolve_user(user)
+                    cookie_value, csrf_token = await _forge_session(app, resolved)
+                    headers["Cookie"] = cookie_value
+                    if method not in ("GET", "HEAD", "OPTIONS"):
+                        # Session _token travels in this header for unsafe methods
+                        # (auth/middleware.py CsrfMiddleware contract).
+                        headers["X-Fastplace-CSRF-Token"] = csrf_token
+
+                if data:
+                    content_type = headers.get("Content-Type", headers.get("content-type", ""))
+                    if not content_type.startswith("application/json"):
+                        headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+
+                response = await client.request(
+                    method, path, headers=headers, content=data if data else None
+                )
+
+        if as_json:
+            console.print(f"status: [bold]{response.status_code}[/]")
+            console.print("headers:")
+            for hname, hvalue in response.headers.items():
+                console.print(f"  {hname}: {hvalue}")
+            try:
+                body = _json.dumps(_json.loads(response.text), indent=2)
+                console.print("body:")
+                console.print(body)
+            except ValueError:
+                console.print(f"body:\n{response.text}")
+        else:
+            console.print(f"[bold]{response.status_code}[/] {response.text[:2000]}")
+        return 0
+
+    # Run OUTSIDE the except below: typer.Exit subclasses RuntimeError
+    # (click.exceptions.Exit), so a `try: raise typer.Exit(...)` around it
+    # would catch the successful exit(0) itself and turn it into exit 1.
+    try:
+        code = asyncio.run(_run())
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
 @http_app.command("middleware:list")
 def middleware_list() -> None:
     """Print the resolved middleware onion (request order) + route-middleware alias table."""
