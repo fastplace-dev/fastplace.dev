@@ -138,3 +138,54 @@ def test_statement_family_unit():
     assert _statement_family("DELETE FROM posts") == "write"
     assert _statement_family("select 1; delete from posts") == "write"
     assert _statement_family("select ';' as a") == "read"
+
+
+# Review fix 1 — read-classified statements that still mutate must be write.
+def test_statement_family_data_modifying_cte_is_write():
+    """A data-modifying CTE is a write even though it ends in SELECT."""
+    from fastplace.cli.db_ops import _statement_family
+
+    assert _statement_family(
+        "WITH gone AS (DELETE FROM users RETURNING *) SELECT count(*) FROM gone"
+    ) == "write"
+
+
+def test_statement_family_explain_analyze_is_write():
+    """EXPLAIN ANALYZE executes the statement it explains — treat as write."""
+    from fastplace.cli.db_ops import _statement_family
+
+    assert _statement_family("EXPLAIN ANALYZE DELETE FROM users") == "write"
+    assert _statement_family("explain analyze update t set x = 1") == "write"
+    assert _statement_family("EXPLAIN SELECT 1") == "read"
+
+
+def test_statement_family_verb_in_string_literal_stays_read():
+    from fastplace.cli.db_ops import _statement_family
+
+    assert _statement_family("SELECT 'DELETE FROM users' AS kept") == "read"
+    assert _statement_family('SELECT "DROP TABLE t" AS q') == "read"
+
+
+def test_statement_family_verb_in_comment_is_read():
+    from fastplace.cli.db_ops import _statement_family
+
+    assert _statement_family("SELECT 1 -- DELETE FROM users\n") == "read"
+    assert _statement_family("SELECT /* UPDATE t SET x = 1 */ 1") == "read"
+
+
+def test_statement_family_select_into_is_write():
+    """Postgres SELECT INTO creates a table — a write in read clothing."""
+    from fastplace.cli.db_ops import _statement_family
+
+    assert _statement_family("SELECT * INTO archive FROM users") == "write"
+
+
+def test_data_modifying_cte_refused_without_execute(db_file):
+    result = runner.invoke(
+        cli_app,
+        ["db:query", "WITH gone AS (DELETE FROM users RETURNING *) SELECT count(*) FROM gone"],
+    )
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "refused" in out
+    assert "Traceback" not in out

@@ -183,6 +183,24 @@ _READ_KEYWORDS = {"SELECT", "WITH", "EXPLAIN", "SHOW", "PRAGMA", "TABLE"}
 #: is not mistaken for a statement separator.
 _STRING_LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
 
+#: SQL comments — stripped after literals so a verb in a comment or a
+#: quoted string can never force (or duck) the write classification.
+_LINE_COMMENT = re.compile(r"--[^\n]*")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+#: Mutation verbs scanned anywhere in a read-classified statement. The
+#: first keyword alone is not enough: a data-modifying CTE mutates rows
+#: before its final SELECT, EXPLAIN ANALYZE *executes* the statement it
+#: explains, and Postgres SELECT ... INTO creates a table. Any hit makes
+#: the invocation 'write' — fail-safe, never the other way around.
+_DML_VERBS = re.compile(
+    r"\b("
+    r"INSERT|UPDATE|DELETE|MERGE|CREATE|DROP|ALTER|TRUNCATE|"
+    r"GRANT|REVOKE|CALL|VACUUM|ATTACH|DETACH|ANALYZE|ANALYSE|INTO"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _statement_family(sql: str) -> str:
     """'read' for the SELECT-family, 'write' for everything else.
@@ -190,13 +208,20 @@ def _statement_family(sql: str) -> str:
     Semicolons inside string literals are fine; any statement-separating
     semicolon (non-space content after the first one) makes the whole
     invocation 'write' so a batch cannot smuggle DML past the gate.
+    String literals and comments are stripped, then the remainder is
+    scanned for mutation verbs — a read-starting statement that mutates
+    anywhere (CTE, EXPLAIN ANALYZE, SELECT INTO) is still 'write'.
     """
     stripped = sql.strip().lstrip("(")
     body = _STRING_LITERAL.sub("''", stripped)
+    body = _BLOCK_COMMENT.sub(" ", body)
+    body = _LINE_COMMENT.sub(" ", body)
     if ";" in body:
         head, _, tail = body.partition(";")
         if head.strip() and tail.strip():
             return "write"
+    if _DML_VERBS.search(body):
+        return "write"
     first = body.split(None, 1)[0] if body else ""
     return "read" if first.upper() in _READ_KEYWORDS else "write"
 
