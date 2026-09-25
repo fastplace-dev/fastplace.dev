@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import typer
 
@@ -145,3 +145,56 @@ def cache_status() -> None:
 
     console.print(table)
     console.print(finding)
+
+
+@cache_app.command("cache:gc")
+def cache_gc(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be purged, delete nothing."),
+) -> None:
+    """Sweep expired rows from the database cache driver (the whole cache table)."""
+    import asyncio
+
+    from rich.markup import escape
+
+    from fastplace.config import config, load_env
+
+    load_env()
+    driver = str(config("CACHE_DRIVER", default="memory"))
+    if driver != "database":
+        console.print(
+            f"[dim]driver '{escape(driver)}' expires keys natively — nothing to sweep[/]"
+        )
+        return
+
+    from fastplace.cache import DatabaseCache, cache, reset_cache
+
+    reset_cache()
+    # The driver gate above pins the factory's product to DatabaseCache; the
+    # CacheStore Protocol deliberately omits the driver-specific purge_expired.
+    store = cast(DatabaseCache, cache())
+
+    async def _run() -> int:
+        if dry_run:
+            import time as _time
+
+            from sqlalchemy import select
+
+            from fastplace.cache import _cache_table
+            from fastplace.db import db
+
+            engine = db.manager.engine("default")
+            async with engine.connect() as connection:
+                rows = await connection.execute(
+                    select(_cache_table.c.key).where(
+                        _cache_table.c.expires_at.is_not(None),
+                        _cache_table.c.expires_at <= int(_time.time()),
+                    )
+                )
+                return len(rows.fetchall())
+        return await store.purge_expired()
+
+    purged = asyncio.run(_run())
+    if dry_run:
+        console.print(f"Would purge {purged} expired row(s).")
+    else:
+        console.print(f"Purged {purged} expired row(s).")
