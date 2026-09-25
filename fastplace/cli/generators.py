@@ -218,6 +218,122 @@ def _resource_controller_source(name: str, *, api: bool) -> str:
     return _RESOURCE_CONTROLLER_TEMPLATE.format(doc_name=name, name=name, methods=methods)
 
 
+_MODULE_CONTROLLER_METHODS: tuple[tuple[str, str, bool], ...] = (
+    # (action, Json placeholder payload, validates through the module request)
+    ("index", '{"items": []}', False),
+    ("create", '{"form": "create"}', False),
+    ("store", '{"created": True}', True),
+    ("show", '{"item": None}', False),
+    ("edit", '{"form": "edit"}', False),
+    ("update", '{"updated": True}', True),
+    ("destroy", '{"deleted": True}', False),
+)
+
+_MODULE_CONTROLLER_TEMPLATE = '''"""{doc_name} API controller — thin: validate, delegate, respond."""
+
+from fastplace.http import Controller, Json, Request
+
+from app.modules.{module}.http.requests.store_{module}_request import Store{name}Request
+from app.modules.{module}.services.{module}_service import {name}Service
+
+
+class {name}Controller(Controller):
+    service = {name}Service()
+
+{methods}'''
+
+
+def _module_controller_source(name: str, module: str, *, actions: frozenset[str]) -> str:
+    methods = []
+    for action, payload, validates in _MODULE_CONTROLLER_METHODS:
+        if action not in actions:
+            continue
+        if validates:
+            methods.append(
+                f"    async def {action}(self, request: Request):\n"
+                f"        data = await request.validate(Store{name}Request)\n"
+                f"        return Json({payload})"
+            )
+        else:
+            methods.append(
+                f"    async def {action}(self, request: Request):\n        return Json({payload})"
+            )
+    return _MODULE_CONTROLLER_TEMPLATE.format(
+        doc_name=name, name=name, module=module, methods="\n\n".join(methods)
+    )
+
+
+_MODULE_REQUEST_TEMPLATE = '''"""{doc_name} store/update request — HTTP-edge validation."""
+
+from pydantic import BaseModel, Field
+
+
+class Store{name}Request(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+'''
+
+
+def _module_request_source(name: str) -> str:
+    return _MODULE_REQUEST_TEMPLATE.format(doc_name=name, name=name)
+
+
+_MODULE_ROUTES_TEMPLATE = '''"""{doc_name} module routes — auto-merged at boot (web at root, api under /api/v1)."""
+
+from fastplace.http import Router
+
+from app.modules.{module}.http.controllers.{module}_controller import {name}Controller
+{page_import}
+{web_block}
+api_routes = Router()
+{registrations}'''
+
+
+def _module_routes_source(
+    name: str, module: str, *, api_actions: tuple[str, ...], web: bool
+) -> str:
+    plural = _plural(module)
+    registrations = [
+        f'api_routes.get("/{plural}", {name}Controller, "index", name="api.{module}.index")'
+    ]
+    # (action, HTTP method, path shape) — id-bound actions get /{id}.
+    route_by_action = {
+        "create": ("get", ""),
+        "store": ("post", ""),
+        "show": ("get", "/{id}"),
+        "edit": ("get", "/{id}/edit"),
+        "update": ("put", "/{id}"),
+        "destroy": ("delete", "/{id}"),
+    }
+    for action in api_actions:
+        if action == "index":
+            continue
+        method, suffix = route_by_action[action]
+        registrations.append(
+            f'api_routes.{method}("/{plural}{suffix}", {name}Controller, "{action}", '
+            f'name="api.{module}.{action}")'
+        )
+    if web:
+        page_import = (
+            f"from app.modules.{module}.http.controllers.{module}_page_controller import "
+            f"{name}PageController"
+        )
+        web_block = (
+            f"web_routes = Router()\n"
+            f'web_routes.get("/{plural}", {name}PageController, "index", name="{module}.index")'
+        )
+    else:
+        page_import = ""
+        web_block = "web_routes: Router | None = None"
+    return _MODULE_ROUTES_TEMPLATE.format(
+        doc_name=name,
+        name=name,
+        module=module,
+        page_import=page_import,
+        web_block=web_block,
+        registrations="\n".join(registrations),
+    )
+
+
 @generators_app.command("make:controller")
 def make_controller(
     name: str = typer.Argument(..., help="Controller name in PascalCase"),
@@ -320,21 +436,11 @@ def make_module(
         "--bare",
         help="Only the package directories — skip the Model/Repository/Service stubs.",
     ),
-    resource: bool = typer.Option(
-        False,
-        "--resource",
-        help="Also scaffold a seven-action CRUD controller for the module.",
-    ),
-    api: bool = typer.Option(
-        False,
-        "--api",
-        help="Also scaffold an API controller (CRUD minus the create/edit form actions).",
-    ),
     migration: bool = typer.Option(
         False, "--migration", "-m", help="Also autogenerate a migration."
     ),
 ) -> None:
-    """Scaffold a bounded module: dirs + Model + Repository + Service (--bare for dirs only)."""
+    """Scaffold a self-contained module: slice + http edge + routes (--bare for dirs only)."""
     root = _project_root()
     # Accept "OrderModule", "Order" and "order" — a trailing Module suffix is
     # stripped so scaffolded names match the shipped lowercase-noun modules
@@ -375,9 +481,30 @@ def make_module(
     make_service(name=entity, module=clean)
     make_repository(name=entity, module=clean)
 
-    if resource or api:
-        make_controller(name=f"{entity}Controller", resource=resource, api=api)
-
+    # Module-local http edge: controller, store request, route table.
+    http = base / "http"
+    for marker in (
+        http / "__init__.py",
+        http / "controllers" / "__init__.py",
+        http / "requests" / "__init__.py",
+    ):
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        _write(marker, "", root)
+    _write(
+        http / "controllers" / f"{clean}_controller.py",
+        _module_controller_source(entity, clean, actions=frozenset({"index"})),
+        root,
+    )
+    _write(
+        http / "requests" / f"store_{clean}_request.py",
+        _module_request_source(entity),
+        root,
+    )
+    _write(
+        base / "routes.py",
+        _module_routes_source(entity, clean, api_actions=("index",), web=False),
+        root,
+    )
     if migration:
         _make_migration(root, clean)
 

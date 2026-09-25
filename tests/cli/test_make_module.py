@@ -1,9 +1,9 @@
-"""`make:module` — full vertical slice scaffold.
+"""`make:module` — self-contained module scaffold.
 
-Default creates the module directories plus a Model, Repository and Service
-stub wired by naming convention (Controllers → Services → Repositories →
-Models); `--bare` keeps the old packages-only behavior, `--resource`/`--api`
-add a controller, `-m` a migration.
+Default creates the module directories plus a Model, Repository, Service
+and the module's own http edge (controller, store request, route table)
+wired by naming convention (Controllers → Services → Repositories →
+Models); `--bare` keeps the old packages-only behavior, `-m` a migration.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ _MARKERS = (
 )
 
 
-def test_full_slice_default(tmp_path, monkeypatch):
-    """`make:module OrderModule` scaffolds dirs + Model + Repository + Service."""
+def test_full_module_default(tmp_path, monkeypatch):
+    """Default scaffolds the complete self-contained module, incl. routes."""
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(cli_app, ["make:module", "OrderModule"])
@@ -41,12 +41,32 @@ def test_full_slice_default(tmp_path, monkeypatch):
     assert "class Order(Model):" in source
     assert '__tablename__ = "orders"' in source
     compile(source, str(model), "exec")
-    repository = base / "repositories" / "order_repository.py"
-    assert repository.is_file()
-    assert "class OrderRepository:" in repository.read_text()
-    service = base / "services" / "order_service.py"
-    assert service.is_file()
-    assert "class OrderService:" in service.read_text()
+    assert "class OrderRepository:" in (base / "repositories" / "order_repository.py").read_text()
+    assert "class OrderService:" in (base / "services" / "order_service.py").read_text()
+    # Module-local http edge.
+    controller = base / "http" / "controllers" / "order_controller.py"
+    assert controller.is_file()
+    csource = controller.read_text()
+    assert "class OrderController(Controller):" in csource
+    assert "service = OrderService()" in csource
+    compile(csource, str(controller), "exec")
+    request = base / "http" / "requests" / "store_order_request.py"
+    assert request.is_file()
+    rsource = request.read_text()
+    assert "class StoreOrderRequest(BaseModel):" in rsource
+    compile(rsource, str(request), "exec")
+    # Route table wired to the controller.
+    routes = base / "routes.py"
+    assert routes.is_file()
+    vsource = routes.read_text()
+    assert "web_routes: Router | None = None" in vsource
+    assert "api_routes = Router()" in vsource
+    assert 'api_routes.get("/orders", OrderController, "index"' in vsource
+    compile(vsource, str(routes), "exec")
+    # No central leak.
+    assert not (tmp_path / "app" / "http" / "controllers" / "order_controller.py").exists()
+    for marker in ("http/__init__.py", "http/controllers/__init__.py", "http/requests/__init__.py"):
+        assert (base / marker).is_file(), marker
 
 
 def test_bare_flag_creates_packages_only(tmp_path, monkeypatch):
@@ -62,6 +82,8 @@ def test_bare_flag_creates_packages_only(tmp_path, monkeypatch):
     assert not (base / "models" / "order.py").exists()
     assert not (base / "repositories" / "order_repository.py").exists()
     assert not (base / "services" / "order_service.py").exists()
+    assert not (base / "routes.py").exists()
+    assert not (base / "http" / "controllers" / "order_controller.py").exists()
 
 
 def test_module_suffix_stripped_before_snake(tmp_path, monkeypatch):
@@ -101,31 +123,6 @@ def test_module_only_name_rejected(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert not (tmp_path / "app" / "modules" / "module").exists()
-
-
-def test_api_flag_also_scaffolds_controller(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--api"])
-
-    assert result.exit_code == 0, result.output
-    controller = tmp_path / "app" / "http" / "controllers" / "order_controller.py"
-    assert controller.is_file()
-    source = controller.read_text()
-    assert "class OrderController(Controller):" in source
-    assert "async def store(" in source
-    assert "async def create(" not in source  # api drops the form actions
-
-
-def test_resource_flag_scaffolds_full_controller(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--resource"])
-
-    assert result.exit_code == 0, result.output
-    source = (tmp_path / "app" / "http" / "controllers" / "order_controller.py").read_text()
-    for action in ("index", "create", "store", "show", "edit", "update", "destroy"):
-        assert f"async def {action}(" in source
 
 
 def test_migration_flag_creates_version(tmp_path, monkeypatch):
