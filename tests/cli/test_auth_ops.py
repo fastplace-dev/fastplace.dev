@@ -94,3 +94,138 @@ def test_token_list_empty_scoped_names_the_user(project):
     result = runner.invoke(cli_app, ["token:list", "--user", "7"])
     assert result.exit_code == 0, result.output
     assert "for user 7" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# gate:check
+# ---------------------------------------------------------------------------
+
+GATES_MODULE = '''"""Project gates — the import_gates() walk imports this module."""
+
+from fastplace.authz.gate import gate
+
+
+@gate.define("posts.view")
+async def view_post(user, post):
+    return user["role"] == "editor"
+
+
+@gate.define("self.access")
+async def self_access(user):
+    return user["role"] == "editor"
+'''
+
+
+@pytest.fixture()
+def gates_project(tmp_path, monkeypatch):
+    """A tmp project carrying app/auth/gates.py with two registered abilities."""
+    (tmp_path / "asgi.py").write_text("# marker — the _project_root() check\n")
+    for package in ("app", "app/auth"):
+        (tmp_path / package).mkdir(parents=True, exist_ok=True)
+        (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / "app/auth/gates.py").write_text(GATES_MODULE)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+class FakeGateRepository:
+    """find_by_id seam — the command imports _accounts_repository at call time."""
+
+    def __init__(self, role: str = "editor") -> None:
+        self.role = role
+
+    async def find_by_id(self, user_id):
+        return {"id": user_id, "role": self.role}
+
+
+@pytest.fixture(autouse=True)
+def _clean_gate_registry():
+    from fastplace.authz.gate import gate
+
+    gate.reset_shared()
+    yield
+    gate.reset_shared()
+
+
+def test_gate_check_allow_prints_source_and_exits_zero(gates_project, monkeypatch):
+    import fastplace.cli.provisioning as provisioning
+
+    monkeypatch.setattr(
+        provisioning, "_accounts_repository", lambda: FakeGateRepository("editor")
+    )
+
+    result = runner.invoke(cli_app, ["gate:check", "1", "posts.view", "--arg", '{"post": 5}'])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "allow" in plain
+    assert "posts.view" in plain
+
+
+def test_gate_check_deny_exits_one(gates_project, monkeypatch):
+    import fastplace.cli.provisioning as provisioning
+
+    monkeypatch.setattr(
+        provisioning, "_accounts_repository", lambda: FakeGateRepository("viewer")
+    )
+
+    result = runner.invoke(cli_app, ["gate:check", "1", "posts.view", "--arg", '{"post": 5}'])
+
+    assert result.exit_code == 1
+    assert "deny" in ANSI_RE.sub("", result.output)
+
+
+def test_gate_check_unknown_ability_exits_one(gates_project, monkeypatch):
+    import fastplace.cli.provisioning as provisioning
+
+    monkeypatch.setattr(
+        provisioning, "_accounts_repository", lambda: FakeGateRepository("editor")
+    )
+
+    result = runner.invoke(cli_app, ["gate:check", "1", "teapot.brew"])
+
+    assert result.exit_code == 1
+    assert "not registered" in ANSI_RE.sub("", result.output)
+
+
+def test_gate_check_unknown_user_exits_one(gates_project, monkeypatch):
+    import fastplace.cli.provisioning as provisioning
+
+    class Missing:
+        async def find_by_id(self, user_id):
+            return None
+
+    monkeypatch.setattr(provisioning, "_accounts_repository", lambda: Missing())
+
+    result = runner.invoke(cli_app, ["gate:check", "99", "self.access"])
+
+    assert result.exit_code == 1
+    assert "99" in ANSI_RE.sub("", result.output)
+
+
+def test_gate_check_bad_arg_json_exits_one(gates_project, monkeypatch):
+    import fastplace.cli.provisioning as provisioning
+
+    monkeypatch.setattr(
+        provisioning, "_accounts_repository", lambda: FakeGateRepository("editor")
+    )
+
+    result = runner.invoke(cli_app, ["gate:check", "1", "posts.view", "--arg", "{not json"])
+
+    assert result.exit_code == 1
+    assert "invalid --arg JSON" in ANSI_RE.sub("", result.output)
+
+
+def test_gate_check_without_accounts_module_exits_one(gates_project, monkeypatch):
+    import fastplace.cli.provisioning as provisioning
+
+    def _missing():
+        raise ImportError("No module named 'app.modules.accounts'")
+
+    monkeypatch.setattr(provisioning, "_accounts_repository", _missing)
+
+    result = runner.invoke(cli_app, ["gate:check", "1", "self.access"])
+
+    assert result.exit_code == 1
+    assert "accounts" in ANSI_RE.sub("", result.output)

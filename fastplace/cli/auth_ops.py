@@ -49,3 +49,67 @@ def token_list(
             str(row.expires_at) if row.expires_at else "never",
         )
     console.print(table)
+
+
+@auth_ops_app.command("gate:check")
+def gate_check(
+    user_id: int,
+    ability: str,
+    args: list[str] = typer.Option(
+        [], "--arg", help="Gate argument as JSON (repeatable); forwarded in order."
+    ),
+) -> None:
+    """Check one ability for one user.
+
+    JSON args arrive as plain dicts/lists/strings — abilities expecting model
+    instances receive them as parsed JSON.
+    """
+    import asyncio
+    import json
+
+    from fastplace.config import load_env
+    from fastplace.errors import ConfigurationError
+
+    load_env()
+    from fastplace.cli.system import _project_root
+
+    root = _project_root()
+
+    parsed: list = []
+    for raw in args:
+        try:
+            parsed.append(json.loads(raw))
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]invalid --arg JSON:[/] {raw} ({exc})")
+            raise typer.Exit(code=1) from exc
+
+    async def _run() -> dict:
+        from fastplace.authz.loader import import_gates
+
+        import_gates(root)
+        from fastplace.cli.provisioning import _accounts_repository
+
+        try:
+            repository = _accounts_repository()
+        except ImportError:
+            console.print("[red]no accounts module found[/] — run [bold]make:auth[/] first")
+            raise typer.Exit(code=1) from None
+        user = await repository.find_by_id(user_id)
+        if user is None:
+            console.print(f"[red]no user with id {user_id}[/]")
+            raise typer.Exit(code=1)
+        from fastplace.authz.gate import gate
+
+        return await gate.inspect(user, ability, *parsed)
+
+    try:
+        verdict = asyncio.run(_run())
+    except ConfigurationError:
+        console.print(f"[red]ability '{ability}' is not registered[/]")
+        raise typer.Exit(code=1) from None
+    mark = "[green]allow[/]" if verdict["allowed"] else "[red]deny[/]"
+    console.print(f"{mark}  {verdict['ability']}  [dim](source: {verdict['source']})[/]")
+    if verdict.get("message"):
+        console.print(f"  {verdict['message']}")
+    if not verdict["allowed"]:
+        raise typer.Exit(code=1)
