@@ -356,3 +356,47 @@ def test_tool_show_unknown_tool_exits_one(tools_project, park_project_modules): 
 
     assert result.exit_code == 1
     assert "teapot" in ANSI_RE.sub("", result.output)
+
+
+# ---------------------------------------------------------------------------
+# ai:agents
+# ---------------------------------------------------------------------------
+
+
+def test_agents_lists_factory_model_and_tool_count(agents_project, park_project_modules):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    result = runner.invoke(cli_app, ["ai:agents"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "helper_agent" in plain
+    assert "app.ai.agents.helper" in plain
+    assert "factory-model-x" in plain
+    assert "0" in plain  # tool count for a bare agent
+
+
+def test_agents_empty_is_dim_exit_zero(tmp_path, monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    (tmp_path / "asgi.py").write_text("# marker — a project with no agents package\n")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["ai:agents"])
+
+    assert result.exit_code == 0, result.output
+    assert "no agent factories" in ANSI_RE.sub("", result.output)
+
+
+def test_agents_broken_factory_is_a_row_not_a_crash(tmp_path, monkeypatch, park_project_modules):  # noqa: F811 — fixture param; pytest resolves the imported fixture by name
+    broken = "from fastplace.ai import Agent\n\n\ndef broken_agent() -> Agent:\n    raise RuntimeError('boom')\n"
+    (tmp_path / "asgi.py").write_text("# marker\n")
+    for package in ("app", "app/ai", "app/ai/agents"):
+        (tmp_path / package).mkdir(parents=True, exist_ok=True)
+        (tmp_path / package / "__init__.py").write_text("")
+    (tmp_path / "app/ai/agents/broken.py").write_text(broken)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["ai:agents"])
+
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "broken_agent" in plain and "boom" in plain  # the failure is row-level

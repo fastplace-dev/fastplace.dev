@@ -172,3 +172,34 @@ def ai_tool_show(name: str) -> None:
         annotation = getattr(field.annotation, "__name__", str(field.annotation))
         table.add_row(field_name, annotation, "yes" if field_name in required else "no")
     console.print(table)
+
+
+@ai_ops_app.command("ai:agents")
+def ai_agents() -> None:
+    """List the project's agent factories with model and tool count."""
+    from fastplace.config import load_env
+
+    load_env()
+    from fastplace.cli.system import _project_root
+
+    root = _project_root()
+    from fastplace.ai import import_agents, registered_agent_factories
+
+    import_agents(root)
+    factories = registered_agent_factories()
+    if not factories:
+        console.print("[dim]no agent factories in app/ai/agents/[/]")
+        return
+
+    from rich.table import Table
+
+    table = Table(title="AI agents")
+    for column in ("agent", "module", "model", "tools"):
+        table.add_column(column)
+    for factory in factories:
+        try:
+            agent_obj = factory.fn()  # config + tool resolution only — no LLM call
+            table.add_row(factory.name, factory.module, str(agent_obj.model), str(len(agent_obj.tools)))
+        except Exception as exc:  # noqa: BLE001 — one broken factory must not kill the table
+            table.add_row(factory.name, factory.module, f"[red]error: {exc}[/]", "—")
+    console.print(table)
