@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -30,14 +29,6 @@ def _project_root() -> Path:
         )
         raise typer.Exit(code=1)
     return root
-
-
-def _env_value(root: Path, key: str, default: str = "") -> str:
-    """Read KEY from .env (active lines) — http:doctor never boots the app."""
-    from fastplace.config import load_env
-
-    load_env(root / ".env")
-    return os.environ.get(key, default)
 
 
 def _writable_probe(target: Path, name: str) -> Check:
