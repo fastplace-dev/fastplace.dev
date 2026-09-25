@@ -96,6 +96,9 @@ def key_rotate(
     load_env()
 
     env_path = root / ".env"
+    if not env_path.is_file():
+        console.print("[red]no .env found[/] — run [bold]fastplace key:generate[/] first.")
+        raise typer.Exit(code=1)
     text = env_path.read_text(encoding="utf-8")
     old_key = _active_app_key(text)
     if old_key is None:
@@ -219,3 +222,30 @@ def env_decrypt(
         shutil.copyfile(env, env.parent / (env.name + ".bak"))
     env.write_text(text)
     console.print("[green]restored[/] .env from .env.encrypted")
+
+
+@keys_app.command("key:verify")
+def key_verify() -> None:
+    """Read-only: does .env.encrypted decrypt under the current APP_KEY?"""
+    from fastplace.auth.encryption import decrypt
+    from fastplace.config import load_env
+    from fastplace.errors import ConfigurationError
+
+    root = _project_root()
+    load_env()
+    encrypted = root / ".env.encrypted"
+    if not encrypted.exists():
+        console.print("[red]no .env.encrypted found[/] — run env:encrypt first")
+        raise typer.Exit(code=1)
+    try:
+        decrypt(encrypted.read_text().strip(), key=None)
+    except ConfigurationError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        console.print(
+            f"[red]cannot decrypt .env.encrypted:[/] {exc} — wrong key or a rotated APP_KEY"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print("[green].env.encrypted decrypts under the current APP_KEY[/] — already in sync.")

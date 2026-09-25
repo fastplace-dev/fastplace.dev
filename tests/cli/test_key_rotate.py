@@ -132,6 +132,15 @@ def test_rotate_hard_stops_when_ciphertext_under_different_key(tmp_path, monkeyp
     assert (root / ".env").read_text() == before  # APP_KEY untouched
 
 
+def test_rotate_without_env_file_fails_gracefully(tmp_path, monkeypatch):
+    (tmp_path / "asgi.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(cli_app, ["key:rotate", "--force"])
+    assert result.exit_code == 1
+    assert "no .env found" in _out(result)
+    assert not (tmp_path / ".env.bak").exists()  # guard precedes the backup
+
+
 def test_production_guard_blocks_without_force(tmp_path, monkeypatch):
     root = _make_project(tmp_path, monkeypatch, env="production")
     before = (root / ".env").read_text()
