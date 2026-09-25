@@ -96,6 +96,16 @@ def test_new_scaffolds_the_canonical_tree(tmp_path, monkeypatch):
         assert (project / rel).is_file(), f"missing file {rel}"
 
 
+def test_new_shared_kernel_init_docstring_has_one_period(tmp_path, monkeypatch):
+    """_INIT_TEMPLATE already appends the period — a trailing dot in the doc
+    argument used to render the shared-kernel docstring as ``classes..``."""
+    result, root = _invoke(tmp_path, monkeypatch, "blog")
+    assert result.exit_code == 0, result.output
+
+    init = (root / "blog" / "app" / "models" / "__init__.py").read_text()
+    assert init == '"""Shared base model classes."""\n'
+
+
 def test_new_slugifies_the_project_name(tmp_path, monkeypatch):
     result, root = _invoke(tmp_path, monkeypatch, "My Blog App")
     assert result.exit_code == 0, result.output

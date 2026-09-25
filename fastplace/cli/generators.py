@@ -1709,7 +1709,7 @@ def new_project(
             Path("app/jobs/__init__.py"),
             _INIT_TEMPLATE.format(doc="Background jobs — domain-event consumers live here."),
         ),
-        (Path("app/models/__init__.py"), _INIT_TEMPLATE.format(doc="Shared base model classes.")),
+        (Path("app/models/__init__.py"), _INIT_TEMPLATE.format(doc="Shared base model classes")),
         (Path("database/seeders/.gitkeep"), ""),
         (Path("resources/js/main.jsx"), _MAIN_JSX_TEMPLATE),
         (Path("resources/js/layouts/AppLayout.jsx"), _APP_LAYOUT_TEMPLATE),
