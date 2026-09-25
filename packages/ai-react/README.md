@@ -9,7 +9,7 @@ hooks consume the stream and hand you reactive state for it.
 - **Install**: wired into the Fastplace app template
   (`npm install @fastplace/ai-react` in a manual setup)
 - **Docs**: <https://fastplace.dev>
-- **Source**: <https://github.com/firozanam/fastplace.dev/tree/master/packages/ai-react>
+- **Source**: <https://github.com/fastplace-dev/fastplace.dev/tree/master/packages/ai-react>
 
 ## useAIStream
 

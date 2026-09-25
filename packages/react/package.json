@@ -4,11 +4,11 @@
   "description": "React bridge for Fastplace — server-driven SPA over the X-Fastplace-Request protocol",
   "homepage": "https://fastplace.dev",
   "bugs": {
-    "url": "https://github.com/firozanam/fastplace.dev/issues"
+    "url": "https://github.com/fastplace-dev/fastplace.dev/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/firozanam/fastplace.dev.git",
+    "url": "git+https://github.com/fastplace-dev/fastplace.dev.git",
     "directory": "packages/react"
   },
   "license": "MIT",

@@ -41,9 +41,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://fastplace.dev"
-Repository = "https://github.com/firozanam/fastplace.dev"
-Issues = "https://github.com/firozanam/fastplace.dev/issues"
-Changelog = "https://github.com/firozanam/fastplace.dev/releases"
+Repository = "https://github.com/fastplace-dev/fastplace.dev"
+Issues = "https://github.com/fastplace-dev/fastplace.dev/issues"
+Changelog = "https://github.com/fastplace-dev/fastplace.dev/releases"
 
 [project.optional-dependencies]
 postgresql = ["asyncpg>=0.29", "pgvector>=0.3"]

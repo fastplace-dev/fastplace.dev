@@ -17,7 +17,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "docs" / "site"
-REPO_URL = "https://github.com/firozanam/fastplace.dev"
+REPO_URL = "https://github.com/fastplace-dev/fastplace.dev"
 HOMEPAGE = "https://fastplace.dev"
 
 #: Build output for the artifact-content tests — under gitignored storage/

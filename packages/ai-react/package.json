@@ -4,11 +4,11 @@
   "description": "Streaming AI hooks for Fastplace — SSE consumption for useAIStream/useAgent over /ai/* endpoints",
   "homepage": "https://fastplace.dev",
   "bugs": {
-    "url": "https://github.com/firozanam/fastplace.dev/issues"
+    "url": "https://github.com/fastplace-dev/fastplace.dev/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/firozanam/fastplace.dev.git",
+    "url": "git+https://github.com/fastplace-dev/fastplace.dev.git",
     "directory": "packages/ai-react"
   },
   "license": "MIT",

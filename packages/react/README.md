@@ -10,7 +10,7 @@ with the server-supplied props on the client.
 - **Install**: the Fastplace app template wires this in for you
   (`npm install @fastplace/react` in a manual setup)
 - **Docs**: <https://fastplace.dev>
-- **Source**: <https://github.com/firozanam/fastplace.dev/tree/master/packages/react>
+- **Source**: <https://github.com/fastplace-dev/fastplace.dev/tree/master/packages/react>
 
 ## What it does
 

@@ -110,7 +110,7 @@ describe("AppSidebar", () => {
     renderSidebar();
 
     const repository = screen.getByRole("link", { name: /repository/i });
-    expect(repository).toHaveAttribute("href", "https://github.com/firozanam/fastplace.dev");
+    expect(repository).toHaveAttribute("href", "https://github.com/fastplace-dev/fastplace.dev");
     expect(repository).toHaveAttribute("target", "_blank");
     expect(repository).toHaveAttribute("rel", "noopener noreferrer");
 

@@ -32,7 +32,7 @@ export default defineConfig({
         { text: "Guides", link: "/guides/pages-and-the-bridge" },
         { text: "API overview", link: "/api/overview" },
       ] },
-      { text: "GitHub", link: "https://github.com/firozanam/fastplace.dev" },
+      { text: "GitHub", link: "https://github.com/fastplace-dev/fastplace.dev" },
     ],
     sidebar: [
       {
@@ -62,7 +62,7 @@ export default defineConfig({
       },
     ],
     socialLinks: [
-      { icon: "github", link: "https://github.com/firozanam/fastplace.dev" },
+      { icon: "github", link: "https://github.com/fastplace-dev/fastplace.dev" },
     ],
     footer: {
       message: "Released under the MIT License.",

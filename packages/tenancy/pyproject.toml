@@ -17,8 +17,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://fastplace.dev"
-Repository = "https://github.com/firozanam/fastplace.dev"
-Issues = "https://github.com/firozanam/fastplace.dev/issues"
+Repository = "https://github.com/fastplace-dev/fastplace.dev"
+Issues = "https://github.com/fastplace-dev/fastplace.dev/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

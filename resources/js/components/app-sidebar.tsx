@@ -55,7 +55,7 @@ const mainNavItems: NavItem[] = [
 const footerNavItems: NavItem[] = [
   {
     title: "Repository",
-    href: "https://github.com/firozanam/fastplace.dev",
+    href: "https://github.com/fastplace-dev/fastplace.dev",
     icon: FolderGit2,
   },
   {
