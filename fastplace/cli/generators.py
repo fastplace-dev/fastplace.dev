@@ -447,7 +447,7 @@ export default function {function_name}() {{
 @generators_app.command("make:module")
 def make_module(
     name: str = typer.Argument(
-        ..., help="Module name — OrderModule, Order or order all map to `order`"
+        ..., help="Module name (snake_case singular), e.g. order — Order/OrderModule also accepted"
     ),
     bare: bool = typer.Option(
         False,
