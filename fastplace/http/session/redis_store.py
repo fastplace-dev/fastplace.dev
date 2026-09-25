@@ -95,6 +95,26 @@ class RedisSessionStore:
                 removed += 1
         return removed
 
+    async def sessions_for_user(self, user_id: Any) -> list[tuple[str, int]]:
+        """Read-only enumeration: (session_id, last_activity) for one user."""
+        found: list[tuple[str, int]] = []
+        async for key in self.client.scan_iter(match=f"{self._prefix}*"):
+            session_id = (
+                key[len(self._prefix) :]
+                if isinstance(key, str)
+                else key.decode()[len(self._prefix) :]
+            )
+            raw = await self.client.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            envelope: dict[str, Any] = json.loads(raw)
+            if envelope.get("user_id") == user_id:
+                found.append((session_id, int(envelope.get("last_activity") or 0)))
+        found.sort(key=lambda item: item[1], reverse=True)
+        return found
+
     async def gc(self, lifetime: int | None = None) -> int:
         # Redis expires keys server-side — nothing to sweep.
         return 0

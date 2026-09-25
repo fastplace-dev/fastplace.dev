@@ -121,6 +121,30 @@ class DatabaseSessionStore:
             result = await conn.execute(stmt)
             return int(result.rowcount or 0)
 
+    async def sessions_for_user(self, user_id: Any) -> list[Any]:
+        """The user's ACTIVE session rows, newest activity first.
+
+        Read-only enumeration for ``auth:sessions`` — mirrors read()'s lazy
+        expiry: a row past the window is listed as missing even before GC.
+        ip_address/user_agent stay NULL today (the middleware does not write
+        them); the caller renders "—".
+        """
+        await self._ensure_table()
+        threshold = int(time.time()) - session_lifetime()
+        stmt = (
+            select(
+                sessions_table.c.id,
+                sessions_table.c.last_activity,
+                sessions_table.c.ip_address,
+                sessions_table.c.user_agent,
+            )
+            .where(sessions_table.c.user_id == user_id)
+            .where(sessions_table.c.last_activity >= threshold)
+            .order_by(sessions_table.c.last_activity.desc())
+        )
+        async with self._engine().connect() as conn:
+            return list((await conn.execute(stmt)).all())
+
     async def gc(self, lifetime: int | None = None) -> int:
         await self._ensure_table()
         window = lifetime if lifetime is not None else session_lifetime()
