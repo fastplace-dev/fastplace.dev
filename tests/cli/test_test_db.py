@@ -150,3 +150,18 @@ def test_production_sqlite_default_needs_no_confirm(tmp_path, monkeypatch, migra
     _make_project(tmp_path, monkeypatch, env_text="APP_ENV=production\n")
     result = runner.invoke(cli_app, ["test:db"])
     assert result.exit_code == 0, result.stdout  # local sqlite scratch: no prompt
+
+
+def test_user_sqlite_url_completes_and_keeps_default_triple(
+    tmp_path, monkeypatch, migrations_stub
+):
+    root = _make_project(tmp_path, monkeypatch)
+    stale = root / "storage" / "testing.sqlite3"
+    stale.parent.mkdir()
+    stale.write_text("stale")
+    url = f"sqlite+aiosqlite:///{tmp_path / 'scratch-user.sqlite3'}"
+    result = runner.invoke(cli_app, ["test:db", "--database-url", url])
+    assert result.exit_code == 0, f"{result.exit_code} {result.exception!r}"
+    assert stale.exists()  # default triple untouched — teardown keys on the default path only
+    assert migrations_stub["DATABASE_URL"] == url
+    assert migrations_stub["DATABASE_DRIVER"] == "sqlite"

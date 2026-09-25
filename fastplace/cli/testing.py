@@ -327,7 +327,10 @@ def test_db(
     if local_scratch:
         os.environ["DATABASE_DRIVER"] = "sqlite"
 
-    if local_scratch:
+    if not database_url:
+        # Teardown belongs to the default scratch path only: a user-supplied
+        # --database-url (sqlite or not) names its own target, which we never
+        # delete — and the default storage triple must survive untouched.
         db_path = storage / _SCRATCH_DB_NAME
         for stale in (
             db_path,
