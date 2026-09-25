@@ -516,3 +516,93 @@ def test_watch(
                     console.print(f"[dim]exit {code}[/]")
     except KeyboardInterrupt:
         pass
+
+
+def _port_free(port: int) -> bool:
+    """Can we bind 127.0.0.1:port? Playwright's webServer sets
+    reuseExistingServer: false, so a stale holder breaks its boot."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+        return True
+
+
+def _chromium_missing(dry_run_stdout: str) -> bool:
+    """True when the chromium line of `playwright install --dry-run`
+    reports a pending download. Best-effort parse — the exact table
+    format moves between Playwright versions."""
+    for line in dry_run_stdout.splitlines():
+        if "chromium" in line and "download" in line.lower():
+            return True
+    return False
+
+
+@testing_app.command(
+    "test:e2e",
+    # Forwarded args may be dash-form Playwright flags (--grep, --workers=1):
+    # let the parser pass unknown options through to the variadic argument.
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def test_e2e(
+    args: list[str] | None = typer.Argument(
+        None, help="Args forwarded verbatim to npx playwright test."
+    ),
+) -> None:
+    """Run the Playwright e2e suite with an actionable preflight (browsers, port, storage)."""
+    import os
+    import shutil
+    import subprocess
+
+    from fastplace.config import load_env, reset_config
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    npx = shutil.which("npx")
+    node = shutil.which("node")
+    if not npx or not node:
+        missing = "npx" if not npx else "node"
+        console.print(
+            f"[red]{missing} not on PATH[/] — install Node.js (https://nodejs.org) and retry."
+        )
+        raise typer.Exit(code=1)
+
+    port = int(os.environ.get("E2E_PORT", "8907"))
+    if not _port_free(port):
+        console.print(
+            f"[red]port 127.0.0.1:{port} is busy[/] — Playwright boots its own server there "
+            f"(reuseExistingServer is false). [bold]Set E2E_PORT=<free port>[/] and retry."
+        )
+        raise typer.Exit(code=1)
+
+    if not (root / "package.json").is_file():
+        console.print(
+            "[red]no package.json at the project root[/] — this project has no e2e frontend to run."
+        )
+        raise typer.Exit(code=1)
+    if not (root / "node_modules").is_dir():
+        console.print("[red]node_modules missing[/] — run [bold]npm ci[/] first.")
+        raise typer.Exit(code=1)
+
+    (root / "storage").mkdir(parents=True, exist_ok=True)  # sqlite needs the parent dir
+
+    dry = _subprocess_run(
+        [npx, "playwright", "install", "--dry-run"], stdout=subprocess.PIPE, text=True
+    )
+    if _chromium_missing(dry.stdout or ""):
+        console.print(
+            "[yellow]chromium browser not installed[/] — run [bold]npx playwright install chromium[/] "
+            "(--with-deps is Linux-only; macOS needs the plain form). Continuing anyway…"
+        )
+
+    venv_bin = root / ".venv" / "bin" / "fastplace"
+    resolved = str(venv_bin) if venv_bin.exists() else "fastplace (PATH)"
+    console.print(f"[dim]webServer will resolve: {resolved}[/]")
+
+    proc = _subprocess_run(["npx", "playwright", "test", *(args or [])])
+    raise typer.Exit(code=proc.returncode)
