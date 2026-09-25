@@ -198,3 +198,42 @@ def cache_gc(
         console.print(f"Would purge {purged} expired row(s).")
     else:
         console.print(f"Purged {purged} expired row(s).")
+
+
+@cache_app.command("cache:get")
+def cache_get(key: str = typer.Argument(help="The cache key to read.")) -> None:
+    """Read one cache key and show its value and remaining TTL.
+
+    A stored JSON ``null`` is reported as not-found — the drivers cannot
+    distinguish it from an absent key, so this command keeps that parity.
+    """
+    import asyncio
+    import json
+
+    from rich.markup import escape
+
+    from fastplace.config import load_env
+
+    load_env()
+    # No reset_cache() here: in a one-shot CLI the singleton is always built
+    # from the current config, and resetting would discard the in-process
+    # memory store's contents — exactly what this command exists to read.
+    from fastplace.cache import cache
+
+    store = cache()
+
+    async def _run() -> tuple[Any, float | None]:
+        return await store.get(key), await store.ttl(key)
+
+    value, ttl = asyncio.run(_run())
+    if value is None:
+        console.print(f"[yellow]cache key '{escape(key)}' not found[/]")
+        raise typer.Exit(code=1)
+    try:
+        rendered = json.dumps(value)
+    except (TypeError, ValueError):
+        rendered = repr(value)
+    # Drivers report remaining seconds as a float (monotonic-deadline math);
+    # a countdown renders as whole seconds.
+    suffix = "no expiry" if ttl is None else f"expires in {int(ttl)}s"
+    console.print(f"{escape(rendered)} [dim]({suffix})[/]")
