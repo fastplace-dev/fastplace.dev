@@ -14,7 +14,12 @@ export default defineConfig({
       fileName: "fastplace-ai-react",
       formats: ["es"],
     },
-    external: ["react"],
+    rollupOptions: {
+      // Subpath-aware externals: exact names miss "react/jsx-runtime" and
+      // inline a second React copy into dist, which crashes host apps with
+      // "Invalid hook call". React comes from the host via peerDependencies.
+      external: [/^react($|\/)/, /^scheduler($|\/)/],
+    },
     outDir: "dist",
   },
 });

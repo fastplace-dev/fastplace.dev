@@ -1621,6 +1621,18 @@ def _framework_checkout() -> Path | None:
     return None
 
 
+def _published_fastplace_dep() -> str:
+    """The dependency spec scaffolds use when running from a published
+    install: a version floor pinned to the running distribution, so a
+    scaffolded app never silently tracks a future breaking release."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return f"fastplace>={version('fastplace')}"
+    except PackageNotFoundError:  # pragma: no cover — bare source-tree runs
+        return "fastplace>=0.1.0"
+
+
 @generators_app.command("new")
 def new_project(
     name: str = typer.Argument(..., help="Project name (letters, digits, spaces, _ and -)"),
@@ -1664,7 +1676,7 @@ def new_project(
     # Local-install wiring: when the CLI runs from the framework checkout,
     # dependency specs point at it so installs resolve pre-publish.
     checkout = _framework_checkout()
-    fastplace_dep = f"fastplace @ file://{checkout}" if checkout else "fastplace"
+    fastplace_dep = f"fastplace @ file://{checkout}" if checkout else _published_fastplace_dep()
     react_dep = f"file:{checkout / 'packages' / 'react'}" if checkout else "^0.1.0"
 
     # (path, content) pairs — written through _write so a re-run never

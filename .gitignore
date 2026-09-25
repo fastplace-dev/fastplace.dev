@@ -72,3 +72,6 @@ CLAUDE.md
 
 # SDD execution scratch (ledger, briefs, review packages)
 .superpowers/
+
+# npm pack output from local publish rehearsals
+packages/**/*.tgz

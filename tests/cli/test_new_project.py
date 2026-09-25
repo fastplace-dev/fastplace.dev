@@ -262,6 +262,24 @@ def test_new_refuses_overlong_names(tmp_path, monkeypatch):
     assert not isinstance(result.exception, OSError)
 
 
+def test_new_dependency_carries_version_floor_when_installed(tmp_path, monkeypatch):
+    """From a published install (no framework checkout on disk) the scaffolded
+    app must pin a floor — ``fastplace>=<version>`` — never a bare specifier:
+    a bare dependency silently tracks future breaking releases, and the npm
+    side already caret-pins its published fallback (``^0.1.0``)."""
+    from fastplace.cli import generators
+
+    monkeypatch.setattr(generators, "_framework_checkout", lambda: None)
+    result, root = _invoke(tmp_path, monkeypatch, "blog")
+    assert result.exit_code == 0, result.output
+
+    pyproject = (root / "blog" / "pyproject.toml").read_text()
+    assert '"fastplace>=' in pyproject, pyproject
+    # A bare specifier or a leaked local path is the regression.
+    assert '"fastplace"' not in pyproject
+    assert "file://" not in pyproject
+
+
 def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
     """Running from the framework checkout, the generated project must wire
     local paths so both `pip install -e .` and `npm install` can resolve:
@@ -283,5 +301,5 @@ def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
         assert f"fastplace @ file://{checkout}" in pyproject
         assert '"@fastplace/react": "file:' in package_json
     else:  # pragma: no cover — CI/dev always runs from the checkout
-        assert '"fastplace"' in pyproject
+        assert '"fastplace>=' in pyproject
         assert '"@fastplace/react": "^' in package_json

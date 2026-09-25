@@ -8,8 +8,17 @@ version = "0.1.0"
 description = "Fastplace — an opinionated, full-stack, AI-native web framework built on Python and React, focused on a productive developer experience."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Firoz Anam" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+]
 dependencies = [
     "fastapi>=0.115",
     "starlette>=0.40",
@@ -60,13 +69,24 @@ dev = [
     "pytest-cov>=5.0",
     "mypy>=1.13",
     "ruff>=0.7",
+    "build>=1.2",
+    "twine>=6.1",
 ]
 
 [project.scripts]
 fastplace = "fastplace.cli:app"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["fastplace*"]
+
+# Non-Python files the installed package needs at runtime: `fastplace new`
+# and `migrate` copy the Alembic env/script templates out of site-packages —
+# a wheel without them crashes the first-run onboarding path.
+[tool.setuptools.package-data]
+"fastplace.orm.migrations" = ["templates/*.tpl", "templates/*.mako"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

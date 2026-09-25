@@ -9,6 +9,7 @@ publish) is the user's runbook — never attempted from the repo.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "docs" / "site"
 REPO_URL = "https://github.com/firozanam/fastplace.dev"
 HOMEPAGE = "https://fastplace.dev"
+
+#: Build output for the artifact-content tests — under gitignored storage/
+#: so repeated runs never pollute the checkout (a root dist/ would).
+_BUILD_DIR = ROOT / "storage" / "test-build"
 
 #: Every page the docs site commits to shipping. A missing page is a broken
 #: sidebar link, so the set is pinned exactly.
@@ -54,11 +59,105 @@ def test_fastplace_pyproject_declares_project_urls():
     assert f'Issues = "{REPO_URL}/issues"' in urls_block
 
 
+def test_pyproject_license_uses_pep639_spdx_form():
+    """The ``license = { text = ... }`` TOML table is deprecated (setuptools
+    warns it stops being supported); PEP 639 wants the SPDX string plus an
+    explicit ``license-files`` list."""
+    text = (ROOT / "pyproject.toml").read_text()
+    assert 'license = "MIT"' in text
+    assert 'license-files = ["LICENSE"]' in text
+    assert "license = {" not in text
+
+
+def test_pyproject_declares_trove_classifiers():
+    text = (ROOT / "pyproject.toml").read_text()
+    classifiers_block = text.split("classifiers = [", 1)[1].split("]", 1)[0]
+    for needle in (
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+    ):
+        assert needle in classifiers_block, needle
+
+
+def test_sdist_and_wheel_carry_the_migration_templates():
+    """``fastplace new`` (and ``migrate`` on a fresh project) copies the Alembic
+    env/script templates out of the *installed* package. A wheel or sdist that
+    omits them crashes the primary onboarding path with FileNotFoundError —
+    found the hard way via a clean-room wheel install."""
+    pytest.importorskip("build", reason="packaging toolchain (build) not installed")
+    import subprocess
+    import tarfile
+    import zipfile
+
+    subprocess.run(
+        [sys.executable, "-m", "build", "--outdir", str(_BUILD_DIR), "."],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    templates = {
+        "fastplace/orm/migrations/templates/env.py.tpl",
+        "fastplace/orm/migrations/templates/script.py.mako",
+    }
+
+    wheel = next(_BUILD_DIR.glob("fastplace-*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        names = set(archive.namelist())
+    missing = templates - names
+    assert not missing, f"wheel {wheel.name} omits: {sorted(missing)}"
+
+    sdist = next(_BUILD_DIR.glob("fastplace-*.tar.gz"))
+    with tarfile.open(sdist) as archive:
+        names = {member.name.split("/", 1)[-1] for member in archive.getmembers()}
+    missing = templates - names
+    assert not missing, f"sdist {sdist.name} omits: {sorted(missing)}"
+
+
 def test_tenancy_pyproject_declares_project_urls():
     text = (ROOT / "packages" / "tenancy" / "pyproject.toml").read_text()
     urls_block = text.split("[project.urls]", 1)[1].split("[", 1)[0]
     assert f'Homepage = "{HOMEPAGE}"' in urls_block
     assert f'Repository = "{REPO_URL}"' in urls_block
+
+
+def test_tenancy_pyproject_license_uses_pep639_spdx_form():
+    text = (ROOT / "packages" / "tenancy" / "pyproject.toml").read_text()
+    assert 'license = "MIT"' in text
+    assert "license = {" not in text
+
+
+def test_frontend_packages_are_publishable():
+    """Static publish contracts for the scoped npm packages: scoped first
+    publishes default to restricted (E402 on free accounts) without
+    ``publishConfig.access``, and a tarball without license terms is a legal
+    hole — the bundle even embeds MIT-licensed React code."""
+    for name in ("react", "ai-react"):
+        pkg = ROOT / "packages" / name
+        manifest = json.loads((pkg / "package.json").read_text())
+        assert manifest["publishConfig"]["access"] == "public", name
+        assert manifest["license"] == "MIT", name
+        assert (pkg / "LICENSE").is_file(), name
+        assert "dist" in manifest["files"], name
+        # Types entries must not point at files the build never emits: the
+        # build script must produce declarations before dist ships.
+        assert "tsc" in manifest["scripts"]["build"], name
+
+
+def test_frontend_builds_externalize_react():
+    """Both library builds must treat every react entry point (and its
+    scheduler dependency) as external. Exact-name externals miss subpath
+    specifiers — react/jsx-runtime silently inlines a second React copy into
+    dist, which crashes host apps with "Invalid hook call"."""
+    for name in ("react", "ai-react"):
+        config = (ROOT / "packages" / name / "vite.config.ts").read_text()
+        assert "rollupOptions" in config, name
+        rollup_block = config.split("rollupOptions", 1)[1].split("outDir", 1)[0]
+        assert "/^react($|\\/)/" in rollup_block, name
+        assert "/^scheduler($|\\/)/" in rollup_block, name
+        if name == "react":
+            assert "/^react-dom($|\\/)/" in rollup_block, name
 
 
 def test_frontend_packages_declare_repository_links():

@@ -1,7 +1,7 @@
 {
   "name": "@fastplace/ai-react",
   "version": "0.1.0",
-  "description": "Streaming AI hooks for Fastplace \u2014 SSE consumption for useAIStream/useAgent over /ai/* endpoints",
+  "description": "Streaming AI hooks for Fastplace — SSE consumption for useAIStream/useAgent over /ai/* endpoints",
   "homepage": "https://fastplace.dev",
   "bugs": {
     "url": "https://github.com/firozanam/fastplace.dev/issues"
@@ -11,10 +11,14 @@
     "url": "git+https://github.com/firozanam/fastplace.dev.git",
     "directory": "packages/ai-react"
   },
+  "license": "MIT",
   "type": "module",
   "main": "./dist/fastplace-ai-react.js",
   "module": "./dist/fastplace-ai-react.js",
   "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -25,7 +29,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
   "peerDependencies": {
