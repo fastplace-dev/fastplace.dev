@@ -134,6 +134,26 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
     except ImportError:
         pass
 
+    # --- roadmap: platform plane (http / config-env / testing) ---
+    try:  # pragma: no cover - wiring only
+        from fastplace.cli import env_ops as _env_ops
+
+        app.add_typer(_env_ops.env_ops_app, name="")
+    except ImportError:  # pragma: no cover - wiring only
+        pass
+    try:  # pragma: no cover - wiring only
+        from fastplace.cli import http_cmd as _http_cmd
+
+        app.add_typer(_http_cmd.http_app, name="")
+    except ImportError:  # pragma: no cover - wiring only
+        pass
+    try:  # pragma: no cover - wiring only
+        from fastplace.cli import testing as _testing
+
+        app.add_typer(_testing.testing_app, name="")
+    except ImportError:  # pragma: no cover - wiring only
+        pass
+
 
 _register_phase_commands()
 app.add_typer(shell_app, name="")

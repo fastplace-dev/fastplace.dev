@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -130,6 +131,159 @@ def route_list(
     table.add_column("name", style="dim")
     for row in rows:
         table.add_row(row["method"], row["path"], row["name"])
+    console.print(table)
+
+
+def _pattern_matches(pattern: str, path: str) -> bool:
+    """``/items/{id}`` matches ``/items/42`` — single-segment params only.
+
+    ``re.escape`` escapes the braces too, so the replaces un-escape exactly
+    the ``{``/``}`` pair before the ``{param}`` placeholders become
+    ``[^/]+``; every other regex-special character stays escaped.
+    """
+    regex = (
+        "^"
+        + re.sub(
+            r"\{[^}/]+\}",
+            r"[^/]+",
+            re.escape(pattern).replace(r"\{", "{").replace(r"\}", "}"),
+        )
+        + "$"
+    )
+    return re.match(regex, path) is not None
+
+
+def _match_route(app: Any, path: str) -> Any:
+    """The booted route serving ``path`` — exact path first, pattern fallback.
+
+    Walks the flattened route table (``_iter_routes``), so included routers
+    match like ``route:list`` lists them. First match wins in both passes;
+    ``None`` means nothing on the app serves the path.
+    """
+    candidates = list(_iter_routes(list(getattr(app, "routes", []))))
+    for route in candidates:
+        if getattr(route, "path", None) == path:
+            return route
+    for route in candidates:
+        route_path = getattr(route, "path", "")
+        if "{" in route_path and _pattern_matches(route_path, path):
+            return route
+    return None
+
+
+def _declared_route(root: Path, mounted_path: str) -> Any:
+    """The Fastplace ``Route`` declaring ``mounted_path``, if a router owns it.
+
+    The booted Starlette route keeps neither the alias tuple nor the
+    original handler (the endpoint adapter wraps it), so the deep-dive
+    fields — aliases in declaration order, the ``module.qualname`` handler
+    — are recovered from the declaring router, joined with the same prefix
+    math the kernel mounts with (web/auth at the root, api under
+    ``/api/v1``, ai under ``/ai``). Project namespaces snapshot/restore
+    around the import — the exact discipline of ``_load_asgi_app``.
+    """
+    from fastplace.http.kernel import AI_PREFIX, API_PREFIX, _load_router_module
+
+    saved = {
+        name: module
+        for name, module in sys.modules.items()
+        if name.split(".", 1)[0] in _PROJECT_NAMESPACES
+    }
+    for name in saved:
+        sys.modules.pop(name)
+    root_str = str(root)
+    inserted = root_str not in sys.path
+    if inserted:
+        sys.path.insert(0, root_str)
+    try:
+        surfaces = (
+            ("routes.web", ""),
+            ("routes.auth", ""),
+            ("routes.api", API_PREFIX),
+            ("routes.ai", AI_PREFIX),
+        )
+        for dotted, prefix in surfaces:
+            router = _load_router_module(root, dotted)
+            for declared in getattr(router, "routes", []) or []:
+                if prefix + declared.path == mounted_path:
+                    return declared
+        return None
+    finally:
+        if inserted:
+            sys.path.remove(root_str)
+        for name in [n for n in sys.modules if n.split(".", 1)[0] in _PROJECT_NAMESPACES]:
+            sys.modules.pop(name)
+        sys.modules.update(saved)
+
+
+@inspect_app.command("route:show")
+def route_show(
+    path: str = typer.Argument(
+        ..., help="Route path — pattern (/items/{id}) or concrete (/items/42)."
+    ),
+) -> None:
+    """Deep-dive one route: methods, handler, aliases, resolved middleware chain."""
+    from fastplace.config import load_env, reset_config
+    from fastplace.errors import ConfigurationError
+    from fastplace.http.kernel import _ConfigShim, _route_middleware_registry
+    from fastplace.http.router import resolve_route_middleware
+
+    root = _project_root()
+    load_env(root / ".env")
+    reset_config(root)
+
+    app = _load_asgi_app(root)
+    route = _match_route(app, path)
+    if route is None:
+        console.print(
+            f"[red]no route matches {path}[/] — try [bold]fastplace route:list[/]."
+        )
+        raise typer.Exit(code=1)
+
+    declared = _declared_route(root, getattr(route, "path", path))
+    aliases: list[str] = list(getattr(declared, "middleware", ()) or ())
+    handler = (
+        getattr(declared, "handler", None)
+        or getattr(route, "endpoint", None)
+        or getattr(route, "app", None)
+    )
+    handler_name = (
+        f"{getattr(handler, '__module__', '?')}.{getattr(handler, '__qualname__', '?')}"
+        if handler is not None
+        else "-"
+    )
+
+    registry = _route_middleware_registry({}, _ConfigShim({}, root=str(root)))
+    chain: list[str] = []
+    for alias in aliases:
+        try:
+            resolved = resolve_route_middleware(registry, alias)
+        except ConfigurationError as exc:
+            # The kernel resolves aliases eagerly at boot, so an unregistered
+            # alias never reaches this command through create_app(); this
+            # branch covers the drift case — a project booted with aliases
+            # supplied programmatically (get_app(route_middleware=...)) that
+            # the config-side registry built here does not know.
+            chain.append(f"[red]{alias} — UNKNOWN ({exc})[/]")
+            continue
+        # Parameterized factories answer with a built instance — display its
+        # class, never the repr with a per-process object address.
+        cls = resolved[0] if isinstance(resolved, tuple) else resolved
+        display = cls if isinstance(cls, type) else type(cls)
+        chain.append(f"{alias} -> {display.__module__}.{display.__name__}")
+
+    from rich.table import Table
+
+    methods = ",".join(sorted(getattr(route, "methods", None) or [])) or "-"
+    table = Table(title=f"route {path}")
+    table.add_column("field", style="bold")
+    table.add_column("value")
+    table.add_row("mounted path", getattr(route, "path", "-"))
+    table.add_row("methods", methods)
+    table.add_row("name", getattr(route, "name", None) or "-")
+    table.add_row("handler", handler_name)
+    table.add_row("aliases (declaration order)", ", ".join(aliases) or "-")
+    table.add_row("middleware chain", "\n".join(chain) or "-")
     console.print(table)
 
 
