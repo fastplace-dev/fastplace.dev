@@ -10,12 +10,32 @@ from fastplace import __version__
 from fastplace.cli.dev import run_app, serve_app
 from fastplace.cli.shell_cmd import shell_app
 
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"fastplace {__version__}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="fastplace",
     help="Fastplace — full-stack, AI-native web framework.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_print_version,
+        is_eager=True,
+        help="Show the Fastplace version and exit.",
+    ),
+) -> None:
+    """Fastplace command-line interface."""
 
 
 @app.command("about")

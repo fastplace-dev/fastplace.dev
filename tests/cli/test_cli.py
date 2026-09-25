@@ -39,6 +39,19 @@ def test_about_runs(monkeypatch):
     assert "Fastplace" in result.output
 
 
+def test_version_flag_prints_package_version():
+    from typer.testing import CliRunner
+
+    from fastplace import __version__
+
+    runner = CliRunner()
+    result = runner.invoke(cli_app, ["--version"])
+    assert result.exit_code == 0
+    # Read from package metadata via __version__, never hardcoded, so the
+    # flag can never drift from the release.
+    assert result.output.strip() == f"fastplace {__version__}"
+
+
 def test_run_dev_help_lists_options():
     from typer.testing import CliRunner
 
