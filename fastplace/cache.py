@@ -472,6 +472,24 @@ class DatabaseCache:
             return None
         return max(0.0, float(row.expires_at - int(time.time())))
 
+    async def purge_expired(self, *, now: int | None = None) -> int:
+        """Delete every expired row in one indexed sweep; returns the rowcount.
+
+        The lazy per-key sweep in ``_lookup`` only fires on touched keys —
+        untouched expired rows live forever. This is the explicit sweep.
+        ``expires_at`` is unix seconds (the unit ``put()`` writes), so an
+        injected ``now`` is compared in the same unit.
+        """
+        await self._ensure_table()
+        threshold = int(now) if now is not None else int(time.time())
+        async with self._engine().begin() as conn:
+            result = await conn.execute(
+                delete(_cache_table)
+                .where(_cache_table.c.expires_at.is_not(None))
+                .where(_cache_table.c.expires_at <= threshold)
+            )
+            return int(result.rowcount or 0)
+
 
 # ---------------------------------------------------------------------------
 # factory
