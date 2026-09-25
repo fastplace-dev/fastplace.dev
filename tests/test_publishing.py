@@ -9,6 +9,7 @@ publish) is the user's runbook — never attempted from the repo.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -367,3 +368,14 @@ def test_site_pages_are_real_content(page):
     """A page under ~15 lines is a placeholder, not a guide."""
     body = (SITE / page).read_text()
     assert len([line for line in body.splitlines() if line.strip()]) >= 15, page
+
+
+def test_home_hero_banner_is_a_served_asset():
+    """The home hero must reference a banner VitePress actually serves —
+    hero images live under docs/site/public/ (the site's static dir), not
+    in repo-only locations the site build cannot resolve."""
+    home = (SITE / "index.md").read_text()
+    m = re.search(r"image:\s*\n(?:\s+\w+:.*\n)*?\s+src:\s*(\S+)", home)
+    assert m, "index.md hero must declare an image.src"
+    asset = SITE / "public" / m.group(1).lstrip("/")
+    assert asset.is_file(), f"hero image missing from site public dir: {asset}"
