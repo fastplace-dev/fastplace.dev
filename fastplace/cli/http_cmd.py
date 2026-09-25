@@ -51,7 +51,7 @@ def _app_key_check() -> Check:
     from fastplace.config import config
 
     key = str(config("APP_KEY", default="") or "")
-    env = str(config("APP_ENV", default="local")).lower()
+    env = str(config("APP_ENV", default="production")).lower()
     if env == "production" and not key:
         return Check(
             "app-key", "fail",
@@ -74,7 +74,7 @@ def _app_url_check() -> Check:
 
     raw = str(config("APP_URL", default="") or "")
     trusted = str(config("TRUSTED_HOSTS", default="") or "")
-    env = str(config("APP_ENV", default="local")).lower()
+    env = str(config("APP_ENV", default="production")).lower()
     if not raw:
         if trusted:
             return Check(
@@ -111,14 +111,9 @@ def _maintenance_check(root: Path) -> Check:
     state_path = root / MAINTENANCE_FILE
     if not state_path.exists():
         return Check("maintenance", "pass", detail="up (no state file)")
-    try:
-        state = is_down(root)
-    except OSError:
-        return Check(
-            "maintenance", "fail",
-            detail="state file present but unreadable — gate silently re-opens",
-            fix=f"fix permissions on {MAINTENANCE_FILE}",
-        )
+    # is_down swallows OSError itself and reports it as ``None`` — the branch
+    # below already carries the present-but-unreadable distinction.
+    state = is_down(root)
     if state is None:
         return Check(
             "maintenance", "fail",
