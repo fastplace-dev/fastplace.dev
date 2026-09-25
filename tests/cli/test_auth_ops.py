@@ -322,7 +322,12 @@ def test_sessions_redis_enumerates_via_client_seam(project, monkeypatch):
                 if match is None or fnmatch.fnmatch(key, match):
                     yield key
 
-    from fastplace.http import session as session_module
+    # Full dotted import on purpose: ``from fastplace.http import session``
+    # resolves through the parent package's attribute, which a prior test's
+    # isolate_project_state teardown can leave stale (child evicted from
+    # sys.modules, parent cached) — the command would then re-import a fresh
+    # module and miss this patch. ``import a.b as x`` re-hydrates sys.modules.
+    import fastplace.http.session as session_module
     from fastplace.http.session.redis_store import RedisSessionStore
 
     redis = FakeScanRedis()
@@ -348,7 +353,7 @@ def test_sessions_store_error_exits_one(project, monkeypatch):
     def _boom(config_get=None):
         raise RuntimeError("db unreachable")
 
-    from fastplace.http import session as session_module
+    import fastplace.http.session as session_module  # re-hydrates sys.modules — see redis test
 
     monkeypatch.setattr(session_module, "session_store", _boom)
 

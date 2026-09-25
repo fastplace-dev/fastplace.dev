@@ -34,6 +34,25 @@ def _hermetic_environ():
 
 
 @pytest.fixture(autouse=True)
+def _restored_config():
+    """Rebind the process config singleton after each test.
+
+    log:prune binds the registry to the invoked project (reset_config(root)),
+    and these tmp projects carry no config/ package — later suites in this
+    process would inherit an empty-registry singleton rooted at a dead tmp
+    dir (APP_ENV falls back to "production" and confirmation guards fire).
+    Snapshot the object and rebind it on teardown, restoring exactly the
+    pre-test state; reset_config(cwd) would instead construct a fresh
+    registry whose lazy reload may differ from what was there before.
+    """
+    import fastplace.config as config_module
+
+    saved = config_module._default_config
+    yield
+    config_module._default_config = saved
+
+
+@pytest.fixture(autouse=True)
 def _wide_output(monkeypatch):
     """Pin the Rich console width so phrasing never wraps mid-assertion.
 

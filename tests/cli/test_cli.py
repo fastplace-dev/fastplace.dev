@@ -331,7 +331,13 @@ def test_session_gc_reports_removed_rows(monkeypatch, tmp_path):
         async def gc(self, lifetime=None):
             return 3
 
-    monkeypatch.setattr("fastplace.http.session.session_store", lambda config_get=None: StubStore())
+    # Import the module object and patch it directly: the string form resolves
+    # "fastplace.http" then walks attributes, which fails when an earlier
+    # test's isolate_project_state teardown evicted the parent package (a
+    # fresh parent has no `session` attribute until the child is imported).
+    import fastplace.http.session as session_module
+
+    monkeypatch.setattr(session_module, "session_store", lambda config_get=None: StubStore())
     runner = CliRunner()
     result = runner.invoke(cli_app, ["session:gc"])
     assert result.exit_code == 0

@@ -63,7 +63,11 @@ class FakeSessionStore:
 @pytest.fixture()
 def fake_sessions(monkeypatch):
     """Route session_store() to the fake (the command imports it at call time)."""
-    from fastplace.http import session as session_module
+    # Full dotted import: re-hydrates the sys.modules entry so the patch
+    # lands on the module object the command imports — a stale parent
+    # attribute (child evicted by isolate_project_state, parent cached)
+    # would silently disconnect the two.
+    import fastplace.http.session as session_module
 
     fake = FakeSessionStore()
     monkeypatch.setattr(session_module, "session_store", lambda config_get=None: fake)
