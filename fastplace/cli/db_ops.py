@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,7 +12,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import typer
 
@@ -422,19 +423,35 @@ def _driver_family(url: str) -> str:
     return url.partition("://")[0].split("+", 1)[0].lower()
 
 
-def _base_uri(url: str) -> str:
-    """Strip the python driver suffix so pg_dump's libpq accepts the URI."""
+def _pg_target(url: str) -> tuple[str, str | None]:
+    """(password-free URI, password) for pg_dump's libpq.
+
+    The password rides in the child's PGPASSWORD environment instead of
+    the URI: argv is readable by every local account (`ps`) for the whole
+    dump; environment is not.
+    """
     scheme, separator, rest = url.partition("://")
     if not separator:
-        return url
-    return f"{scheme.split('+', 1)[0]}://{rest}"
+        return url, None
+    scheme = scheme.split("+", 1)[0]
+    parts = urlsplit(f"{scheme}://{rest}")
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"  # urlsplit strips IPv6 brackets
+    netloc = host
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    if parts.username:
+        netloc = f"{parts.username}@{netloc}"
+    uri = urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
+    return uri, parts.password or None
 
 
 def _mysql_argv(url: str) -> list[str]:
     """mysqldump-compatible args from a SQLAlchemy URL.
 
-    ``--password=`` only when the URL carries one — a bare ``-p`` would make
-    mysqldump prompt interactively mid-backup.
+    The password never appears here — it travels as MYSQL_PWD in the
+    child's environment (argv is readable via `ps` for the whole dump).
     """
     parts = urlsplit(url)
     argv = ["--host", parts.hostname or "localhost"]
@@ -442,8 +459,6 @@ def _mysql_argv(url: str) -> list[str]:
         argv += ["--port", str(parts.port)]
     if parts.username:
         argv += ["--user", parts.username]
-    if parts.password:
-        argv.append(f"--password={parts.password}")
     argv.append(parts.path.lstrip("/"))
     return argv
 
@@ -455,9 +470,14 @@ def _dir_size(root: Path) -> int:
     return sum(item.stat().st_size for item in root.rglob("*") if item.is_file())
 
 
-def _run_dump(argv: list[str], *, stdout: IO[bytes] | None = None) -> None:
+def _run_dump(
+    argv: list[str], *, stdout: IO[bytes] | None = None, env: dict[str, str] | None = None
+) -> None:
     from fastplace.console import console
 
+    # Secrets ride in the child's environment, merged over ours so the
+    # child keeps PATH and locale; argv stays secret-free.
+    child_env = {**os.environ, **env} if env else None
     try:
         completed = subprocess.run(
             argv,
@@ -465,6 +485,7 @@ def _run_dump(argv: list[str], *, stdout: IO[bytes] | None = None) -> None:
             capture_output=stdout is None,
             stdout=stdout,
             stderr=None if stdout is None else subprocess.PIPE,
+            env=child_env,
         )
     except FileNotFoundError:
         console.print(f"[red]'{argv[0]}' not found — install the client or add it to PATH[/]")
@@ -509,13 +530,32 @@ def db_export() -> None:
         asyncio.run(_vacuum())
     elif family == "postgresql":
         dest = _backup_path(backups, "postgresql", "sql")
-        _run_dump(["pg_dump", _base_uri(url), "--file", str(dest)])
+        uri, password = _pg_target(url)
+        _run_dump(
+            ["pg_dump", uri, "--file", str(dest)],
+            env={"PGPASSWORD": password} if password else None,
+        )
     elif family in ("mysql", "mariadb"):
         dest = _backup_path(backups, family, "sql")
+        password = urlsplit(url).password
         with dest.open("wb") as sink:
-            _run_dump(["mysqldump", *_mysql_argv(url)], stdout=sink)
+            _run_dump(
+                ["mysqldump", *_mysql_argv(url)],
+                stdout=sink,
+                env={"MYSQL_PWD": password} if password else None,
+            )
     elif family == "mongodb":
         dest = _backup_path(backups, "mongodb", "")
+        # mongodump has no password environment variable — the URI (and
+        # any credentials in it) must travel as argv, visible to local
+        # accounts via ps for the lifetime of the dump. Say so instead
+        # of pretending otherwise.
+        if urlsplit(url).password:
+            console.print(
+                "[dim]note: mongodump receives the connection URI in its "
+                "arguments — credentials are visible in the process list "
+                "during the dump[/]"
+            )
         _run_dump(["mongodump", f"--uri={url}", f"--out={dest}"])
     else:
         console.print(f"[red]no export strategy for driver '{escape(family)}'[/]")

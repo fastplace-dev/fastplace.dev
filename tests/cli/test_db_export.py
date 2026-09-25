@@ -126,3 +126,52 @@ def test_mysqldump_writes_file(seeded, monkeypatch):
     backups = sorted((seeded / "storage" / "backups").glob("mysql-*.sql"))
     assert len(backups) == 1
     assert b"mysqldump" in backups[0].read_bytes()
+
+
+# Review fix 3 — dump-client credentials travel in the child's
+# environment, never in argv (visible to every local account via ps
+# for the lifetime of the dump).
+def test_pg_dump_password_never_in_argv(seeded, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:hush@localhost:5432/app")
+
+    calls = []
+
+    class _FakeResult:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return _FakeResult()
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    argv = calls[0][0]
+    assert "hush" not in " ".join(argv)
+    env = calls[0][1].get("env") or {}
+    assert env.get("PGPASSWORD") == "hush"
+
+
+def test_mysqldump_password_never_in_argv(seeded, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://user:hush@localhost:3306/app")
+
+    calls = []
+
+    class _FakeResult:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        dest = kwargs.get("stdout")
+        if dest is not None:
+            dest.write(b"-- mysqldump output\n")
+        return _FakeResult()
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    argv = calls[0][0]
+    assert "hush" not in " ".join(argv)
+    assert not any(part.startswith("--password") for part in argv)
+    env = calls[0][1].get("env") or {}
+    assert env.get("MYSQL_PWD") == "hush"
