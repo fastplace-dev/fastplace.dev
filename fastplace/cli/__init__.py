@@ -133,6 +133,25 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
         app.add_typer(inspect_app, name="")
     except ImportError:
         pass
+    # --- roadmap: app plane (auth / mail / ai) ---
+    try:
+        from fastplace.cli.auth_ops import auth_ops_app
+
+        app.add_typer(auth_ops_app, name="")
+    except ImportError:
+        pass
+    try:
+        from fastplace.cli.mail import mail_app
+
+        app.add_typer(mail_app, name="")
+    except ImportError:
+        pass
+    try:
+        from fastplace.cli.ai_ops import ai_ops_app
+
+        app.add_typer(ai_ops_app, name="")
+    except ImportError:
+        pass
 
 
 _register_phase_commands()
