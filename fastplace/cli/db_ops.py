@@ -260,3 +260,101 @@ def _render_cell(value: object) -> str:
         return escape(json.dumps(value))
     except (TypeError, ValueError):
         return escape(repr(value))
+
+
+def _truncate_statements(dialect_name: str, quoted_tables: list[str], cascade: bool) -> list[str]:
+    """Dialect-specific statements that empty every listed table.
+
+    Pure on purpose — the postgres/mysql shapes are unit-testable without
+    any live service (roadmap B1 acceptance).
+    """
+    joined = ", ".join(quoted_tables)
+    if dialect_name == "postgresql":
+        return [f"TRUNCATE TABLE {joined} RESTART IDENTITY" + (" CASCADE" if cascade else "")]
+    if dialect_name in ("mysql", "mariadb"):
+        return (
+            ["SET FOREIGN_KEY_CHECKS=0"]
+            + [f"TRUNCATE TABLE {table}" for table in quoted_tables]
+            + ["SET FOREIGN_KEY_CHECKS=1"]
+        )
+    # sqlite has no TRUNCATE — DELETE plus a best-effort sequence reset.
+    statements = [f"DELETE FROM {table}" for table in quoted_tables]
+    names = ", ".join(f"'{table.strip(chr(34))}'" for table in quoted_tables)
+    statements.append(f"DELETE FROM sqlite_sequence WHERE name IN ({names})")
+    return statements
+
+
+@db_ops_app.command("db:truncate")
+def db_truncate(
+    tables: list[str] = typer.Argument(
+        ..., help="Table names to truncate (validated against the live catalog)."
+    ),
+    cascade: bool = typer.Option(
+        False, "--cascade", help="Also truncate tables with foreign keys pointing at these."
+    ),
+    force: bool = typer.Option(False, "--force", help="Skip the production confirmation prompt."),
+) -> None:
+    """Empty the named tables, validated against the live catalog first."""
+    from rich.markup import escape
+    from rich.table import Table
+
+    from fastplace.console import console
+    from fastplace.db import db
+
+    load_env()
+
+    async def _catalog_and_statements() -> tuple[list[str], list[str]]:
+        from sqlalchemy import inspect as sa_inspect
+
+        engine = db.manager.engine("default")
+        async with engine.connect() as connection:
+
+            def _inspect(sync_conn) -> tuple[list[str], list[str]]:
+                inspector = sa_inspect(sync_conn)
+                preparer = sync_conn.dialect.identifier_preparer
+                quoted = [preparer.quote(name) for name in tables]
+                return sorted(inspector.get_table_names()), _truncate_statements(
+                    engine.dialect.name, quoted, cascade
+                )
+
+            return await connection.run_sync(_inspect)
+
+    known, statements = asyncio.run(_catalog_and_statements())
+
+    # Catalog validation comes first: an unknown table aborts before the guard
+    # and before any statement executes, so a typo can never touch production.
+    unknown = [table for table in tables if table not in known]
+    if unknown:
+        console.print(f"[red]unknown table '{escape(unknown[0])}'[/]")
+        console.print(f"known tables: {', '.join(escape(k) for k in known)}")
+        raise typer.Exit(code=1)
+
+    if str(config("APP_ENV", default="production")).lower() == "production" and not (
+        force or typer.confirm("Truncate tables in the production database?")
+    ):
+        console.print("[red]aborted[/] — the tables were left untouched")
+        raise typer.Exit(code=1)
+
+    async def _run() -> None:
+        from sqlalchemy import text
+        from sqlalchemy.exc import OperationalError
+
+        engine = db.manager.engine("default")
+        async with engine.begin() as connection:
+            for statement in statements:
+                try:
+                    await connection.execute(text(statement))
+                except OperationalError:
+                    # sqlite_sequence only exists once an AUTOINCREMENT table
+                    # has fired — its reset is best-effort by design.
+                    if "sqlite_sequence" in statement:
+                        continue
+                    raise
+
+    asyncio.run(_run())
+
+    table = Table(title="Truncated")
+    table.add_column("table", style="cyan")
+    for name in tables:
+        table.add_row(escape(name))
+    console.print(table)
