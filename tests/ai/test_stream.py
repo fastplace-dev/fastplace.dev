@@ -363,3 +363,32 @@ async def test_ai_routes_are_csrf_protected():
         response = await client.post("/ai/assistant", json={"message": "hello"})
 
     assert response.status_code == 419
+
+
+# ------------------------------------------------- stream_events
+
+
+async def test_stream_events_yields_raw_sse_frames():
+    agent_module._completion_fn = _ScriptedStreams(_text_round("hello ", "back"))
+    agent = Agent(model="m")
+
+    from fastplace.ai.stream import parse_sse, stream_events
+
+    frames = [frame async for frame in stream_events(agent, "hello")]
+    assert frames, "expected at least one frame"
+    events = [event for frame in frames for event in parse_sse(frame)]
+    assert events[0][0] == "delta"
+    assert events[-1][0] == "done"
+    assert events[-1][1]["content"] == "hello back"
+
+
+async def test_stream_events_validates_the_message_eagerly():
+    agent_module._completion_fn = _ScriptedStreams(_text_round("hello ", "back"))
+    agent = Agent(model="m")
+
+    from fastplace.ai.stream import stream_events
+    from fastplace.errors import ValidationError
+
+    with pytest.raises(ValidationError):
+        async for _frame in stream_events(agent, "   "):
+            pass

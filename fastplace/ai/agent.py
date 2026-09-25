@@ -9,12 +9,18 @@ so tests (and local fakes) never touch the network.
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 import logging
+import pkgutil
+import typing
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -257,6 +263,121 @@ class Agent:
                     "message": str(exc) if debug_details_enabled() else "The tool failed.",
                 }
             }
+
+
+# ---------------------------------------------------------------------------
+# project agent-factory discovery (import_tools' mirror)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AgentFactory:
+    """One discovered project agent factory (``app/ai/agents/*``)."""
+
+    name: str
+    module: str
+    fn: Callable[..., Agent]
+
+
+#: name → factory registry, populated by import_agents at import time.
+_agent_factories: dict[str, AgentFactory] = {}
+
+
+def registered_agent_factories() -> list[AgentFactory]:
+    """Every discovered factory, sorted by name."""
+    return sorted(_agent_factories.values(), key=lambda factory: factory.name)
+
+
+def reset_agent_factories() -> None:
+    """Clear the registry — test isolation."""
+    _agent_factories.clear()
+
+
+def _returns_agent(fn: Any) -> bool:
+    """True when the function's resolved return annotation is exactly Agent."""
+    try:
+        hints = typing.get_type_hints(fn)
+    except Exception:  # noqa: BLE001 — unresolvable hints are simply not ours to judge
+        hints = {}
+    if hints.get("return") is Agent:
+        return True
+    # ``from __future__ import annotations`` modules whose hints cannot be
+    # resolved keep the raw string — accept the exact class name too.
+    return getattr(fn, "__annotations__", {}).get("return") == "Agent"
+
+
+def _collect_factories(module: Any) -> None:
+    for name, value in vars(module).items():
+        if name.startswith("_") or not inspect.isfunction(value):
+            continue
+        if value.__module__ != module.__name__:
+            continue  # re-exported import — owned by its defining module
+        if not _returns_agent(value):
+            continue
+        existing = _agent_factories.get(name)
+        if existing is not None and existing.module != module.__name__:
+            raise ValueError(
+                f"agent factory collision: '{name}' is already registered by "
+                f"{existing.module}; {module.__name__} must rename its factory"
+            )
+        _agent_factories[name] = AgentFactory(name=name, module=module.__name__, fn=value)
+
+
+def import_agents(project_root: str | Path | None = None) -> list[str]:
+    """Import every module under ``app/ai/agents/``, collecting Agent factories.
+
+    Mirrors ``fastplace.ai.tool.import_tools``: the project root sits at the
+    front of ``sys.path`` only for the call, cached ``app.*`` modules bound
+    to a different root are evicted first (their factories die with them),
+    and an already-imported module is a cache hit.
+    """
+    import sys
+
+    root = Path(project_root) if project_root else Path.cwd()
+    agents_dir = root / "app" / "ai" / "agents"
+    if not agents_dir.is_dir():
+        return []
+    root_str = str(root)
+    inserted = root_str not in sys.path
+    if inserted:
+        sys.path.insert(0, root_str)
+    _evict_stale_agent_modules(root)
+    try:
+        package = importlib.import_module("app.ai.agents")
+        for module_info in pkgutil.iter_modules(package.__path__):
+            if module_info.name.startswith("_"):
+                continue
+            module = importlib.import_module(f"app.ai.agents.{module_info.name}")
+            _collect_factories(module)
+    except ModuleNotFoundError as exc:
+        if exc.name not in ("app", "app.ai", "app.ai.agents"):
+            raise
+    finally:
+        if inserted:
+            sys.path.remove(root_str)
+    return sorted(_agent_factories)
+
+
+def _evict_stale_agent_modules(root: Path) -> None:
+    """Drop cached ``app``/``app.*`` modules bound to a different root."""
+    import sys
+
+    from fastplace.ai.tool import _path_contains
+
+    evicted: set[str] = set()
+    for name in list(sys.modules):
+        if name != "app" and not name.startswith("app."):
+            continue
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        origin = getattr(module, "__file__", None) or ""
+        if not origin or not _path_contains(root, origin):
+            sys.modules.pop(name, None)
+            evicted.add(name)
+    for factory_name in list(_agent_factories):
+        if _agent_factories[factory_name].fn.__module__ in evicted:
+            del _agent_factories[factory_name]
 
 
 def _assistant_tool_message(message: Any, tool_calls: list[Any]) -> dict[str, Any]:

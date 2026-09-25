@@ -28,6 +28,14 @@ def _fresh_db(monkeypatch: pytest.MonkeyPatch, tmp_path):
     reset_pat_store()
 
 
+@pytest.fixture()
+async def pat_rows():
+    await pat_store().issue(1, "laptop", abilities=["*"])
+    await pat_store().issue(1, "server", abilities=["*"])
+    await pat_store().issue(2, "ci-token", abilities=["posts:read"])
+    yield
+
+
 class TestIssue:
     async def test_issue_returns_id_secret_pair(self):
         store = PersonalAccessTokenStore()
@@ -134,3 +142,19 @@ class TestPrune:
         assert await store.prune_expired() == 1
         assert await store.authenticate(dead) is None
         assert await store.authenticate(live) is not None
+
+
+class TestList:
+    async def test_list_all_returns_every_row_newest_first(self, pat_rows):
+        rows = await pat_store().list_all()
+        assert [row.user_id for row in rows] == [2, 1, 1]  # seeded out of order
+        assert rows[0].name == "ci-token"
+        assert rows[0].abilities == ["posts:read"]
+
+    async def test_list_for_user_scopes_to_one_owner(self, pat_rows):
+        rows = await pat_store().list_for_user(1)
+        assert all(row.user_id == 1 for row in rows)
+        assert len(rows) == 2
+
+    async def test_list_for_user_empty_is_an_empty_list(self):
+        assert await pat_store().list_for_user(999) == []

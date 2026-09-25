@@ -5,7 +5,13 @@ Tool, embed``); provider access routes through LiteLLM and structured
 outputs validate through Instructor, so app code never imports either.
 """
 
-from fastplace.ai.agent import Agent
+from fastplace.ai.agent import (
+    Agent,
+    AgentFactory,
+    import_agents,
+    registered_agent_factories,
+    reset_agent_factories,
+)
 from fastplace.ai.embeddings import embed, embed_many
 from fastplace.ai.tool import (
     Tool,
@@ -19,12 +25,16 @@ from fastplace.ai.vectors import reset_vector_registry, vector_registry
 
 __all__ = [
     "Agent",
+    "AgentFactory",
     "Tool",
     "ToolSpec",
     "embed",
     "embed_many",
+    "import_agents",
     "import_tools",
+    "registered_agent_factories",
     "registered_tools",
+    "reset_agent_factories",
     "reset_tool_registry",
     "reset_vector_registry",
     "tool_registry",

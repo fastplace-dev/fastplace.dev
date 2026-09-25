@@ -81,9 +81,7 @@ _CASES = [
 
 class TestScaffolds:
     @pytest.mark.parametrize(("argv", "rel", "markers"), _CASES)
-    def test_creates_stub_with_content_markers(
-        self, tmp_path, monkeypatch, argv, rel, markers
-    ):
+    def test_creates_stub_with_content_markers(self, tmp_path, monkeypatch, argv, rel, markers):
         result = _invoke(monkeypatch, tmp_path, *argv)
         assert result.exit_code == 0, result.output
 
@@ -95,9 +93,7 @@ class TestScaffolds:
         assert rel in result.output
 
     @pytest.mark.parametrize(("argv", "rel", "markers"), _CASES)
-    def test_refuses_to_overwrite_without_force(
-        self, tmp_path, monkeypatch, argv, rel, markers
-    ):
+    def test_refuses_to_overwrite_without_force(self, tmp_path, monkeypatch, argv, rel, markers):
         result = _invoke(monkeypatch, tmp_path, *argv)
         assert result.exit_code == 0, result.output
 
@@ -109,9 +105,7 @@ class TestScaffolds:
         assert "SENTINEL" in path.read_text()
 
     @pytest.mark.parametrize(("argv", "rel", "markers"), _CASES)
-    def test_force_overwrites_the_stub(
-        self, tmp_path, monkeypatch, argv, rel, markers
-    ):
+    def test_force_overwrites_the_stub(self, tmp_path, monkeypatch, argv, rel, markers):
         path = tmp_path / rel
         path.parent.mkdir(parents=True)
         path.write_text("// SENTINEL — replaced under --force\n")
@@ -125,9 +119,7 @@ class TestScaffolds:
 
 
 class TestMakeVectorStore:
-    def test_scaffolded_store_registers_via_import_vector_stores(
-        self, tmp_path, monkeypatch
-    ):
+    def test_scaffolded_store_registers_via_import_vector_stores(self, tmp_path, monkeypatch):
         """The stub must mirror the vectors.py auto-import convention exactly:
         importing the module registers the backend under its dispatch name."""
         import asyncio
@@ -197,9 +189,7 @@ class TestMakeLayout:
         assert result.exit_code == 0, result.output
         path = tmp_path / "resources" / "js" / "layouts" / "AdminLayout.jsx"
         assert path.is_file()
-        assert not (
-            tmp_path / "resources" / "js" / "layouts" / "AdminLayoutLayout.jsx"
-        ).exists()
+        assert not (tmp_path / "resources" / "js" / "layouts" / "AdminLayoutLayout.jsx").exists()
         assert "export default function AdminLayout(" in path.read_text()
 
     def test_rejects_path_shaped_names(self, tmp_path, monkeypatch):
@@ -248,9 +238,7 @@ class TestRepoExemplarsStayUnderFrontendGate:
             ),
         ],
     )
-    def test_committed_exemplar_matches_generated_template(
-        self, tmp_path, monkeypatch, argv, rel
-    ):
+    def test_committed_exemplar_matches_generated_template(self, tmp_path, monkeypatch, argv, rel):
         result = _invoke(monkeypatch, tmp_path, *argv)
         assert result.exit_code == 0, result.output
 

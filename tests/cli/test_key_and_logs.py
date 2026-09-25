@@ -208,9 +208,7 @@ def test_log_tail_without_logs_exits_friendly(log_project):
 @pytest.mark.parametrize(
     "command", [["key:generate"], ["key:generate", "--show"], ["log:tail", "--lines", "5"]]
 )
-def test_key_and_log_commands_outside_a_project_fail_friendly(
-    tmp_path, monkeypatch, command
-):
+def test_key_and_log_commands_outside_a_project_fail_friendly(tmp_path, monkeypatch, command):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli_app, command)
     assert result.exit_code == 1

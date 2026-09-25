@@ -207,9 +207,7 @@ class MigrationsManager:
         try:
             async with engine.connect() as conn:
                 return list(
-                    await conn.run_sync(
-                        lambda c: MigrationContext.configure(c).get_current_heads()
-                    )
+                    await conn.run_sync(lambda c: MigrationContext.configure(c).get_current_heads())
                 )
         finally:
             await engine.dispose()
@@ -357,9 +355,7 @@ def run_seeders(project_root: str | Path, seeder: str | None = None) -> list[str
 
     root = Path(project_root).resolve()
     seeders_dir = root / "database" / "seeders"
-    files = (
-        sorted(seeders_dir.glob("*.py")) if seeders_dir.is_dir() else []
-    )
+    files = sorted(seeders_dir.glob("*.py")) if seeders_dir.is_dir() else []
     files = [file for file in files if not file.name.startswith("_")]
 
     if seeder is not None:

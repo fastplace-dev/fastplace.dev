@@ -66,6 +66,22 @@ def stream_response(
     )
 
 
+def stream_events(
+    agent: Any,
+    message: str | None,
+    history: list[dict[str, Any]] | None = None,
+) -> Any:
+    """Public async iterator of raw SSE frames — terminal replay of the stream.
+
+    ``ai:chat --stream`` consumes this (parsing each frame with
+    :func:`parse_sse`) so the CLI never reaches for the private ``_events``
+    generator. The message is validated eagerly, exactly like
+    ``stream_response``.
+    """
+    messages = agent._conversation(message, history)  # validates eagerly
+    return _events(agent, messages)
+
+
 async def _events(agent: Any, messages: list[dict[str, Any]]) -> Any:
     rounds = 0
     try:

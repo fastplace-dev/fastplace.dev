@@ -64,6 +64,19 @@ def _hash_token(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
+def _list_select() -> Any:
+    """The operator column set shared by list_all / list_for_user."""
+    return select(
+        personal_access_tokens.c.id,
+        personal_access_tokens.c.user_id,
+        personal_access_tokens.c.name,
+        personal_access_tokens.c.abilities,
+        personal_access_tokens.c.last_used_at,
+        personal_access_tokens.c.expires_at,
+        personal_access_tokens.c.created_at,
+    )
+
+
 def _now() -> datetime.datetime:
     return datetime.datetime.now(UTC)
 
@@ -173,6 +186,30 @@ class PersonalAccessTokenStore:
         async with self._engine().connect() as conn:
             row = (await conn.execute(stmt)).first()
         return None if row is None else row.user_id
+
+    async def list_all(self) -> list[Any]:
+        """Every token row, newest first — the operator view (token:list)."""
+        await self._ensure_table()
+        stmt = _list_select().order_by(
+            personal_access_tokens.c.created_at.desc(),
+            personal_access_tokens.c.id.desc(),
+        )
+        async with self._engine().connect() as conn:
+            return list((await conn.execute(stmt)).all())
+
+    async def list_for_user(self, user_id: Any) -> list[Any]:
+        """One owner's token rows, newest first."""
+        await self._ensure_table()
+        stmt = (
+            _list_select()
+            .where(personal_access_tokens.c.user_id == user_id)
+            .order_by(
+                personal_access_tokens.c.created_at.desc(),
+                personal_access_tokens.c.id.desc(),
+            )
+        )
+        async with self._engine().connect() as conn:
+            return list((await conn.execute(stmt)).all())
 
     async def revoke(self, token_id: Any, user_id: Any) -> bool:
         """Owner-scoped hard delete — a wrong user revokes nothing (IDOR-safe)."""

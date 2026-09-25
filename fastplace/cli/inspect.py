@@ -104,11 +104,15 @@ def collect_routes() -> list[dict[str, str]]:
 
 @inspect_app.command("route:list")
 def route_list(
-    path: str = typer.Option(None, "--path", help="Only routes whose path contains this substring."),
+    path: str = typer.Option(
+        None, "--path", help="Only routes whose path contains this substring."
+    ),
     method: str = typer.Option(
         None, "--method", help="Only routes whose methods include this one (e.g. GET)."
     ),
-    name: str = typer.Option(None, "--name", help="Only routes whose name contains this substring."),
+    name: str = typer.Option(
+        None, "--name", help="Only routes whose name contains this substring."
+    ),
 ) -> None:
     """List the project's HTTP and WebSocket routes."""
     rows = collect_routes()
