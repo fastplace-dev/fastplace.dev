@@ -192,3 +192,36 @@ def test_matrix_backend_failure_exits_one_and_still_cleans_up(
     result = runner.invoke(cli_app, ["test:matrix", "--backends", "postgres"])
     assert result.exit_code == 1
     assert [c for c in fake.calls if c[0:2] == ["docker", "rm"]]  # teardown despite failure
+
+
+def test_matrix_unexpected_error_still_cleans_up(monkeypatch, no_sleep, drivers_ok, pgvector_ok):
+    class _ExplodingPytest(_FakeDocker):
+        def __call__(self, argv, **kwargs):
+            if argv[1:3] == ["-m", "pytest"]:
+                raise RuntimeError("child exploded")
+            return super().__call__(argv, **kwargs)
+
+    fake = _ExplodingPytest()
+    monkeypatch.setattr(testing, "_subprocess_run", fake)
+    result = runner.invoke(cli_app, ["test:matrix", "--backends", "postgres"])
+    assert result.exit_code == 1
+    assert [c for c in fake.calls if c[0:2] == ["docker", "rm"]]  # container removed despite crash
+
+
+def test_matrix_backends_flag_without_names_errors(monkeypatch):
+    result = runner.invoke(cli_app, ["test:matrix", "--backends", ",,"])
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "postgres" in out  # guidance names the valid choices
+
+
+def test_matrix_extra_args_reach_scoped_pytest(monkeypatch, no_sleep, drivers_ok, pgvector_ok):
+    fake = _FakeDocker()
+    monkeypatch.setattr(testing, "_subprocess_run", fake)
+    result = runner.invoke(
+        cli_app,
+        ["test:matrix", "--backends", "postgres", "--", "-k", "vector"],
+    )
+    assert result.exit_code == 0, result.stdout
+    pytest_calls = [c for c in fake.calls if c[1:3] == ["-m", "pytest"]]
+    assert pytest_calls[0][-2:] == ["-k", "vector"]

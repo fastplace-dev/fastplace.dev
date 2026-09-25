@@ -134,63 +134,66 @@ def _run_backend(root: Path, backend: str, spec: dict, keep: bool, extra_args: l
 
     url = os.environ.get(spec["env_var"])
     cid: str | None = None
-    if url:
-        console.print(f"[cyan]{backend}[/] using exported {spec['env_var']} (existing stack)")
-    else:
-        if not _driver_available(spec["driver"]):
-            console.print(
-                f"[red]{backend} driver '{spec['driver']}' not installed[/] — "
-                f"pip install -e '.[{spec['extra']}]'\n"
-                "(the portable fixtures have no import guard — they error noisily, not skip)"
-            )
-            return False
-        name = f"fastplace-matrix-{backend}-{uuid.uuid4().hex[:8]}"
-        run_argv = [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            name,
-            "-p",
-            f"127.0.0.1::{spec['container_port']}",
-        ]
-        for key, value in spec["env"].items():
-            run_argv += ["-e", f"{key}={value}"]
-        run_argv.append(spec["image"])
-        cid = _subprocess_run(run_argv, capture_output=True, text=True).stdout.strip()
-        try:
-            _wait_healthy(cid, spec["health"], backend)
-        except RuntimeError as exc:
-            _subprocess_run(["docker", "rm", "-f", cid], capture_output=True)
-            console.print(f"[red]{exc}[/]")
-            return False
-        host, port = _mapped_host_port(cid, spec["container_port"])
-        url = spec["url_template"].format(host=host, port=port)
-        if spec["vector_extension"]:
-            asyncio.run(_ensure_pgvector(url))
-        console.print(f"[cyan]{backend}[/] container up: {url}")
-
-    suite = _subprocess_run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "tests/orm/portable",
-            spec["dialect_dir"],
-            *extra_args,
-        ],
-        cwd=root,
-        env={**os.environ, spec["env_var"]: url},
-    )
-    passed = suite.returncode == 0
-
-    if cid:
-        if keep:
-            console.print(f"[dim]{backend} container kept: {name} ({url})[/]")
+    try:
+        if url:
+            console.print(f"[cyan]{backend}[/] using exported {spec['env_var']} (existing stack)")
         else:
+            if not _driver_available(spec["driver"]):
+                console.print(
+                    f"[red]{backend} driver '{spec['driver']}' not installed[/] — "
+                    f"pip install -e '.[{spec['extra']}]'\n"
+                    "(the portable fixtures have no import guard — they error noisily, not skip)"
+                )
+                return False
+            name = f"fastplace-matrix-{backend}-{uuid.uuid4().hex[:8]}"
+            run_argv = [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                name,
+                "-p",
+                f"127.0.0.1::{spec['container_port']}",
+            ]
+            for key, value in spec["env"].items():
+                run_argv += ["-e", f"{key}={value}"]
+            run_argv.append(spec["image"])
+            cid = _subprocess_run(run_argv, capture_output=True, text=True).stdout.strip()
+            try:
+                _wait_healthy(cid, spec["health"], backend)
+            except RuntimeError as exc:
+                console.print(f"[red]{exc}[/]")
+                return False
+            host, port = _mapped_host_port(cid, spec["container_port"])
+            url = spec["url_template"].format(host=host, port=port)
+            if spec["vector_extension"]:
+                asyncio.run(_ensure_pgvector(url))
+            console.print(f"[cyan]{backend}[/] container up: {url}")
+
+        suite = _subprocess_run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/orm/portable",
+                spec["dialect_dir"],
+                *extra_args,
+            ],
+            cwd=root,
+            env={**os.environ, spec["env_var"]: url},
+        )
+        return suite.returncode == 0
+    except Exception as exc:  # noqa: BLE001 — any failure path still reports and tears down
+        console.print(f"[red]{backend} failed: {exc}[/]")
+        return False
+    finally:
+        # The finally covers every escape path — unexpected errors (port-map
+        # parse, pgvector connect refused) and Ctrl-C (KeyboardInterrupt
+        # propagates after this runs) — so no fastplace-matrix-* container
+        # is ever orphaned; --keep deliberately opts out.
+        if cid and not keep:
             _subprocess_run(["docker", "rm", "-f", cid], capture_output=True)
-    return passed
 
 
 @testing_app.command("test:matrix")
@@ -214,6 +217,11 @@ def test_matrix(
     root = _project_root()
     if backends:
         chosen = [b.strip() for b in backends.split(",") if b.strip()]
+        if not chosen:  # separators-only value like "," would silently run nothing
+            console.print(
+                f'[red]no backends in "--backends"[/] — choose from {", ".join(_BACKENDS)}'
+            )
+            raise typer.Exit(code=1)
     else:
         chosen = [b for b, spec in _BACKENDS.items() if os.environ.get(spec["env_var"])] or list(
             _BACKENDS
