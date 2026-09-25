@@ -44,6 +44,11 @@ def _plural(word: str) -> str:
     return word + "s"
 
 
+def _pascal(module: str) -> str:
+    """snake_case module → the PascalCase entity it holds (``order`` → ``Order``)."""
+    return "".join(part[:1].upper() + part[1:] for part in module.split("_") if part)
+
+
 def _clean_name(name: str, what: str) -> str:
     """Validate a maker NAME into its snake_case form (rejects path shapes)."""
     clean = _snake(name.strip().strip("/"))
@@ -125,7 +130,6 @@ def make_model(
     ),
 ) -> None:
     """Create an ORM model in app/modules/<module>/models/ (plus companions)."""
-    from fastplace.cli.database import _manager
     from fastplace.orm.fields import resolve_annotation  # noqa: F401 — import sanity
 
     root = _project_root()
@@ -157,12 +161,19 @@ def make_model(
         make_repository(name=name, module=module)
 
     if migration:
-        manager = _manager()
-        if not manager.configured:
-            manager.scaffold()  # make:model -m works on a fresh project
-        revision = manager.make(f"create_{_plural(module)}_table")
-        if revision is not None:
-            console.print(f"[green]created[/] {revision.relative_to(root)}")
+        _make_migration(root, module)
+
+
+def _make_migration(root: Path, module: str) -> None:
+    """Autogenerate a create-<plural>-table migration (shared by make:model / make:module)."""
+    from fastplace.cli.database import _manager
+
+    manager = _manager()
+    if not manager.configured:
+        manager.scaffold()  # works on a fresh project
+    revision = manager.make(f"create_{_plural(module)}_table")
+    if revision is not None:
+        console.print(f"[green]created[/] {revision.relative_to(root)}")
 
 
 _CONTROLLER_TEMPLATE = '''"""{doc_name} controller."""
@@ -301,12 +312,37 @@ export default function {function_name}() {{
 
 @generators_app.command("make:module")
 def make_module(
-    name: str = typer.Argument(..., help="Bounded module name (snake_case)"),
+    name: str = typer.Argument(
+        ..., help="Module name — OrderModule, Order or order all map to `order`"
+    ),
+    bare: bool = typer.Option(
+        False,
+        "--bare",
+        help="Only the package directories — skip the Model/Repository/Service stubs.",
+    ),
+    resource: bool = typer.Option(
+        False,
+        "--resource",
+        help="Also scaffold a seven-action CRUD controller for the module.",
+    ),
+    api: bool = typer.Option(
+        False,
+        "--api",
+        help="Also scaffold an API controller (CRUD minus the create/edit form actions).",
+    ),
+    migration: bool = typer.Option(
+        False, "--migration", "-m", help="Also autogenerate a migration."
+    ),
 ) -> None:
-    """Scaffold a bounded module with the CSR layout under app/modules/."""
+    """Scaffold a bounded module: dirs + Model + Repository + Service (--bare for dirs only)."""
     root = _project_root()
-    # Accept PascalCase too ("Knowledge" → "knowledge") like the other makers.
-    clean = _snake(name.strip().strip("/"))
+    # Accept "OrderModule", "Order" and "order" — a trailing Module suffix is
+    # stripped so scaffolded names match the shipped lowercase-noun modules
+    # (accounts, projects, ...) rather than `order_module`.
+    stem = name.strip().strip("/")
+    if stem.endswith("Module"):
+        stem = stem[: -len("Module")]
+    clean = _snake(stem)
     if not clean or not re.fullmatch(r"[a-z][a-z0-9_]*", clean):
         console.print("[red]invalid module name[/] — use snake_case starting with a letter")
         raise typer.Exit(code=1)
@@ -319,6 +355,31 @@ def make_module(
         "services/__init__.py",
     ):
         _write(base / rel, "", root)
+    # Parent markers so pkgutil discovery (import_all_models) finds the model.
+    for marker in (root / "app" / "__init__.py", root / "app" / "modules" / "__init__.py"):
+        if not marker.exists():
+            _write(marker, "", root)
+
+    if bare:
+        return
+
+    # Full vertical slice — the same templates the sibling makers use, so the
+    # CSR layering (Controllers → Services → Repositories → Models) is produced
+    # by the tooling rather than left to convention.
+    entity = _pascal(clean)
+    _write(
+        base / "models" / f"{clean}.py",
+        _MODEL_TEMPLATE.format(doc_name=entity, name=entity, table=_plural(clean)),
+        root,
+    )
+    make_service(name=entity, module=clean)
+    make_repository(name=entity, module=clean)
+
+    if resource or api:
+        make_controller(name=f"{entity}Controller", resource=resource, api=api)
+
+    if migration:
+        _make_migration(root, clean)
 
 
 @generators_app.command("make:page")
