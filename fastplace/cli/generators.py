@@ -162,6 +162,9 @@ def make_model(
 
     if migration:
         _make_migration(root, module)
+    # Same rationale as make:module's summary — the derived module and table
+    # are otherwise only visible inside the generated file.
+    console.print(f"\n[bold]model {name}[/bold] — module {module}, table {_plural(module)}")
 
 
 def _make_migration(root: Path, module: str) -> None:
@@ -555,6 +558,14 @@ def make_module(
     )
     if migration:
         _make_migration(root, clean)
+    # Echo the derived names — a surprising derivation (a plural input
+    # double-pluralizing into `orderses`) is visible the moment it happens,
+    # not at the first route hit.
+    plural = _plural(clean)
+    derived = [f"entity {entity}", f"table {plural}", f"api /api/v1/{plural}"]
+    if web:
+        derived.append(f"web /{plural}")
+    console.print(f"\n[bold]module {clean}[/bold] — " + ", ".join(derived))
 
 
 @generators_app.command("make:page")

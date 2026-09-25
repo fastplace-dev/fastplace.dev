@@ -219,6 +219,22 @@ def test_web_composes_with_api(tmp_path, monkeypatch):
     assert len(list((tmp_path / "database" / "migrations" / "versions").glob("*.py"))) == 1
 
 
+def test_summary_line_echoes_derived_names(tmp_path, monkeypatch):
+    """The scaffold echoes the derived module/entity/table/route — a plural
+    input (orders) betrays itself (table `orderses`) the moment it happens,
+    not at the first route hit."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_app, ["make:module", "OrderModule", "--web"])
+
+    assert result.exit_code == 0, result.output
+    assert "module order" in result.output
+    assert "entity Order" in result.output
+    assert "table orders" in result.output
+    assert "api /api/v1/orders" in result.output
+    assert "web /orders" in result.output
+
+
 def test_migration_flag_creates_version(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'mod.sqlite3'}")

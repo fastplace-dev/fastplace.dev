@@ -137,3 +137,16 @@ class TestMakeModelCompanions:
             if other_flag != flag:
                 assert not root.exists(), f"unexpected {other_flag} companion at {root}"
         assert not (tmp_path / "database").exists()
+
+    def test_summary_line_echoes_derived_names(self, tmp_path, monkeypatch):
+        """The derived module/table are echoed — a plural input (Projects)
+        double-pluralizing into `projectses` is visible immediately."""
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli_app, ["make:model", "Project"])
+
+        assert result.exit_code == 0, result.output
+        assert "model Project" in result.output
+        assert "module product" not in result.output
+        assert "module project" in result.output
+        assert "table projects" in result.output
