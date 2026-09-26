@@ -160,6 +160,14 @@ class Job:
         name = self.name or fn.__name__
         if name in registry:
             existing = registry[name].fn
+            if _is_stale_registration(existing) and _same_dotted_path(existing, fn):
+                # Module-reload semantics: the old handler's module was
+                # evicted from sys.modules (boot sandboxes evict app.* and
+                # may re-import app.jobs within one boot), so this is the
+                # same handler re-registered by a fresh module object —
+                # replace the dead entry rather than raise.
+                registry[name] = _JobEntry(name=name, fn=fn)
+                return fn
             raise ValueError(
                 f"@Job name collision: '{name}' is already registered by "
                 f"{getattr(existing, '__module__', '?')}.{getattr(existing, '__qualname__', '?')}; "
@@ -167,6 +175,32 @@ class Job:
             )
         registry[name] = _JobEntry(name=name, fn=fn)
         return fn
+
+
+def _is_stale_registration(existing: JobFn) -> bool:
+    """True when the existing handler outlived its module's namespace.
+
+    A decorator only re-runs for a freshly executed module, and Python seats
+    that module in sys.modules before its body runs — so "module absent"
+    can't spot the eviction. The reliable signal is namespace identity: the
+    existing fn's ``__globals__`` is the namespace it was defined in, and
+    when the cached module's ``__dict__`` is a DIFFERENT object the old
+    namespace was orphaned by an eviction+re-import. A live module's
+    redefinition (same namespace) stays a genuine collision. (True
+    ``importlib.reload`` reuses one namespace and still raises — no code
+    path reloads job modules; evict-and-reimport is the supported flow.)"""
+    import sys
+
+    module_name = getattr(existing, "__module__", "") or ""
+    module = sys.modules.get(module_name)
+    if module is None:
+        return True  # the whole module is gone — orphaned
+    return module.__dict__ is not existing.__globals__
+
+
+def _same_dotted_path(a: JobFn, b: JobFn) -> bool:
+    """True when two function objects claim the identical module + qualname."""
+    return (a.__module__, a.__qualname__) == (b.__module__, b.__qualname__)
 
 
 # ---------------------------------------------------------------------------
