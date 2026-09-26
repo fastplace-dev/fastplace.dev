@@ -87,6 +87,7 @@ include = ["fastplace*"]
 # a wheel without them crashes the first-run onboarding path.
 [tool.setuptools.package-data]
 "fastplace.orm.migrations" = ["templates/*.tpl", "templates/*.mako"]
+"fastplace.cli" = ["scaffold_templates/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
