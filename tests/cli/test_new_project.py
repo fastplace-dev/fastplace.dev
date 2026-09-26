@@ -50,9 +50,14 @@ _FILES = (
     "app/jobs/__init__.py",
     "app/models/__init__.py",
     "resources/js/main.jsx",
-    "resources/js/layouts/AppLayout.jsx",
-    "resources/js/pages/Home/Index.jsx",
+    "resources/js/layouts/app-layout.tsx",
+    "resources/js/pages/Home/Index.tsx",
+    "resources/js/pages/Auth/Login.tsx",
+    "resources/js/pages/Dashboard/Index.tsx",
+    "resources/js/components/ui/button.tsx",
     "resources/css/app.css",
+    "public/fastplace-logo.svg",
+    "tsconfig.json",
     "routes/__init__.py",
     "routes/web.py",
     "routes/api.py",
@@ -337,6 +342,21 @@ def test_new_with_no_auth_flag_matches_minimal_tree(tmp_path, monkeypatch):
     # The minimal tree is unchanged from before this feature.
     for rel in _FILES:
         assert (root / "blog" / rel).is_file(), f"missing {rel}"
+
+
+def test_new_carries_the_whole_starter_corpus(tmp_path, monkeypatch):
+    # R2: every new app gets the complete frontend starter, verbatim — the
+    # walk must not drop design-system files, tests, or public assets.
+    from fastplace.cli.generators import scaffold_templates_dir
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0
+    corpus = Path(scaffold_templates_dir())
+    shipped = [p for p in corpus.rglob("*") if p.is_file() and ".DS_Store" not in p.name]
+    assert shipped  # the corpus itself must never silently empty out
+    for src in shipped:
+        rel = src.relative_to(corpus)
+        assert (root / "blog" / rel).is_file(), f"new did not write {rel}"
 
 
 def test_new_prompts_for_auth_when_flag_absent(tmp_path, monkeypatch):

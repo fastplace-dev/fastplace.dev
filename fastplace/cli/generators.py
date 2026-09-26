@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path, PureWindowsPath
 
 import typer
@@ -1759,96 +1760,6 @@ export default defineConfig({
 });
 """
 
-_MAIN_JSX_TEMPLATE = """\
-import { createFastplaceApp, createPageResolver } from "@fastplace/react";
-import "../css/app.css";
-
-// Glob-declared pages: every resources/js/pages/**/*.{jsx,tsx} file is a
-// routable component, resolved by the payload's `component` name. The glob
-// is eager so pages can expose their persistent layout through a `layout`
-// static before first render.
-const resolvePage = createPageResolver(
-  import.meta.glob("./pages/**/*.{jsx,tsx,js,ts}", { eager: true }),
-);
-
-createFastplaceApp({ resolve: resolvePage }).catch((err) => {
-  console.error("[fastplace] bootstrap failed:", err);
-  const el = document.getElementById("fastplace");
-  if (el) {
-    el.textContent = "Failed to boot the Fastplace app — check the browser console.";
-  }
-});
-"""
-
-_APP_LAYOUT_TEMPLATE = """\
-import React from "react";
-import { Link, usePage } from "@fastplace/react";
-
-/**
- * The persistent application chrome — header + content slot. Pages opt in
- * via a `layout = AppLayout` static; the bridge keeps this component
- * mounted across navigation, so its state survives page swaps.
- */
-export default function AppLayout({ children }) {
-  const { props } = usePage();
-
-  return (
-    <div className="min-h-dvh bg-surface text-ink">
-      <header className="border-line bg-surface-raised border-b">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
-          <Link href="/" className="text-lg font-semibold">
-            {props.appName ?? "Fastplace"}
-          </Link>
-        </div>
-      </header>
-      <main className="mx-auto max-w-4xl px-6 py-10">{children}</main>
-    </div>
-  );
-}
-"""
-
-_HOME_PAGE_TEMPLATE = """\
-import React from "react";
-import { usePage } from "@fastplace/react";
-import AppLayout from "../../layouts/AppLayout";
-
-export default function HomeIndex() {
-  const { props } = usePage();
-
-  return (
-    <section>
-      <h1 className="text-2xl font-semibold">{props.appName ?? "Fastplace"}</h1>
-      <p className="text-ink-muted mt-2">
-        Your Fastplace app is running. Edit{" "}
-        <code>resources/js/pages/Home/Index.jsx</code> to get started.
-      </p>
-    </section>
-  );
-}
-
-// Persistent-layout opt-in — the bridge reads this static on the component.
-HomeIndex.layout = AppLayout;
-"""
-
-_APP_CSS_TEMPLATE = """\
-/*
- * Fastplace global styles — the single source of truth for the color theme.
- * Components use these tokens via Tailwind utility classes (bg-surface,
- * text-ink, border-line, …).
- */
-@import "tailwindcss";
-
-@theme {
-  --color-surface: oklch(0.985 0.002 250);
-  --color-surface-raised: oklch(1 0 0);
-  --color-ink: oklch(0.2 0.02 258);
-  --color-ink-muted: oklch(0.5 0.02 258);
-  --color-line: oklch(0.9 0.01 258);
-  --color-brand-500: oklch(0.62 0.17 258);
-  --color-brand-600: oklch(0.55 0.18 258);
-}
-"""
-
 _README_TEMPLATE = """\
 # {app_name}
 
@@ -1888,6 +1799,34 @@ def scaffold_templates_dir() -> str:
     the blank dashboard, and the root tooling configs.
     """
     return str(Path(__file__).parent / "scaffold_templates")
+
+
+# Binary assets cannot round-trip through read_text() — copy them byte-exact.
+_BINARY_SUFFIXES = {".ico", ".png", ".jpg", ".jpeg", ".gif", ".woff", ".woff2"}
+
+
+def _write_scaffold_templates(target: Path) -> None:
+    """Walk the shipped starter corpus into a freshly scaffolded project.
+
+    Every file lands at its corpus-relative path, verbatim: the design system,
+    the app/auth/settings shells, the auth pages, the blank dashboard, the
+    root tooling configs (tsconfig, eslint), and the public assets. Text
+    files go through ``_write`` (non-clobber, consistent console output);
+    binaries are byte-copied.
+    """
+    corpus = Path(scaffold_templates_dir())
+    for src in sorted(corpus.rglob("*")):
+        if not src.is_file() or src.name == ".DS_Store":
+            continue
+        rel = src.relative_to(corpus)
+        dest = target / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.suffix in _BINARY_SUFFIXES:
+            if not dest.exists():
+                shutil.copyfile(src, dest)
+                console.print(f"[green]created[/] {dest.relative_to(_project_root())}")
+            continue
+        _write(dest, src.read_text(), _project_root())
 
 
 def _framework_checkout() -> Path | None:
@@ -2013,12 +1952,6 @@ def new_project(
         ),
         (Path("app/models/__init__.py"), _INIT_TEMPLATE.format(doc="Shared base model classes")),
         (Path("database/seeders/.gitkeep"), ""),
-        (Path("resources/js/main.jsx"), _MAIN_JSX_TEMPLATE),
-        (Path("resources/js/layouts/AppLayout.jsx"), _APP_LAYOUT_TEMPLATE),
-        (Path("resources/js/pages/Home/Index.jsx"), _HOME_PAGE_TEMPLATE),
-        (Path("resources/js/components/.gitkeep"), ""),
-        (Path("resources/js/hooks/.gitkeep"), ""),
-        (Path("resources/css/app.css"), _APP_CSS_TEMPLATE),
         (Path("routes/__init__.py"), _INIT_TEMPLATE.format(doc="Thin route entry points.")),
         (Path("routes/web.py"), _WEB_ROUTES_TEMPLATE),
         (Path("routes/api.py"), _API_ROUTES_TEMPLATE),
@@ -2048,6 +1981,10 @@ def new_project(
     ]
     for rel, content in writes:
         _write(target / rel, content, _project_root())
+
+    # The complete frontend starter (R2): design system, shells, auth pages,
+    # blank dashboard, tooling configs — every corpus file, verbatim.
+    _write_scaffold_templates(target)
 
     # Pre-configure the Alembic environment (what ``db:configure`` scaffolds)
     # so the printed ``fastplace migrate`` step works on a fresh project.
