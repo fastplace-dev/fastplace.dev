@@ -313,3 +313,42 @@ def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
     else:  # pragma: no cover — CI/dev always runs from the checkout
         assert '"fastplace>=' in pyproject
         assert '"@fastplace/react": "^' in package_json
+
+
+def _invoke_with_input(tmp_path, monkeypatch, name: str, *args: str, input: str | None = None):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli_app, ["new", name, *args], input=input)
+    return result, tmp_path
+
+
+@pytest.mark.xfail(reason="auth files wired in Task 3", strict=False)
+def test_new_with_auth_flag_scaffolds_auth_files(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0
+    assert (root / "blog" / "routes" / "auth.py").is_file()
+    assert (root / "blog" / "app" / "auth" / "gates.py").is_file()
+
+
+def test_new_with_no_auth_flag_matches_minimal_tree(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0
+    assert not (root / "blog" / "routes" / "auth.py").exists()
+    # The minimal tree is unchanged from before this feature.
+    for rel in _FILES:
+        assert (root / "blog" / rel).is_file(), f"missing {rel}"
+
+
+@pytest.mark.xfail(reason="auth files wired in Task 3", strict=False)
+def test_new_prompts_for_auth_when_flag_absent(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", input="\n")  # Enter = yes
+    assert result.exit_code == 0
+    assert "authentication" in result.output.lower()
+    assert (root / "blog" / "routes" / "auth.py").is_file()
+
+
+def test_new_prompt_no_disables_auth(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", input="n\n")
+    assert result.exit_code == 0
+    assert not (root / "blog" / "routes" / "auth.py").exists()

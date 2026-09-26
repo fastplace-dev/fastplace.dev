@@ -1636,6 +1636,11 @@ def _published_fastplace_dep() -> str:
 @generators_app.command("new")
 def new_project(
     name: str = typer.Argument(..., help="Project name (letters, digits, spaces, _ and -)"),
+    auth: bool | None = typer.Option(
+        None,
+        "--auth/--no-auth",
+        help="Install the built-in authentication scaffold (prompted when omitted).",
+    ),
 ) -> None:
     """Create a new Fastplace application skeleton (blueprint §3).
 
@@ -1669,6 +1674,18 @@ def new_project(
     if target.exists() and any(target.iterdir()):
         console.print(f"[red]error[/] {slug}/ already exists and is not empty")
         raise typer.Exit(code=1)
+
+    # Ask once, at creation — flag wins when given; absent flag prompts with
+    # a YES default; a closed stdin (pipes, CI) falls back to YES + notice
+    # so unattended runs never hang or crash on the prompt.
+    if auth is None:
+        try:
+            auth = typer.confirm("Install the built-in authentication scaffold?", default=True)
+        except Exception:  # non-interactive stdin — abort() in tests, EOF in pipes
+            console.print("[yellow]no interactive terminal — defaulting to --auth[/]")
+            auth = True
+    if auth:
+        console.print("\n[bold]Installing authentication scaffold...[/]")
 
     env = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key=secrets.token_urlsafe(48))
     env_example = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key="")
