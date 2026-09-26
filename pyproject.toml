@@ -71,6 +71,7 @@ dev = [
     "ruff>=0.7",
     "build>=1.2",
     "twine>=6.1",
+    "email-validator>=2.0",
 ]
 
 [project.scripts]
@@ -87,7 +88,9 @@ include = ["fastplace*"]
 # a wheel without them crashes the first-run onboarding path.
 [tool.setuptools.package-data]
 "fastplace.orm.migrations" = ["templates/*.tpl", "templates/*.mako"]
-"fastplace.cli" = ["scaffold_templates/**/*"]
+# The dotfile pattern matters: glob "*" never matches .editorconfig, and an
+# installed `fastplace new` would silently ship a starter without it.
+"fastplace.cli" = ["scaffold_templates/**/*", "scaffold_templates/**/.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

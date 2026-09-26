@@ -1,0 +1,10 @@
+# Allow the pages crawlers need; keep internal surfaces out.
+User-agent: *
+Allow: /
+Disallow: /login
+Disallow: /register
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /email/verify
+Disallow: /settings
+Disallow: /dashboard

@@ -171,6 +171,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.modules.accounts.repositories.user_repository import UserRepository
+from app.modules.accounts.services.mail_views import reset_password_email_html
 from app.modules.accounts.services.password_policy import min_password_length
 from fastplace.auth.guards import SESSION_STORE_SCOPE
 from fastplace.auth.hashing import Hash
@@ -211,7 +212,9 @@ class PasswordResetService:
 
         raw = await token_store().issue(normalized)
         url = build_absolute_url(f"/reset-password/{raw}?email={quote(normalized, safe='')}")
-        await Mail.to(normalized).send(reset_password_message(normalized, url))
+        message = reset_password_message(normalized, url)
+        message.html = reset_password_email_html(url)
+        await Mail.to(normalized).send(message)
         await dispatch(DomainEvent("PasswordResetLinkSent", {"email": normalized}))
         return self.SENT_MESSAGE
 
@@ -453,6 +456,7 @@ import datetime
 from typing import Any
 
 from app.modules.accounts.models.user import User
+from app.modules.accounts.services.mail_views import verification_email_html
 from fastplace.auth.signing import sign, verify
 from fastplace.errors import AuthorizationError
 from fastplace.events import DomainEvent, dispatch
@@ -475,14 +479,24 @@ class VerificationService:
     async def send_link(self, user_id: Any, email: str) -> str:
         """Mail the verification link; returns the URL (tests read it from the outbox)."""
         url = self.verification_url(user_id, email)
-        await Mail.to(email).send(verify_email_message(email, url))
+        message = verify_email_message(email, url)
+        message.html = verification_email_html(url)
+        await Mail.to(email).send(message)
         return url
 
-    async def resend(self, request: Any) -> str:
-        """Re-mail the signed-in user's link (the notice page's resend button)."""
+    async def resend(self, request: Any) -> str | None:
+        """Re-mail the signed-in user's link — unless they are already verified.
+
+        An already-verified account gets NO new mail (the notice page's
+        resend button is not a way to pester an inbox); the controller
+        answers that case with the intended-page redirect / empty 204
+        instead. A fresh link's URL comes back (tests read the outbox).
+        """
         user = getattr(request, "user", None)
         if user is None:
             raise AuthorizationError()
+        if user.email_verified_at is not None:
+            return None
         return await self.send_link(user.id, user.email)
 
     async def fulfill(self, request: Any, user_id: str, signature: str, expires: str) -> None:
@@ -531,14 +545,21 @@ frontend cannot map to a field).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    email: str = Field(min_length=3, max_length=255)
+    email: EmailStr
     password: str = Field(min_length=1, max_length=255)
     password_confirmation: str = Field(min_length=1, max_length=255)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, value: object) -> object:
+        # Whitespace is never a name: strip BEFORE the length constraints
+        # run, so a whitespace-only submission fails the required check.
+        return value.strip() if isinstance(value, str) else value
 '''
 _CONFIRM_PASSWORD_REQUEST_TEMPLATE = '''"""Confirm-password form request — the single field, nothing else.
 
@@ -559,26 +580,66 @@ _FORGOT_PASSWORD_REQUEST_TEMPLATE = '''"""Forgot-password form request — one f
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=255)
+    email: EmailStr
 '''
 _RESET_PASSWORD_REQUEST_TEMPLATE = '''"""Reset-password form request — password policy runs in the service."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class ResetPasswordRequest(BaseModel):
     # password min 1 here so the length policy (min_password_length) runs in
     # the service, where the token is NOT yet consumed.
     token: str = Field(min_length=1, max_length=255)
-    email: str = Field(min_length=1, max_length=255)
+    email: EmailStr
     password: str = Field(min_length=1, max_length=255)
     password_confirmation: str = Field(min_length=1, max_length=255)
+'''
+_PROFILE_REQUEST_TEMPLATE = '''"""Profile-update form request — unique-ignore-self runs in the controller."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+
+class ProfileRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    email: EmailStr
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, value: object) -> object:
+        # Whitespace is never a name: strip BEFORE the length constraints
+        # run, so a whitespace-only submission fails the required check.
+        return value.strip() if isinstance(value, str) else value
+'''
+_PASSWORD_UPDATE_REQUEST_TEMPLATE = '''"""Password-change form request — the policy checks run in the controller."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class PasswordUpdateRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=255)
+    password_confirmation: str = Field(min_length=1, max_length=255)
+'''
+_DELETE_PROFILE_REQUEST_TEMPLATE = '''"""Account-deletion form request — the posted password is the confirmation."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class DeleteProfileRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=255)
 '''
 _AUTH_API_CONTROLLER_TEMPLATE = '''"""Credential endpoints — thin controllers, all logic in the services."""
 
@@ -596,7 +657,7 @@ from app.modules.accounts.services.password_reset_service import PasswordResetSe
 from app.modules.accounts.services.registration_service import RegistrationService
 from app.modules.accounts.services.two_factor_service import TwoFactorService
 from app.modules.accounts.services.verification_service import VerificationService
-from fastplace.http import Controller, Json, Redirect, Request, flash
+from fastplace.http import Controller, Json, Redirect, Request, Response, flash
 
 
 class AuthApiController(Controller):
@@ -678,7 +739,15 @@ class AuthApiController(Controller):
         return Redirect(request.intended(), status_code=303)
 
     async def verification_notification(self, request: Request):
-        await self.verification_service.resend(request)
+        # resend() answers None for an already-verified user — no new mail
+        # goes out; browsers continue to their intended page and JSON
+        # clients get the empty 204 the reference contract pins.
+        already_verified = await self.verification_service.resend(request) is None
+        if already_verified:
+            accept = request.header("Accept") or ""
+            if not request.is_bridge and "application/json" in accept:
+                return Response(status_code=204)
+            return Redirect(request.intended(), status_code=303)
         flash(
             request, "verification-link-sent"
         )  # BYTE-EXACT — VerifyEmail renders on exact equality
@@ -736,8 +805,15 @@ class TwoFactorApiController(Controller):
 _AUTH_ROUTES_TEMPLATE = '''"""Credential + verification endpoints (spec §4.5/§4.11) — the GET pages live in web.py."""
 
 from app.http.controllers.auth_api_controller import AuthApiController
+from app.http.controllers.settings_api_controller import SettingsApiController
 from app.http.controllers.two_factor_api_controller import TwoFactorApiController
+from app.http.shared_props import register_flash_props
 from fastplace.http import Router
+
+# Boot-time shared-props registration: the one-shot session flash surfaces
+# as props.flash (the sonner/useFlashToast pair reads flash.toast). share()
+# dedupes, so repeated imports stay a single registration.
+register_flash_props()
 
 router = Router()
 
@@ -787,7 +863,9 @@ router.get(
     AuthApiController,
     "verify_email",
     name="auth.verify_email.fulfill",
-    middleware=["auth"],
+    # Redemption is a GET any browser can be pointed at — it shares the
+    # resend limiter (spec's 6/min; fastplace's D is SECONDS, R8).
+    middleware=["auth", "throttle:6,60"],
 )
 router.post(
     "/email/verification-notification",
@@ -873,6 +951,40 @@ router.get(
     name="auth.two_factor.secret_key",
     middleware=_TWO_FACTOR_MIDDLEWARE,
 )
+
+# Account settings (spec §4.14) — the write targets the shipped settings UI
+# posts to, plus the /settings alias into the section. The section's GET
+# pages live in routes/web.py.
+router.get(
+    "/settings",
+    SettingsApiController,
+    "index",
+    name="settings.index",
+    middleware=["auth"],
+)
+router.patch(
+    "/settings/profile",
+    SettingsApiController,
+    "update_profile",
+    name="settings.profile.update",
+    # A changed email re-enters verification, so the section stays gated on it.
+    middleware=["auth", "verified", "throttle:6,60"],
+)
+router.put(
+    "/settings/password",
+    SettingsApiController,
+    "update_password",
+    name="settings.password.update",
+    middleware=["auth", "throttle:6,60"],  # spec's 6/min — D is seconds (R8)
+)
+router.delete(
+    "/settings/profile",
+    SettingsApiController,
+    "destroy",
+    name="settings.profile.destroy",
+    # The posted password IS the confirmation — the DeleteUser dialog sends it.
+    middleware=["auth"],
+)
 '''
 
 _GATES_TEMPLATE = '''"""Project gate registrations — imported by the kernel at boot (spec §4.15).
@@ -953,6 +1065,511 @@ async def send_registration_verification(event: DomainEvent) -> None:
 listen("Registered", send_registration_verification)
 '''
 
+_SHARED_PROPS_TEMPLATE = '''"""Shared page props — the session flash bag mapped to ``props.flash``.
+
+The bridge toast loop (sonner + ``useFlashToast``) reads ``props.flash.toast``;
+this registration turns the one-shot ``flash(request, ...)`` channel into
+that shape. ``page_payload()`` still consumes the message afterwards (its
+``props.status`` string channel keeps working), so nothing double-fires.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastplace.http.flash import FLASH_SESSION_KEY
+from fastplace.http.render import share
+from fastplace.http.request import Request
+
+
+def flash_props(request: Request) -> dict[str, Any] | None:
+    """Contribute ``flash.toast`` while a one-shot flash is pending."""
+    try:
+        session = request.session
+    except Exception:
+        return None
+    if not isinstance(session, dict):
+        return None
+    message = session.get(FLASH_SESSION_KEY)
+    if not message:
+        return None
+    return {"flash": {"toast": {"type": "success", "message": str(message)}}}
+
+
+def register_flash_props() -> None:
+    """The boot hook — routes/auth.py calls this once at import."""
+    share(flash_props)
+'''
+
+_SETTINGS_API_CONTROLLER_TEMPLATE = '''"""Settings write endpoints — profile, password, account deletion (§4.14).
+
+The shipped settings UI posts to these three targets; the controllers stay
+thin and the rules live in the requests and the guard/provider primitives.
+"""
+
+from __future__ import annotations
+
+from app.http.requests.delete_profile_request import DeleteProfileRequest
+from app.http.requests.password_update_request import PasswordUpdateRequest
+from app.http.requests.profile_request import ProfileRequest
+from app.modules.accounts.repositories.user_repository import UserRepository
+from app.modules.accounts.services.password_policy import min_password_length
+from app.modules.accounts.services.verification_service import VerificationService
+from fastplace.auth.guards import SESSION_STORE_SCOPE, guard
+from fastplace.auth.hashing import Hash
+from fastplace.errors import ValidationError
+from fastplace.http import Controller, Redirect, Request, flash
+
+
+class SettingsApiController(Controller):
+    users = UserRepository()
+    verification_service = VerificationService()
+
+    async def index(self, request: Request):
+        # The settings section has no page of its own — /settings is an alias.
+        return Redirect("/settings/profile", status_code=303)
+
+    async def update_profile(self, request: Request):
+        data = (await request.validate(ProfileRequest)).model_dump()
+        user = request.user
+        email = str(data["email"]).strip().lower()
+
+        # Unique-ignore-self: only ANOTHER account's email is a conflict.
+        existing = await self.users.find_by_email(email)
+        if existing is not None and str(existing.id) != str(user.id):
+            raise ValidationError(errors={"email": ["The email has already been taken."]})
+
+        if email != str(user.email).strip().lower():
+            # The new address is unverified until its link is clicked — the
+            # verification pipeline re-runs exactly like a fresh signup.
+            await user.update(name=data["name"], email=email, email_verified_at=None)
+            await self.verification_service.send_link(user.id, email)
+        else:
+            await user.update(name=data["name"])
+        flash(request, "Profile updated.")
+        return Redirect("/settings/profile", status_code=303)
+
+    async def update_password(self, request: Request):
+        data = (await request.validate(PasswordUpdateRequest)).model_dump()
+        user = request.user
+        if not await guard().provider.validate_credentials(
+            user, {"password": data["current_password"]}
+        ):
+            raise ValidationError(errors={"current_password": ["The password is incorrect."]})
+
+        errors: dict[str, list[str]] = {}
+        minimum = min_password_length()
+        if len(data["password"]) < minimum:
+            errors.setdefault("password", []).append(
+                f"The password must be at least {minimum} characters."
+            )
+        if data["password"] != data["password_confirmation"]:
+            errors.setdefault("password", []).append("The password confirmation does not match.")
+        if errors:
+            raise ValidationError(errors=errors)
+
+        await user.update(password_hash=Hash.make(data["password"]))
+        flash(request, "Password updated.")
+        return Redirect("/settings/security", status_code=303)
+
+    async def destroy(self, request: Request):
+        data = (await request.validate(DeleteProfileRequest)).model_dump()
+        user = request.user
+        if not await guard().provider.validate_credentials(user, {"password": data["password"]}):
+            raise ValidationError(errors={"password": ["The password is incorrect."]})
+
+        store = request.scope.get(SESSION_STORE_SCOPE)
+        if store is not None:
+            await store.destroy_for_user(user.id)  # every device, not just this one
+        await guard().logout(request)  # expires this session's backing row + cookie
+        # force_delete, NOT delete(): the base model stamps deleted_at, and a
+        # tombstone keeps the unique email locked — re-registering it would
+        # hit the constraint and 500.
+        await user.force_delete()
+        return Redirect("/", status_code=303)
+'''
+
+_MAIL_VIEWS_TEMPLATE = '''"""HTML bodies for the auth emails — the transports are multipart-aware.
+
+The plain-text channel stays authoritative (its bare URL is the
+break-out-of-anything fallback); the HTML body wraps the same URL in a
+branded-light button for clients that render markup.
+"""
+
+from __future__ import annotations
+
+from html import escape
+
+_BUTTON_STYLE = (
+    "display:inline-block;padding:12px 24px;background:#4f46e5;color:#ffffff;"
+    "border-radius:8px;text-decoration:none;font-family:sans-serif;"
+    "font-size:14px;font-weight:600"
+)
+
+
+def _html_document(title: str, body_html: str, url: str, button_label: str) -> str:
+    return "\\n".join(
+        [
+            '<div style="font-family:sans-serif;max-width:480px;margin:0 auto">',
+            f'<h2 style="font-size:18px;margin:24px 0 12px">{escape(title)}</h2>',
+            body_html,
+            f'<p style="margin:24px 0"><a href="{escape(url, quote=True)}" '
+            f'style="{_BUTTON_STYLE}">{escape(button_label)}</a></p>',
+            # Some clients strip buttons AND styling — the URL itself, always.
+            f'<p style="word-break:break-all;color:#6b7280;font-size:12px">{escape(url)}</p>',
+            "</div>",
+        ]
+    )
+
+
+def verification_email_html(url: str) -> str:
+    return _html_document(
+        "Verify your email address",
+        "<p>Confirm your email address to finish setting up your account.</p>",
+        url,
+        "Verify Email",
+    )
+
+
+def reset_password_email_html(url: str) -> str:
+    return _html_document(
+        "Reset your password",
+        "<p>You requested a password reset. This link can be used once.</p>",
+        url,
+        "Reset Password",
+    )
+'''
+
+_MAIL_CONFIG_TEMPLATE = '''"""Mail configuration defaults (env vars always win)."""
+
+MAIL_DRIVER = "log"  # log | memory | smtp
+MAIL_LOG_PATH = "storage/logs/mail.log"
+MAIL_FROM_ADDRESS = "hello@example.com"
+MAIL_FROM_NAME = "Fastplace"
+
+# SMTP driver values (queued through SAQ when QUEUE_DRIVER=saq):
+MAIL_HOST = "127.0.0.1"
+MAIL_PORT = "2525"
+MAIL_USERNAME = ""
+MAIL_PASSWORD = ""
+MAIL_ENCRYPTION = "tls"
+'''
+
+_DATABASE_SEEDER_TEMPLATE = '''"""DatabaseSeeder — a working example: one login-able demo account.
+
+``fastplace db:seed`` runs the module-level ``run()`` of every
+database/seeders/*.py file. Delete or extend freely — nothing in the
+framework depends on this seeder.
+"""
+
+from __future__ import annotations
+
+from app.modules.accounts.repositories.user_repository import UserRepository
+
+
+async def run() -> None:
+    """Create the demo account when its email is still free."""
+    repository = UserRepository()
+    if await repository.find_by_email("demo@example.com") is not None:
+        return
+    await repository.create_user(
+        name="Demo User",
+        email="demo@example.com",
+        password="secret123",
+    )
+'''
+
+_CI_WORKFLOW_TEMPLATE = """name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint:check
+      - run: npm run format:check
+      - run: npm run types
+      - run: npm run test
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: fastplace lint:modules
+      - run: pytest -q
+"""
+
+_DEPENDABOT_TEMPLATE = """version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+"""
+
+_TESTS_CONFTEST_TEMPLATE = '''"""Test bootstrap — the real application per test, over a throwaway database.
+
+Every fixture boots the actual routers and middleware stack against a fresh
+sqlite file, so feature tests exercise the app exactly like production does.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import httpx
+import pytest
+
+# The project root (this file lives in tests/) — app.* and routes.* import
+# from here, never from an installed package.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def purge_app_modules() -> None:
+    """Drop every app/routes module so the next import re-registers fresh."""
+    import sqlalchemy
+
+    from fastplace.orm.model import Model
+
+    for name in [
+        m
+        for m in list(sys.modules)
+        if m == "app" or m.startswith(("app.", "routes.", "_fastplace_seeder_"))
+    ]:
+        del sys.modules[name]
+    Model.metadata.clear()
+    sqlalchemy.orm.clear_mappers()
+    from fastplace.ai import reset_tool_registry
+    from fastplace.db import reset_db
+
+    reset_db()
+    reset_tool_registry()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_app_modules():
+    purge_app_modules()
+    yield
+    purge_app_modules()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_singletons(monkeypatch):
+    """Fresh auth/mail/cache state + a fixed signing key for every test."""
+    from fastplace.auth.passwords import reset_token_store
+    from fastplace.auth.remember import reset_remember_store
+    from fastplace.cache import reset_cache
+    from fastplace.events import reset_listeners
+    from fastplace.mail import clear_mail_outbox
+    from fastplace.queue import reset_registry
+
+    monkeypatch.setenv("APP_KEY", "test-app-key-not-for-production-use")
+    monkeypatch.setenv("MAIL_DRIVER", "memory")
+    reset_cache()
+    reset_remember_store()
+    reset_token_store()
+    reset_listeners()
+    reset_registry()
+    clear_mail_outbox()
+    yield
+    reset_cache()
+    reset_remember_store()
+    reset_token_store()
+    reset_listeners()
+    reset_registry()
+    clear_mail_outbox()
+
+
+@pytest.fixture()
+async def app(monkeypatch, tmp_path):
+    """The full application over a fresh database — real routers, real middleware."""
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/test.db")
+    monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
+
+    from app.modules.accounts.models.user import User  # noqa: F401 — registers the table
+    from fastplace.db import db
+    from fastplace.http import get_app
+    from fastplace.http.kernel import _middleware_from_config
+    from routes.ai import router as ai_router
+    from routes.api import router as api_router
+    from routes.auth import router as auth_router
+    from routes.web import router as web_router
+
+    await db.create_all()
+    middleware = _middleware_from_config(PROJECT_ROOT)
+    return get_app(
+        routes=web_router,
+        auth_routes=auth_router,
+        api_routes=api_router,
+        ai_routes=ai_router,
+        middleware=middleware,
+        config={"APP_ENV": "local"},
+    )
+
+
+@pytest.fixture()
+async def client(app):
+    """Browser-playing HTTP client: session + CSRF token rotation included."""
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token: list[str | None] = [None]
+
+        async def attach_csrf(request: httpx.Request) -> None:
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and token[0]:
+                request.headers.setdefault("X-Fastplace-CSRF-Token", token[0])
+
+        async def capture_csrf(response: httpx.Response) -> None:
+            fresh = response.headers.get("X-Fastplace-CSRF-Token")
+            if fresh:
+                token[0] = fresh
+
+        client.event_hooks["request"].append(attach_csrf)
+        client.event_hooks["response"].append(capture_csrf)
+        yield client
+
+
+@pytest.fixture()
+def user_factory():
+    """Create users straight through the repository — no HTTP round trip."""
+    from app.modules.accounts.repositories.user_repository import UserRepository
+
+    async def _make(
+        *,
+        name: str = "Test User",
+        email: str = "user@example.test",
+        password: str = "secret123",
+    ):
+        return await UserRepository().create_user(name=name, email=email, password=password)
+
+    return _make
+'''
+
+_TESTS_FEATURE_AUTH_TEMPLATE = '''"""Starter auth feature suite — register, login, verify, and the settings flash.
+
+Delete or extend freely: every flow here runs against the real application
+over a throwaway sqlite database (see tests/conftest.py).
+"""
+
+from __future__ import annotations
+
+import re
+from urllib.parse import urlsplit
+
+from fastplace.mail import clear_mail_outbox, mail_outbox
+
+REGISTER_PAYLOAD = {
+    "name": "Firoz",
+    "email": "firoz@example.com",
+    "password": "secret123",
+    "password_confirmation": "secret123",
+}
+
+
+async def _register(client) -> None:
+    import app.jobs.mail  # noqa: F401  (registers the verification listener)
+
+    await client.get("/")  # mints the session + CSRF token
+    response = await client.post("/register", json=REGISTER_PAYLOAD)
+    assert response.status_code == 303, response.text
+
+
+def _verification_path() -> str:
+    """The signed /email/verify path+query out of the registration mail."""
+    message = mail_outbox()[0]
+    match = re.search(r"https?://\\S+/email/verify/\\S+", message.text)
+    assert match is not None, message.text
+    split = urlsplit(match.group(0))
+    return f"{split.path}?{split.query}"
+
+
+async def test_registration_mails_the_verification_link(client):
+    await _register(client)
+    outbox = mail_outbox()
+    assert outbox[0].to == REGISTER_PAYLOAD["email"]
+    assert "/email/verify/" in outbox[0].text
+
+
+async def test_login_rejects_wrong_credentials(client, user_factory):
+    await user_factory(email=REGISTER_PAYLOAD["email"])
+    await client.get("/")  # mint the session + CSRF token first
+    response = await client.post(
+        "/login",
+        json={"email": REGISTER_PAYLOAD["email"], "password": "wrong-password"},
+    )
+    assert response.status_code == 422
+    assert "These credentials do not match our records." in response.text
+
+
+async def test_verification_gates_then_opens_the_dashboard(client):
+    await _register(client)
+
+    gated = await client.get("/dashboard")
+    assert gated.status_code == 302  # unverified accounts cannot reach it yet
+
+    verified = await client.get(_verification_path())
+    assert verified.status_code == 303
+
+    dashboard = await client.get("/dashboard")
+    assert dashboard.status_code == 200
+
+
+async def test_resend_after_verification_mails_nothing(client):
+    await _register(client)
+    await client.get(_verification_path())
+    clear_mail_outbox()
+
+    # JSON contract: already verified = no mail, empty 204.
+    json_response = await client.post(
+        "/email/verification-notification",
+        headers={"Accept": "application/json"},
+    )
+    assert json_response.status_code == 204
+    assert mail_outbox() == []
+
+
+async def test_profile_update_flashes_the_toast(client):
+    await _register(client)
+    await client.get(_verification_path())
+
+    updated = await client.patch(
+        "/settings/profile",
+        json={"name": "Renamed", "email": REGISTER_PAYLOAD["email"]},
+    )
+    assert updated.status_code == 303, updated.text
+
+    page = await client.get(
+        "/settings/profile", headers={"X-Fastplace-Request": "true"}
+    )
+    flash = page.json()["props"].get("flash", {})
+    assert flash.get("toast", {}).get("message") == "Profile updated."
+'''
+
 # The single source of truth for the auth scaffold's file surface — shared
 # by `fastplace new --auth` and `fastplace make:auth` so the two paths can
 # never diverge. (relative path, template text) pairs, in write order.
@@ -980,22 +1597,166 @@ AUTH_FILES: list[tuple[str, str]] = [
     ("app/http/requests/confirm_password_request.py", _CONFIRM_PASSWORD_REQUEST_TEMPLATE),
     ("app/http/requests/forgot_password_request.py", _FORGOT_PASSWORD_REQUEST_TEMPLATE),
     ("app/http/requests/reset_password_request.py", _RESET_PASSWORD_REQUEST_TEMPLATE),
+    # The settings write surface (§4.14) — the shipped UI posts to these.
+    ("app/http/requests/profile_request.py", _PROFILE_REQUEST_TEMPLATE),
+    ("app/http/requests/password_update_request.py", _PASSWORD_UPDATE_REQUEST_TEMPLATE),
+    ("app/http/requests/delete_profile_request.py", _DELETE_PROFILE_REQUEST_TEMPLATE),
     ("app/http/controllers/auth_api_controller.py", _AUTH_API_CONTROLLER_TEMPLATE),
     ("app/http/controllers/two_factor_api_controller.py", _TWO_FACTOR_API_CONTROLLER_TEMPLATE),
+    ("app/http/controllers/settings_api_controller.py", _SETTINGS_API_CONTROLLER_TEMPLATE),
+    # The flash bag mapped onto props.flash for the bridge toast loop.
+    ("app/http/shared_props.py", _SHARED_PROPS_TEMPLATE),
     ("routes/auth.py", _AUTH_ROUTES_TEMPLATE),
     ("app/auth/gates.py", _GATES_TEMPLATE),
     # The kernel imports app/jobs at boot (import_jobs) — without this file
     # the Registered event has no listener and no verification mail sends.
     ("app/jobs/mail.py", _MAIL_JOB_TEMPLATE),
+    # Multipart mail bodies — the transports render both channels.
+    ("app/modules/accounts/services/mail_views.py", _MAIL_VIEWS_TEMPLATE),
+    # MAIL_* defaults so the transports boot without env archaeology.
+    ("config/mail.py", _MAIL_CONFIG_TEMPLATE),
+    # A working db:seed example (``fastplace db:seed`` runs every seeder's run()).
+    ("database/seeders/database_seeder.py", _DATABASE_SEEDER_TEMPLATE),
+    # The emitted test suite — the app boots for real over a throwaway DB.
+    ("tests/conftest.py", _TESTS_CONFTEST_TEMPLATE),
+    ("tests/feature/test_auth_flow.py", _TESTS_FEATURE_AUTH_TEMPLATE),
+    # CI + dependency automation for the generated project.
+    (".github/workflows/tests.yml", _CI_WORKFLOW_TEMPLATE),
+    (".github/dependabot.yml", _DEPENDABOT_TEMPLATE),
 ]
 
-# Package markers so pkgutil/import_gates discovery finds the new code.
+# Package markers so pkgutil/import_gates discovery finds the new code —
+# and so the emitted `app` is a REGULAR package: a regular package anywhere
+# on sys.path beats a namespace portion earlier on it, so without these the
+# framework checkout's own app/ would shadow the project's during tests run
+# with the checkout on PYTHONPATH.
 AUTH_PACKAGE_MARKERS: tuple[str, ...] = (
+    "app/__init__.py",
+    "app/http/__init__.py",
+    "app/modules/__init__.py",
     "app/modules/accounts/__init__.py",
     "app/modules/accounts/repositories/__init__.py",
     "app/modules/accounts/services/__init__.py",
     "app/auth/__init__.py",
+    "app/jobs/__init__.py",
 )
+
+
+def _augment_pyproject(root: Path) -> None:
+    """Add test tooling, the dev extra, and lint config to pyproject.toml.
+
+    Idempotent and guarded: a pyproject without a dependencies array gains
+    only the email-validator line; one without the pytest block gains the
+    whole tooling tail; anything already present is left untouched.
+    """
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return
+    content = path.read_text()
+    if '"email-validator' not in content and "dependencies = [" in content:
+        content = content.replace(
+            "dependencies = [",
+            'dependencies = [\n    "email-validator>=2.0",',
+            1,
+        )
+    if "[tool.pytest.ini_options]" not in content:
+        content = content.rstrip("\n") + "\n" + _PYPROJECT_TOOLING_TEMPLATE
+    path.write_text(content)
+
+
+_PYPROJECT_TOOLING_TEMPLATE = """
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+"""
+
+
+def _augment_env_files(root: Path) -> None:
+    """Append the MAIL_* and locale keys to .env / .env.example once."""
+    block = (
+        "\n# Mail (driver: log | memory | smtp)\n"
+        "MAIL_DRIVER=log\n"
+        "MAIL_FROM_ADDRESS=hello@example.com\n"
+        "MAIL_FROM_NAME=Fastplace\n"
+        "MAIL_HOST=127.0.0.1\n"
+        "MAIL_PORT=2525\n"
+        "MAIL_USERNAME=\n"
+        "MAIL_PASSWORD=\n"
+        "MAIL_ENCRYPTION=tls\n"
+        "\n# Localization\n"
+        "APP_LOCALE=en\n"
+        "APP_FALLBACK_LOCALE=en\n"
+    )
+    for name in (".env", ".env.example"):
+        path = root / name
+        if not path.is_file() or "MAIL_DRIVER" in path.read_text():
+            continue
+        with path.open("a") as handle:
+            handle.write(block)
+
+
+def _augment_readme(root: Path) -> None:
+    """Swap the parked-targets section for the now-real settings docs."""
+    path = root / "README.md"
+    if not path.is_file() or "Parked form targets" not in path.read_text():
+        return
+    content = path.read_text()
+    start = content.index("## Parked form targets")
+    # The section runs to the next heading (or the end of the file).
+    rest = content[start + len("## Parked form targets") :]
+    next_heading = rest.find("\n## ")
+    replacement = (
+        "## Settings flows\n\n"
+        "The starter ships the settings UI **and** its backends:\n\n"
+        "- PATCH `/settings/profile` — rename or change email "
+        "(a change re-enters verification)\n"
+        "- PUT `/settings/password` — password change, current password "
+        "required, throttled\n"
+        "- DELETE `/settings/profile` — account deletion, password "
+        "confirmation required\n\n"
+        "Still parked: passkeys (`/user/passkeys*`) — wire those in your own "
+        "controllers when you need them.\n\n"
+        "Run the emitted test suite (`pytest`) to see every flow exercised."
+    )
+    content = content[:start] + replacement + ("" if next_heading == -1 else rest[next_heading:])
+    path.write_text(content)
+
+
+def _augment_index_html(root: Path) -> None:
+    """Point <head> at the favicon and touch icon the corpus ships."""
+    path = root / "index.html"
+    if not path.is_file() or 'rel="icon"' in path.read_text():
+        return
+    content = path.read_text()
+    if "</head>" not in content:
+        return
+    # Match the indentation of the closing </head> line itself.
+    close_at = content.index("</head>")
+    line_start = content.rfind("\n", 0, close_at) + 1
+    indent = content[line_start:close_at]
+    links = (
+        f'{indent}<link rel="icon" type="image/x-icon" href="/favicon.ico" />\n'
+        f'{indent}<link rel="apple-touch-icon" href="/apple-touch-icon.png" />\n'
+    )
+    path.write_text(content[:line_start] + links + content[line_start:])
 
 
 def write_auth_surface(root: Path) -> None:
@@ -1004,6 +1765,13 @@ def write_auth_surface(root: Path) -> None:
         _write(root / rel, template, root)
     for rel in AUTH_PACKAGE_MARKERS:
         _write(root / rel, "", root)
+    # The base project files (pyproject/.env/README/index.html) already exist
+    # by now on both paths — `fastplace new` writes them before installing
+    # auth, and make:auth runs inside an existing project.
+    _augment_pyproject(root)
+    _augment_env_files(root)
+    _augment_readme(root)
+    _augment_index_html(root)
 
 
 @generators_app.command("make:auth")
@@ -1033,5 +1801,5 @@ def make_auth(
     console.print("  1. [cyan]fastplace migrate[/] — create the users table")
     console.print("  2. open /register — the FIRST account you create becomes the admin")
     console.print("  3. point AUTH_PROVIDERS at the ORM User (the default in config/auth.py)")
-    console.print("  4. add MAIL_* keys to .env for reset/verification mail")
+    console.print("  4. tune config/mail.py — the MAIL_* keys are already in .env")
     console.print("  5. set AUTH_SHARED_ABILITIES in config/auth.py for useCan() props")

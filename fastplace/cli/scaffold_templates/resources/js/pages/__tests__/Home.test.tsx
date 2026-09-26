@@ -56,20 +56,22 @@ describe("Home page", () => {
     renderHome();
 
     expect(
-      screen.getByRole("heading", { level: 1, name: "Let's get started" }),
+      screen.getByRole("heading", { level: 1, name: "Welcome to Fastplace" }),
     ).toBeInTheDocument();
-    // The intro paragraph is split by a <br />, so match each line loosely.
-    expect(screen.getByText(/has an incredibly rich ecosystem/)).toBeInTheDocument();
-    expect(screen.getByText(/We suggest starting with the following/)).toBeInTheDocument();
-    expect(screen.getByText("Read the Documentation")).toBeInTheDocument();
-    expect(screen.getByText("Watch video tutorials")).toBeInTheDocument();
+    expect(screen.getByText(/async Python backend, React frontend/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Register the first account — it becomes the admin"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Run `pytest` to see the auth flows pass")).toBeInTheDocument();
   });
 
   it("keeps the suggestions as plain text — no outbound ecosystem links", () => {
     renderHome();
 
-    expect(screen.getByText("Read the Documentation").closest("a")).toBeNull();
-    expect(screen.getByText("Watch video tutorials").closest("a")).toBeNull();
+    expect(
+      screen.getByText("Register the first account — it becomes the admin").closest("a"),
+    ).toBeNull();
+    expect(screen.getByText("Run `pytest` to see the auth flows pass").closest("a")).toBeNull();
   });
 
   it("shows the framework logo instead of a generic flash icon", () => {

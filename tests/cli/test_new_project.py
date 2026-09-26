@@ -103,21 +103,23 @@ def test_new_scaffolds_the_canonical_tree(tmp_path, monkeypatch):
         assert (project / rel).is_file(), f"missing file {rel}"
 
 
-def test_readme_names_the_parked_form_targets(tmp_path, monkeypatch):
-    # The settings UI ships complete; its unrouted form targets must be named
-    # so the first `fastplace migrate && run dev` session never mystifies.
+def test_readme_names_the_settings_form_targets(tmp_path, monkeypatch):
+    # The settings UI ships complete AND routed; the README must say so (and
+    # still name the one genuinely parked target: passkeys) so the first
+    # `fastplace migrate && run dev` session never mystifies.
     result, root = _invoke(tmp_path, monkeypatch, "blog")
     assert result.exit_code == 0, result.output
 
     readme = (root / "blog" / "README.md").read_text()
     for target in (
-        "Parked form targets",
+        "Settings flows",
         "PATCH",
         "/settings/profile",
         "/settings/password",
         "/user/passkeys",
     ):
         assert target in readme, f"README missing {target}"
+    assert "Parked form targets" not in readme
 
 
 def test_new_shared_kernel_init_docstring_has_one_period(tmp_path, monkeypatch):
@@ -769,6 +771,39 @@ def test_install_dependencies_runs_the_full_toolchain(tmp_path, monkeypatch):
     assert commands[2][1:] == ["migrate"]
     assert commands[3] == ["/usr/bin/npm", "install"]
     assert commands[4] == ["/usr/bin/npm", "run", "build"]
+
+
+def test_install_dependencies_installs_the_dev_extra_when_defined(tmp_path, monkeypatch):
+    """A project whose pyproject declares [project.optional-dependencies] (the
+    auth scaffold ships a dev extra with pytest) gets it installed up front —
+    day-one `.venv/bin/python -m pytest` must work without a second pip run.
+    A project without the extra keeps the plain `-e .` install."""
+    from fastplace.cli import generators
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, cwd, timeout):
+        calls.append(list(cmd))
+        return True, ""
+
+    monkeypatch.setattr(generators, "_run_step_command", fake_run)
+    monkeypatch.setattr(generators.shutil, "which", lambda name: None)
+
+    # Without the extra: plain editable install (toolchain stops at npm-missing).
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "plain"\ndependencies = ["fastplace"]\n'
+    )
+    assert generators._install_dependencies(tmp_path) is False  # npm missing on purpose
+    assert calls[1][1:] == ["-m", "pip", "install", "-e", "."]
+
+    # With the dev extra: same step now installs `.[dev]`.
+    calls.clear()
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\ndependencies = ["fastplace"]\n'
+        '[project.optional-dependencies]\ndev = ["pytest>=8.0"]\n'
+    )
+    assert generators._install_dependencies(tmp_path) is False  # npm missing on purpose
+    assert calls[1][1:] == ["-m", "pip", "install", "-e", ".[dev]"]
 
 
 def test_install_dependencies_stops_after_a_python_side_failure(tmp_path, monkeypatch):

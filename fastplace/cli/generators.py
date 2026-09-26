@@ -1389,28 +1389,29 @@ router.get(
     middleware=["auth", "verified"],
 )
 
-# Account settings pages — authenticated GETs (the settings section renders
-# the app's authenticated shell); their form targets ship later.
+# Account settings pages — gated on a verified address like every other
+# authenticated surface; the settings section renders the app's
+# authenticated shell and its write endpoints live in routes/auth.py.
 router.get(
     "/settings/appearance",
     SettingsAppearanceController,
     "index",
     name="settings.appearance",
-    middleware=["auth"],
+    middleware=["auth", "verified"],
 )
 router.get(
     "/settings/profile",
     SettingsPagesController,
     "profile",
     name="settings.profile",
-    middleware=["auth"],
+    middleware=["auth", "verified"],
 )
 router.get(
     "/settings/security",
     SettingsPagesController,
     "security",
     name="settings.security",
-    middleware=["auth"],
+    middleware=["auth", "verified"],
 )
 
 # Guest auth pages — anonymous GET renders behind `guest`; the credential
@@ -2041,11 +2042,20 @@ def _install_dependencies(target: Path) -> bool:
     venv_python = venv_bin / ("python.exe" if os.name == "nt" else "python")
     venv_fastplace = venv_bin / ("fastplace.exe" if os.name == "nt" else "fastplace")
 
+    # The auth scaffold ships a `dev` extra (pytest et al) — install it up
+    # front so the generated test suite runs on day one; plain projects keep
+    # the bare editable install.
+    pyproject = target / "pyproject.toml"
+    has_dev_extra = (
+        pyproject.exists() and "[project.optional-dependencies]" in pyproject.read_text()
+    )
+    extra = ".[dev]" if has_dev_extra else "."
+
     for label, cmd, timeout in (
         ("Virtual environment created", [sys.executable, "-m", "venv", ".venv"], 120),
         (
             "Python dependencies installed",
-            [str(venv_python), "-m", "pip", "install", "-e", "."],
+            [str(venv_python), "-m", "pip", "install", "-e", extra],
             600,
         ),
         ("Database migrated", [str(venv_fastplace), "migrate"], 300),

@@ -71,6 +71,16 @@ def test_pyproject_license_uses_pep639_spdx_form():
     assert "license = {" not in text
 
 
+def test_dev_extra_installs_email_validator():
+    """The emitted auth scaffold's requests use pydantic ``EmailStr``, and the
+    CLI test-suite boots those scaffolded apps in-process — so running pytest
+    from a fresh checkout needs email-validator importable, which only holds
+    if the framework's own dev extra declares it."""
+    text = (ROOT / "pyproject.toml").read_text()
+    dev_block = text.split("dev = [", 1)[1].split("]", 1)[0]
+    assert "email-validator" in dev_block
+
+
 def test_pyproject_declares_trove_classifiers():
     text = (ROOT / "pyproject.toml").read_text()
     classifiers_block = text.split("classifiers = [", 1)[1].split("]", 1)[0]
