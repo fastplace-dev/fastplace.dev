@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 // Full-stack smoke: HTML shell + bridge hydration + unified API health.
@@ -95,6 +96,37 @@ test("settings section nav reaches the Profile and Security pages", async ({ pag
   await page.getByRole("link", { name: "Security" }).click();
   await expect(page).toHaveURL("/settings/security");
   await expect(page.getByRole("heading", { name: "Security settings" })).toBeVisible();
+});
+
+test("registration verifies through the mailed link and reaches the dashboard", async ({
+  page,
+}) => {
+  // The first-user journey as the starter ships it: register → the
+  // verification notice → the mailed link (log transport) → the blank,
+  // zero-stats dashboard. Admin-ness of the first account is pinned by the
+  // backend suite; this test pins the UX flow end to end.
+  await page.goto("/register");
+  await page.getByLabel("Name").fill("Verify");
+  await page.getByLabel("Email address").fill("verify@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("secret123");
+  await page.getByLabel("Confirm password").fill("secret123");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("heading", { name: "Email verification" })).toBeVisible();
+
+  // The webServer runs with APP_URL pointing at itself, so the log
+  // transport's link is followable from this browser context. The mail log
+  // accumulates across runs — take the latest line for this address.
+  const log = readFileSync("storage/logs/mail.log", "utf8");
+  const line = log
+    .trim()
+    .split("\n")
+    .filter((entry) => entry.includes("verify@example.test"))
+    .at(-1);
+  const link = JSON.parse(line!).text.match(/https?:\/\/\S+/)![0];
+
+  await page.goto(link);
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByText("0 projects")).toBeVisible();
 });
 
 test("unified API health endpoint answers ok", async ({ request }) => {

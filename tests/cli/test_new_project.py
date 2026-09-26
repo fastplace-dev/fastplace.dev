@@ -101,6 +101,23 @@ def test_new_scaffolds_the_canonical_tree(tmp_path, monkeypatch):
         assert (project / rel).is_file(), f"missing file {rel}"
 
 
+def test_readme_names_the_parked_form_targets(tmp_path, monkeypatch):
+    # The settings UI ships complete; its unrouted form targets must be named
+    # so the first `fastplace migrate && run dev` session never mystifies.
+    result, root = _invoke(tmp_path, monkeypatch, "blog")
+    assert result.exit_code == 0, result.output
+
+    readme = (root / "blog" / "README.md").read_text()
+    for target in (
+        "Parked form targets",
+        "PATCH",
+        "/settings/profile",
+        "/settings/password",
+        "/user/passkeys",
+    ):
+        assert target in readme, f"README missing {target}"
+
+
 def test_new_shared_kernel_init_docstring_has_one_period(tmp_path, monkeypatch):
     """_INIT_TEMPLATE already appends the period — a trailing dot in the doc
     argument used to render the shared-kernel docstring as ``classes..``."""
@@ -470,6 +487,29 @@ def test_new_auth_generates_users_migration(tmp_path, monkeypatch):
     versions = root / "blog" / "database" / "migrations" / "versions"
     made = list(versions.glob("*create_users_table*.py"))
     assert made, "users migration missing"
+
+
+def test_new_auth_provider_path_resolves_user(tmp_path, monkeypatch):
+    """The ORM provider dotted path in the scaffolded config/auth.py —
+    ``app.modules.accounts.models.User`` — must resolve in the generated
+    tree. An empty models ``__init__`` passes create_app() (the provider
+    import is lazy) and then 500s every authenticated request post-register."""
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from app.modules.accounts.models import User; print('USER_OK', User.__tablename__)",
+        ],
+        cwd=root / "blog",
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "USER_OK users" in proc.stdout
 
 
 def test_new_auth_leaves_no_scaffold_modules_cached(tmp_path, monkeypatch):

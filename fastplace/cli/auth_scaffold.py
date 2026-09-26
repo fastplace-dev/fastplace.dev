@@ -903,11 +903,65 @@ async def superuser(user, ability, *args):
 '''
 
 
+_ACCOUNTS_MODELS_INIT_TEMPLATE = """from app.modules.accounts.models.user import User
+
+__all__ = ["User"]
+"""
+
+_MAIL_JOB_TEMPLATE = '''"""Mail delivery job + the Registered verification listener.
+
+``mail_send`` is the queue entry point (queued only when MAIL_DRIVER=smtp
+and QUEUE_DRIVER=saq — see fastplace.mail.Mail.send); the listener runs
+in-process (``Registered`` has no same-named @Job, so dispatch never
+auto-enqueues it).
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastplace.errors import ConfigurationError
+from fastplace.events import DomainEvent, listen
+from fastplace.mail import Mail, message_from_dict
+from fastplace.queue import Job
+
+logger = logging.getLogger(__name__)
+
+
+@Job(name="mail_send")
+async def mail_send(message: dict) -> None:
+    """Deliver one queued MailMessage payload (param name matters: saq
+    hijacks handler kwargs named timeout/ttl/kwargs)."""
+    await Mail.deliver(message_from_dict(message))
+
+
+async def send_registration_verification(event: DomainEvent) -> None:
+    """Mail the verification link for a freshly registered account."""
+    from app.modules.accounts.services.verification_service import VerificationService
+
+    email = str(event.payload["email"])
+    try:
+        await VerificationService().send_link(int(event.payload["user_id"]), email)
+    except ConfigurationError:
+        # Empty APP_KEY is the documented dev default (config/app.py) and the
+        # account is already committed by the time this listener runs — skip
+        # the signed link rather than fail the whole registration.
+        logger.warning("APP_KEY is not set — skipping verification email for %s", email)
+
+
+# listen() is a plain function, NOT a decorator factory — explicit call.
+listen("Registered", send_registration_verification)
+'''
+
 # The single source of truth for the auth scaffold's file surface — shared
 # by `fastplace new --auth` and `fastplace make:auth` so the two paths can
 # never diverge. (relative path, template text) pairs, in write order.
 AUTH_FILES: list[tuple[str, str]] = [
     ("app/modules/accounts/models/user.py", _USER_MODEL_TEMPLATE),
+    # The models package must re-export User: config/auth.py points the ORM
+    # provider at the dotted path app.modules.accounts.models.User, and an
+    # empty __init__ 500s every authenticated request after registration.
+    ("app/modules/accounts/models/__init__.py", _ACCOUNTS_MODELS_INIT_TEMPLATE),
     ("app/modules/accounts/repositories/user_repository.py", _USER_REPOSITORY_TEMPLATE),
     ("app/modules/accounts/services/auth_service.py", _AUTH_SERVICE_TEMPLATE),
     ("app/modules/accounts/services/password_policy.py", _PASSWORD_POLICY_TEMPLATE),
@@ -930,12 +984,14 @@ AUTH_FILES: list[tuple[str, str]] = [
     ("app/http/controllers/two_factor_api_controller.py", _TWO_FACTOR_API_CONTROLLER_TEMPLATE),
     ("routes/auth.py", _AUTH_ROUTES_TEMPLATE),
     ("app/auth/gates.py", _GATES_TEMPLATE),
+    # The kernel imports app/jobs at boot (import_jobs) — without this file
+    # the Registered event has no listener and no verification mail sends.
+    ("app/jobs/mail.py", _MAIL_JOB_TEMPLATE),
 ]
 
 # Package markers so pkgutil/import_gates discovery finds the new code.
 AUTH_PACKAGE_MARKERS: tuple[str, ...] = (
     "app/modules/accounts/__init__.py",
-    "app/modules/accounts/models/__init__.py",
     "app/modules/accounts/repositories/__init__.py",
     "app/modules/accounts/services/__init__.py",
     "app/auth/__init__.py",

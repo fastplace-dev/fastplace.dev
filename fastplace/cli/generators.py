@@ -1853,6 +1853,16 @@ deployable modular monolith.
     fastplace migrate
     fastplace run dev
 
+## Parked form targets
+
+The starter ships the full settings UI. These form targets are intentionally
+unrouted until you wire their backends: profile update (PATCH
+`/settings/profile`), account deletion (DELETE `/settings/profile`), password
+change (PUT `/settings/password`), and passkeys (`/user/passkeys*`). The
+login, registration, password-reset, email-verification, and two-factor flows
+are fully routed. Wire the parked endpoints in your own controllers when you
+need them.
+
 ## Layout
 
 - `app/modules/<name>/` — bounded feature modules (models/, repositories/, services/)

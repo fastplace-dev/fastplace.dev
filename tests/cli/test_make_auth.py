@@ -135,6 +135,34 @@ def test_manifest_lists_every_auth_file():
     assert "app/modules/accounts/models/user.py" in rels
     assert "app/auth/gates.py" in rels
     assert len(rels) == len(set(rels))  # no duplicates
-    # The templated file count must not silently shrink. (17 since the
-    # seeder left the manifest — admin is never seeded, binding ruling.)
-    assert len(rels) >= 17
+    # The templated file count must not silently shrink. (19 since the
+    # seeder left the manifest — admin is never seeded, binding ruling —
+    # and the mail job + the models re-export joined it.)
+    assert len(rels) >= 19
+
+
+def test_make_auth_writes_the_mail_verification_job(tmp_path, monkeypatch):
+    """Without app/jobs/mail.py the kernel's import_jobs() finds nothing: the
+    Registered event dispatches with no listener, the verification mail never
+    sends, and `verified` locks the fresh account out of /dashboard forever."""
+    result = _invoke(tmp_path, monkeypatch, "--no-migration")
+    assert result.exit_code == 0, result.output
+
+    mail_job = tmp_path / "app" / "jobs" / "mail.py"
+    assert mail_job.is_file(), "app/jobs/mail.py missing from the auth scaffold"
+    source = mail_job.read_text()
+    assert '@Job(name="mail_send")' in source
+    assert "async def send_registration_verification" in source
+    assert 'listen("Registered", send_registration_verification)' in source
+
+
+def test_make_auth_models_init_reexports_user(tmp_path, monkeypatch):
+    """config/auth.py points the ORM provider at the dotted path
+    app.modules.accounts.models.User — an empty models __init__ makes that
+    getattr blow up with AttributeError on every authenticated request."""
+    result = _invoke(tmp_path, monkeypatch, "--no-migration")
+    assert result.exit_code == 0, result.output
+
+    init = (tmp_path / "app" / "modules" / "accounts" / "models" / "__init__.py").read_text()
+    assert "from app.modules.accounts.models.user import User" in init
+    assert "__all__" in init
