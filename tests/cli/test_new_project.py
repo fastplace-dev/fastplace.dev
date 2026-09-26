@@ -323,7 +323,6 @@ def _invoke_with_input(tmp_path, monkeypatch, name: str, *args: str, input: str 
     return result, tmp_path
 
 
-@pytest.mark.xfail(reason="auth files wired in Task 3", strict=False)
 def test_new_with_auth_flag_scaffolds_auth_files(tmp_path, monkeypatch):
     result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
     assert result.exit_code == 0
@@ -340,7 +339,6 @@ def test_new_with_no_auth_flag_matches_minimal_tree(tmp_path, monkeypatch):
         assert (root / "blog" / rel).is_file(), f"missing {rel}"
 
 
-@pytest.mark.xfail(reason="auth files wired in Task 3", strict=False)
 def test_new_prompts_for_auth_when_flag_absent(tmp_path, monkeypatch):
     result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", input="\n")  # Enter = yes
     assert result.exit_code == 0
@@ -352,3 +350,69 @@ def test_new_prompt_no_disables_auth(tmp_path, monkeypatch):
     result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", input="n\n")
     assert result.exit_code == 0
     assert not (root / "blog" / "routes" / "auth.py").exists()
+
+
+def _boot(project: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from fastplace.http import create_app; app = create_app(); print('BOOT_OK', len(app.routes))",
+        ],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def test_new_auth_project_boots(tmp_path, monkeypatch):
+    """The auth variant must boot, not just exist: the kernel resolves
+    ROUTE_MIDDLEWARE aliases eagerly at mount, so a missing registry (or one
+    alias short) kills create_app() — the boot gap the sample app hit."""
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+    proc = _boot(root / "blog")
+    assert "BOOT_OK" in proc.stdout, proc.stderr
+
+
+def test_new_auth_config_carries_middleware_registry(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+    cfg = (root / "blog" / "config" / "app.py").read_text()
+    assert "ROUTE_MIDDLEWARE" in cfg and '"guest"' in cfg and '"can"' in cfg
+    assert "ResolveUserMiddleware" in cfg
+    assert "SharedAbilitiesMiddleware" in cfg
+    auth_cfg = (root / "blog" / "config" / "auth.py").read_text()
+    assert '"driver": "orm"' in auth_cfg
+    assert "app.modules.accounts.models.User" in auth_cfg
+
+
+def test_new_auth_generates_users_migration(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+    versions = root / "blog" / "database" / "migrations" / "versions"
+    made = list(versions.glob("*create_users_table*.py"))
+    assert made, "users migration missing"
+
+
+def test_new_auth_leaves_no_scaffold_modules_cached(tmp_path, monkeypatch):
+    """Autogenerating the users migration must not import the scaffold's
+    modules into this process.
+
+    env.py's model discovery imports every app.* module of the project it
+    generates for. Run in-process, those modules stay cached in sys.modules
+    and shadow the host project's own for the rest of the CLI process's
+    life — `route:list` boots and every later model import misbehaves
+    (duplicate declarative classes, wrong gates). The autogenerate step
+    therefore runs in a subprocess.
+    """
+    monkeypatch.chdir(tmp_path)
+    sys.modules.pop("app", None) if "app" in sys.modules else None
+    leaked_before = {name for name in sys.modules if name.startswith("app.")}
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+
+    leaked = {name for name in sys.modules if name.startswith("app.")} - leaked_before
+    assert not leaked, f"scaffold modules leaked into sys.modules: {sorted(leaked)}"

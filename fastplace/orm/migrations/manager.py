@@ -58,7 +58,11 @@ class MigrationsManager:
 
         cfg = Config()
         cfg.set_main_option("script_location", str(self.migrations_dir))
-        cfg.set_main_option("version_locations", str(self.versions_dir.relative_to(self.root)))
+        # Absolute on purpose: a relative value resolves against whatever the
+        # process CWD happens to be, so autogenerate run from outside the
+        # project (e.g. `fastplace new` scaffolding from the parent dir) would
+        # read a stranger's revisions directory.
+        cfg.set_main_option("version_locations", str(self.versions_dir))
         # env.py resolves the URL from DATABASE_URL (env/config modules).
         self._ensure_project_importable()
         return cfg
@@ -70,11 +74,21 @@ class MigrationsManager:
 
     # -- operations ----------------------------------------------------------------
     def make(self, message: str = "auto") -> Path | None:
-        """Autogenerate a revision from the declared models."""
+        """Autogenerate a revision from the declared models.
+
+        The revision diffs inside the project-boot sandbox: models another
+        project left mapped on the global metadata (an in-process CLI run,
+        say) are evicted for the diff, so a revision belongs to exactly the
+        project whose versions directory holds it — never a stranger's
+        tables. Persist mode keeps this project's own registrations for the
+        callers that read the metadata after.
+        """
         from alembic import command
 
+        from fastplace.orm.registry import project_boot_sandbox
+
         self.require_configured()
-        with redirect_stdout(io.StringIO()):
+        with project_boot_sandbox(self.root, persist=True), redirect_stdout(io.StringIO()):
             command.revision(self._config(), message=message, autogenerate=True)
         revisions = sorted(self.versions_dir.glob("*.py"), key=lambda p: p.stat().st_mtime)
         return revisions[-1] if revisions else None

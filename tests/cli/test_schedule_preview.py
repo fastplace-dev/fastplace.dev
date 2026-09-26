@@ -44,7 +44,8 @@ def fresh_project(tmp_path, monkeypatch):
     env_before = dict(os.environ)
 
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(cli_app, ["new", "blog"])
+    # --no-auth keeps the minimal tree these preview assertions expect.
+    result = runner.invoke(cli_app, ["new", "blog", "--no-auth"])
     assert result.exit_code == 0, result.output
 
     root = tmp_path / "blog"

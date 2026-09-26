@@ -1287,6 +1287,98 @@ VITE_DEV_URL = "http://localhost:5173"
 APP_KEY = ""
 '''
 
+# The auth variant of config/app.py — the scaffold keys plus the route
+# middleware registry the credential routes name at declaration time. The
+# kernel resolves ROUTE_MIDDLEWARE aliases eagerly at mount, so the registry
+# must ship with any route that names one or boot fails.
+_CONFIG_APP_AUTH_TEMPLATE = '''"""Application configuration defaults (env vars always win)."""
+
+APP_NAME = "{app_name}"
+APP_ENV = "local"
+# Safe by default — flip to True in .env for local debugging. The kernel also
+# force-disables debug details whenever APP_ENV=production.
+APP_DEBUG = False
+APP_URL = "http://localhost:8000"
+
+# Bridge + assets (dev)
+VITE_DEV_URL = "http://localhost:5173"
+
+# Signing secret for sessions/CSRF/tokens. Empty here — set in .env.
+APP_KEY = ""
+
+# Per-route middleware aliases: alias → "dotted.path.ToMiddleware".
+# Parameterized aliases parse as "name:arg1,arg2" at route declaration.
+ROUTE_MIDDLEWARE = {{
+    "auth": "fastplace.auth.middleware.AuthenticateMiddleware",
+    "guest": "fastplace.auth.middleware.GuestMiddleware",
+    "verified": "fastplace.auth.middleware.EnsureEmailVerifiedMiddleware",
+    "password.confirm": "fastplace.auth.middleware.EnsurePasswordConfirmedMiddleware",
+    "throttle": "fastplace.ratelimit.ThrottleMiddleware",
+    "abilities": "fastplace.auth.middleware.AbilitiesMiddleware",
+    "ability": "fastplace.auth.middleware.AbilityMiddleware",
+    "can": "fastplace.authz.middleware.CanMiddleware",
+}}
+
+# Default HTTP middleware stack (dotted paths, outermost first).
+# SharedAbilitiesMiddleware sits after ResolveUserMiddleware so request.user
+# is already resolved when abilities are precomputed.
+MIDDLEWARE = [
+    "fastplace.auth.middleware.ResolveUserMiddleware",
+    "fastplace.auth.middleware.SharedAbilitiesMiddleware",
+    "fastplace.auth.middleware.CsrfMiddleware",
+]
+'''
+
+# The auth variant of config/auth.py — the session guard wired to the ORM
+# User the scaffold installs (the "dict" provider cannot back real logins).
+_CONFIG_AUTH_ORM_TEMPLATE = '''"""Authentication guard + user-provider configuration (env vars always win)."""
+
+AUTH_DEFAULT_GUARD = "session"
+
+# Guard drivers: "session" (server-side session store) and "jwt" (stateless Bearer token).
+AUTH_GUARDS = {
+    "session": {"driver": "session"},
+    "token": {"driver": "jwt", "algorithm": "HS256", "ttl": 3600, "issuer": "fastplace"},
+}
+
+# How guards resolve an identifier back to a user: through the ORM User model
+# the auth scaffold installed. The in-memory "dict" driver stays available for
+# tests/seeders ({"driver": "dict"}).
+AUTH_PROVIDERS = {
+    "users": {
+        "driver": "orm",
+        "model": "app.modules.accounts.models.User",
+    },
+}
+AUTH_USER_PROVIDER = "users"
+
+# Login lockout (the session guard's attempt limiter): after
+# AUTH_LOGIN_MAX_ATTEMPTS failed attempts for one email|ip pair, the next
+# attempt is locked out until AUTH_LOGIN_DECAY seconds have elapsed.
+AUTH_LOGIN_MAX_ATTEMPTS = 5
+AUTH_LOGIN_DECAY = 60
+
+# Password policy in the server dialect — the "min:N" clause drives
+# registration validation and the bridge pages' passwordrules translation.
+PASSWORD_RULES = "min:8"
+
+# Password reset + email verification
+AUTH_PASSWORD_EXPIRE = 60  # minutes a reset token stays live
+AUTH_RESET_THROTTLE = 60  # seconds between reset-link emails per address
+TRUSTED_HOSTS: list[str] = []  # hosts allowed to name the origin when APP_URL is empty
+
+# Seconds a password confirmation stays valid — three hours.
+PASSWORD_TIMEOUT = 10800
+
+# Feature flag: the two-factor management endpoints + UI.
+TWO_FACTOR_ENABLED = True
+
+# Abilities precomputed into every page payload's shared auth props.
+# Zero-extra-arg abilities only — no model instance exists at props time.
+# Env override is comma-separated: AUTH_SHARED_ABILITIES=view-posts,view-profile
+AUTH_SHARED_ABILITIES: list[str] = []
+'''
+
 _CONFIG_DATABASE_TEMPLATE = '''"""Database configuration defaults (env vars always win)."""
 
 # Zero-config SQLite default; swap for postgres/mysql in .env for production.
@@ -1770,6 +1862,49 @@ def new_project(
 
     for path in MigrationsManager(target).scaffold():
         console.print(f"[green]created[/] {path.relative_to(_project_root())}")
+
+    if auth:
+        from fastplace.cli.auth_scaffold import write_auth_surface
+
+        # The two config variants replace the minimal ones written moments
+        # ago by this same command (force=True is safe — never hand edits).
+        _write(
+            target / "config/app.py",
+            _CONFIG_APP_AUTH_TEMPLATE.format(app_name=app_name),
+            _project_root(),
+            force=True,
+        )
+        _write(target / "config/auth.py", _CONFIG_AUTH_ORM_TEMPLATE, _project_root(), force=True)
+        write_auth_surface(target)
+
+        # The users table ships with the scaffold — `fastplace migrate` on a
+        # fresh project creates it, no make:auth follow-up needed.
+        # Autogenerate runs in a subprocess: env.py's model discovery imports
+        # every app.* module of the project it generates for, and in-process
+        # those modules would stay cached in sys.modules — shadowing the host
+        # project's own for the rest of this CLI process's life (duplicate
+        # declarative classes, wrong gates on every later boot).
+        import subprocess
+        import sys
+
+        bootstrap = (
+            "from pathlib import Path\n"
+            "from fastplace.orm.migrations import MigrationsManager\n"
+            "rev = MigrationsManager(Path('.')).make('create_users_table')\n"
+            "print(rev if rev else '')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", bootstrap],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        made = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+        if proc.returncode == 0 and made:
+            console.print(f"[green]created[/] {Path(made).relative_to(_project_root())}")
+        else:
+            console.print(f"[red]users migration failed[/]\n{proc.stderr.strip()}")
 
     console.print("\n[green]Fastplace app ready![/] Next steps:\n")
     console.print(f"  cd {slug}")

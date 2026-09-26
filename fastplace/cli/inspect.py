@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import re
-import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -12,13 +11,9 @@ from typing import Any
 import typer
 
 from fastplace.console import console
+from fastplace.orm.registry import project_boot_sandbox as _project_boot_sandbox
 
 inspect_app = typer.Typer(help="Inspect project routes and configuration.")
-
-#: Top-level module names a Fastplace project owns on ``sys.path``. They —
-#: and only they — are snapshotted around the in-process ASGI import so one
-#: project's code never shadows another's later in the process.
-_PROJECT_NAMESPACES = frozenset({"asgi", "routes", "app"})
 
 
 def _project_root() -> Path:
@@ -37,31 +32,11 @@ def _load_asgi_app(root: Path) -> Any:
     """Import ``asgi:app`` the way ``fastplace run dev`` targets it.
 
     The project root goes to the front of ``sys.path`` (uvicorn's cwd
-    behavior, in-process). Cached modules in the project namespaces are
-    snapshotted and restored around the import, so booting one project
-    never leaves it hijacking ``import asgi``/``routes``/``app`` for the
-    rest of the process.
+    behavior, in-process), inside the boot sandbox.
     """
-    root_str = str(root)
-    saved = {
-        name: module
-        for name, module in sys.modules.items()
-        if name.split(".", 1)[0] in _PROJECT_NAMESPACES
-    }
-    for name in saved:
-        sys.modules.pop(name)
-    inserted = root_str not in sys.path
-    if inserted:
-        sys.path.insert(0, root_str)
-    try:
+    with _project_boot_sandbox(root):
         module = importlib.import_module("asgi")
         return module.app
-    finally:
-        if inserted:
-            sys.path.remove(root_str)
-        for name in [n for n in sys.modules if n.split(".", 1)[0] in _PROJECT_NAMESPACES]:
-            sys.modules.pop(name)
-        sys.modules.update(saved)
 
 
 def _iter_routes(routes: list[Any]) -> Iterator[Any]:
@@ -188,18 +163,7 @@ def _declared_route(root: Path, mounted_path: str) -> Any:
     """
     from fastplace.http.kernel import AI_PREFIX, API_PREFIX, _load_router_module
 
-    saved = {
-        name: module
-        for name, module in sys.modules.items()
-        if name.split(".", 1)[0] in _PROJECT_NAMESPACES
-    }
-    for name in saved:
-        sys.modules.pop(name)
-    root_str = str(root)
-    inserted = root_str not in sys.path
-    if inserted:
-        sys.path.insert(0, root_str)
-    try:
+    with _project_boot_sandbox(root):
         surfaces = (
             ("routes.web", ""),
             ("routes.auth", ""),
@@ -212,12 +176,6 @@ def _declared_route(root: Path, mounted_path: str) -> Any:
                 if prefix + declared.path == mounted_path:
                     return declared
         return None
-    finally:
-        if inserted:
-            sys.path.remove(root_str)
-        for name in [n for n in sys.modules if n.split(".", 1)[0] in _PROJECT_NAMESPACES]:
-            sys.modules.pop(name)
-        sys.modules.update(saved)
 
 
 @inspect_app.command("route:show")
@@ -310,24 +268,20 @@ def collect_models(root: Path | None = None) -> list[Any]:
     ``import_all_models`` (the registry's import-all entry) runs first; an
     InvalidRequestError means this process mapped these modules before and
     the already-registered classes ARE the project's — nothing to re-import.
+    The sandbox persists registrations: callers like ``migrate:check`` run
+    their metadata compare *after* this returns, against the very tables the
+    import registered.
     """
     from sqlalchemy.exc import InvalidRequestError
 
     from fastplace.orm.registry import all_models, import_all_models
 
     base = Path.cwd() if root is None else root
-    root_str = str(base)
-    inserted = root_str not in sys.path
-    if inserted:
-        sys.path.insert(0, root_str)
-    try:
+    with _project_boot_sandbox(base, persist=True):
         try:
             import_all_models(base)
         except InvalidRequestError:
             pass  # tables already mapped in-process; the existing classes stand in
-    finally:
-        if inserted:
-            sys.path.remove(root_str)
     return sorted(
         (cls for cls in all_models() if _declared_in_project(cls, base)),
         key=lambda cls: (cls.__module__, cls.__name__),
