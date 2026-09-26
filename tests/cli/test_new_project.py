@@ -359,6 +359,57 @@ def test_new_carries_the_whole_starter_corpus(tmp_path, monkeypatch):
         assert (root / "blog" / rel).is_file(), f"new did not write {rel}"
 
 
+def test_new_package_json_carries_the_ui_stack(tmp_path, monkeypatch):
+    import json
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0
+    pkg = json.loads((root / "blog" / "package.json").read_text())
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    scripts = pkg.get("scripts", {})
+    for wanted in (
+        "@radix-ui/react-dialog",
+        "@radix-ui/react-slot",
+        "class-variance-authority",
+        "clsx",
+        "tailwind-merge",
+        "lucide-react",
+        "sonner",
+        "input-otp",
+        "tw-animate-css",
+        "typescript",
+        "vitest",
+        "jsdom",
+        "@testing-library/react",
+        "@testing-library/jest-dom",
+        "@testing-library/user-event",
+        "@types/react",
+        "eslint",
+        "typescript-eslint",
+        "prettier",
+    ):
+        assert wanted in deps, f"package.json missing {wanted}"
+    for script in ("types", "test", "test:watch", "lint", "lint:check", "format", "format:check"):
+        assert script in scripts, f"package.json scripts missing {script}"
+
+
+def test_new_vite_config_has_js_alias_and_vitest(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0
+    vite = (root / "blog" / "vite.config.js").read_text()
+    assert '"@": path.resolve(__dirname, "resources/js")' in vite
+    assert 'environment: "jsdom"' in vite
+    assert "resources/js/**/__tests__/**/*.{test,spec}.{ts,tsx,js,jsx}" in vite
+
+
+def test_new_index_html_has_prepaint(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0
+    html = (root / "blog" / "index.html").read_text()
+    assert "fastplace-appearance-prepaint" in html
+    assert 'localStorage.getItem("fastplace-appearance")' in html
+
+
 def test_new_prompts_for_auth_when_flag_absent(tmp_path, monkeypatch):
     result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", input="\n")  # Enter = yes
     assert result.exit_code == 0
