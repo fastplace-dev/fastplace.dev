@@ -18,7 +18,6 @@ _GENERATED = (
     "app/http/controllers/auth_api_controller.py",
     "app/http/controllers/two_factor_api_controller.py",
     "routes/auth.py",
-    "database/seeders/user_seeder.py",
     "app/auth/gates.py",
 )
 
@@ -92,8 +91,38 @@ class TestMakeAuth:
     def test_prints_the_manual_checklist(self, tmp_path, monkeypatch):
         result = _invoke(tmp_path, monkeypatch, "--no-migration")
         assert result.exit_code == 0
-        for step in ("migrate", "db:seed", "MAIL_"):
+        for step in ("migrate", "/register", "admin", "MAIL_"):
             assert step in result.output
+
+    def test_make_auth_ships_no_seeder(self, tmp_path, monkeypatch):
+        # Binding ruling: admin is never seeded — the first real /register
+        # signup becomes the admin, so no seeder may exist on any path.
+        result = _invoke(tmp_path, monkeypatch, "--no-migration")
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / "database" / "seeders" / "user_seeder.py").exists()
+
+    def test_gates_hook_keys_on_is_admin(self, tmp_path, monkeypatch):
+        result = _invoke(tmp_path, monkeypatch, "--no-migration")
+        assert result.exit_code == 0, result.output
+        gates = (tmp_path / "app/auth/gates.py").read_text()
+        assert "is_admin" in gates
+        assert "admin@example.com" not in gates
+
+
+def test_no_admin_literal_in_generated_tree(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli_app, ["new", "blog", "--auth"])
+    assert result.exit_code == 0, result.output
+    hits = [
+        str(p.relative_to(tmp_path / "blog"))
+        for p in (tmp_path / "blog").rglob("*")
+        if p.is_file()
+        and p.suffix in {".py", ".md", ".ts", ".tsx", ".js", ".jsx"}
+        and "admin@example.com" in p.read_text(errors="ignore")
+    ]
+    assert hits == []
 
 
 def test_manifest_lists_every_auth_file():
@@ -106,5 +135,6 @@ def test_manifest_lists_every_auth_file():
     assert "app/modules/accounts/models/user.py" in rels
     assert "app/auth/gates.py" in rels
     assert len(rels) == len(set(rels))  # no duplicates
-    # The templated file count must not silently shrink.
-    assert len(rels) >= 18
+    # The templated file count must not silently shrink. (17 since the
+    # seeder left the manifest — admin is never seeded, binding ruling.)
+    assert len(rels) >= 17

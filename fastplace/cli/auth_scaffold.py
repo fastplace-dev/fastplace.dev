@@ -875,30 +875,6 @@ router.get(
 )
 '''
 
-_USER_SEEDER_TEMPLATE = '''"""User seeder — the first account for a fresh project."""
-
-from __future__ import annotations
-
-import datetime
-import os
-
-from app.modules.accounts.models.user import User
-from fastplace.auth.hashing import Hash
-
-
-async def run() -> None:
-    email = os.environ.get("SEED_USER_EMAIL", "admin@example.com")
-    password = os.environ.get("SEED_USER_PASSWORD", "password")
-    if await User.where(User.email == email).first() is not None:
-        return
-    await User.create(
-        name="Admin",
-        email=email,
-        password_hash=Hash.make(password),
-        email_verified_at=datetime.datetime.now(datetime.UTC),
-    )
-'''
-
 _GATES_TEMPLATE = '''"""Project gate registrations — imported by the kernel at boot (spec §4.15).
 
 Every ability the ``can:`` middleware or ``authorize()`` names must be
@@ -918,9 +894,10 @@ async def view_dashboard(user, *args):
 
 @gate.before
 async def superuser(user, ability, *args):
-    # Example global hook: the seeded admin passes every check. Delete or
-    # tighten for your project.
-    if user is not None and getattr(user, "email", None) == "admin@example.com":
+    # The first registered account (is_admin) passes every check. Grant is
+    # data, not identity: promote via `fastplace user:create --admin` or a
+    # direct DB edit.
+    if user is not None and getattr(user, "is_admin", False):
         return True
     return None
 '''
@@ -952,7 +929,6 @@ AUTH_FILES: list[tuple[str, str]] = [
     ("app/http/controllers/auth_api_controller.py", _AUTH_API_CONTROLLER_TEMPLATE),
     ("app/http/controllers/two_factor_api_controller.py", _TWO_FACTOR_API_CONTROLLER_TEMPLATE),
     ("routes/auth.py", _AUTH_ROUTES_TEMPLATE),
-    ("database/seeders/user_seeder.py", _USER_SEEDER_TEMPLATE),
     ("app/auth/gates.py", _GATES_TEMPLATE),
 ]
 
@@ -999,7 +975,7 @@ def make_auth(
 
     console.print("\n[bold]Auth scaffold complete.[/] Manual steps left:")
     console.print("  1. [cyan]fastplace migrate[/] — create the users table")
-    console.print("  2. [cyan]fastplace db:seed[/] — seed the first user")
+    console.print("  2. open /register — the FIRST account you create becomes the admin")
     console.print("  3. point AUTH_PROVIDERS at the ORM User (the default in config/auth.py)")
     console.print("  4. add MAIL_* keys to .env for reset/verification mail")
     console.print("  5. set AUTH_SHARED_ABILITIES in config/auth.py for useCan() props")
