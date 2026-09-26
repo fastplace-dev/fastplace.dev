@@ -165,17 +165,25 @@ async function visit(url: string, options: VisitOptions = {}): Promise<void> {
   const requestUrl = method === "GET" ? withQueryString(url, options.data) : url;
   const token = method === "GET" ? null : csrfToken();
 
-  const response = await fetch(requestUrl, {
-    method,
-    headers: {
-      [BRIDGE_HEADER]: "true",
-      Accept: "application/json",
-      ...(token ? { "X-Fastplace-CSRF-Token": token } : {}),
-      ...(hasBody ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers ?? {}),
-    },
-    body: hasBody ? JSON.stringify(options.data) : undefined,
-  });
+  startProgress();
+
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, {
+      method,
+      headers: {
+        [BRIDGE_HEADER]: "true",
+        Accept: "application/json",
+        ...(token ? { "X-Fastplace-CSRF-Token": token } : {}),
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers ?? {}),
+      },
+      body: hasBody ? JSON.stringify(options.data) : undefined,
+    });
+  } catch (error) {
+    hideProgress();
+    throw error;
+  }
 
   adoptCsrfToken(response);
 
@@ -185,6 +193,7 @@ async function visit(url: string, options: VisitOptions = {}): Promise<void> {
   if (!contentType.includes("application/json")) {
     // Non-bridge response (redirect after login, direct hit, error page) —
     // fall back to a full browser navigation.
+    hideProgress();
     fallback();
     return;
   }
@@ -194,6 +203,7 @@ async function visit(url: string, options: VisitOptions = {}): Promise<void> {
   // swap them into the store, or the resolver would throw mid-render and
   // unmount the whole app.
   if (!response.ok || !isBridgePage(payload)) {
+    hideProgress();
     if (options.onError) {
       // The caller owns the failure — surface the parsed envelope instead
       // of taking the full-page fallback.
@@ -215,6 +225,7 @@ async function visit(url: string, options: VisitOptions = {}): Promise<void> {
   } else {
     setPage(payload, { history });
   }
+  finishProgress();
 }
 
 function handlePopState(event: PopStateEvent): void {
@@ -247,8 +258,161 @@ export const router = {
   reset(): void {
     currentPage = null;
     listeners.clear();
+    resetProgress();
   },
 };
+
+/* ------------------------------------------------------------------ *
+ * Navigation progress — a tiny store over the visit lifecycle.
+ *
+ * The bar shows while a bridge visit is in flight, completes when the
+ * payload swaps in, and hides on any failure (network error, error
+ * answer, full-page fallback). Concurrent visits are counted so a
+ * late-finishing earlier visit cannot hide the bar early.
+ * ------------------------------------------------------------------ */
+
+export type NavigationProgressState = "idle" | "started" | "completed";
+
+let progressState: NavigationProgressState = "idle";
+const progressListeners = new Set<Listener>();
+let activeVisits = 0;
+let progressResetTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** How long a finished bar stays visible before hiding. */
+const PROGRESS_RESET_MS = 200;
+
+function emitProgress(): void {
+  progressListeners.forEach((listener) => listener());
+}
+
+function setProgressState(state: NavigationProgressState): void {
+  if (progressState === state) return;
+  progressState = state;
+  emitProgress();
+}
+
+function clearProgressResetTimer(): void {
+  if (progressResetTimer === null) return;
+  clearTimeout(progressResetTimer);
+  progressResetTimer = null;
+}
+
+function startProgress(): void {
+  activeVisits += 1;
+  clearProgressResetTimer();
+  setProgressState("started");
+}
+
+function finishProgress(): void {
+  activeVisits = Math.max(0, activeVisits - 1);
+  if (activeVisits > 0) return;
+  setProgressState("completed");
+  // Let the finished bar paint briefly, then hide it.
+  progressResetTimer = setTimeout(() => {
+    progressResetTimer = null;
+    setProgressState("idle");
+  }, PROGRESS_RESET_MS);
+}
+
+function hideProgress(): void {
+  activeVisits = Math.max(0, activeVisits - 1);
+  if (activeVisits > 0) return;
+  clearProgressResetTimer();
+  setProgressState("idle");
+}
+
+function resetProgress(): void {
+  activeVisits = 0;
+  clearProgressResetTimer();
+  setProgressState("idle");
+}
+
+function subscribeProgress(listener: Listener): () => void {
+  progressListeners.add(listener);
+  return () => progressListeners.delete(listener);
+}
+
+function getProgressSnapshot(): NavigationProgressState {
+  return progressState;
+}
+
+/**
+ * Subscribe to the bridge's navigation progress: "idle" (hidden),
+ * "started" (a visit is in flight) or "completed" (the payload swapped).
+ */
+export function useNavigationProgress(): NavigationProgressState {
+  return useSyncExternalStore(subscribeProgress, getProgressSnapshot, () => "idle");
+}
+
+const PROGRESS_STYLE_ID = "fastplace-progress-styles";
+
+/**
+ * Neutral theming: the bar inherits the app's text color (readable in both
+ * light and dark themes); override with --fastplace-progress-color.
+ * prefers-reduced-motion strips the animation — the bar shows and hides
+ * instantly instead.
+ */
+const PROGRESS_STYLES = `
+[data-fastplace-progress] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 2147483000;
+  pointer-events: none;
+}
+[data-fastplace-progress] > span {
+  display: block;
+  height: 100%;
+  background: var(--fastplace-progress-color, currentColor);
+  transform-origin: 0 50%;
+}
+[data-fastplace-progress='started'] > span {
+  animation: fastplace-progress-indeterminate 6s ease-out forwards;
+}
+[data-fastplace-progress='completed'] > span {
+  transform: scaleX(1);
+  transition: transform 150ms ease-out;
+}
+@keyframes fastplace-progress-indeterminate {
+  0% { transform: scaleX(0); }
+  30% { transform: scaleX(0.5); }
+  60% { transform: scaleX(0.8); }
+  100% { transform: scaleX(0.95); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-fastplace-progress] > span {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+`;
+
+function injectProgressStyles(): void {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(PROGRESS_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = PROGRESS_STYLE_ID;
+  style.textContent = PROGRESS_STYLES;
+  document.head.appendChild(style);
+}
+
+/**
+ * Optional top-of-page progress bar driven by the bridge's visit lifecycle.
+ * Render it once anywhere inside <FastplaceProvider>; it mounts nothing
+ * while no visit is in flight.
+ */
+export function NavigationProgressBar(): React.ReactNode {
+  const state = useNavigationProgress();
+  React.useEffect(injectProgressStyles, []);
+  if (state === "idle") return null;
+  return (
+    <div data-fastplace-progress={state} aria-hidden="true">
+      <span />
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ *
  * React bindings
