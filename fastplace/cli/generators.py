@@ -1880,6 +1880,16 @@ def _slugify_project(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
 
 
+def scaffold_templates_dir() -> str:
+    """The shipped frontend starter corpus — package-data next to this module.
+
+    ``fastplace new`` walks this tree verbatim into every new project: the
+    design-system components, the app/auth/settings shells, the auth pages,
+    the blank dashboard, and the root tooling configs.
+    """
+    return str(Path(__file__).parent / "scaffold_templates")
+
+
 def _framework_checkout() -> Path | None:
     """The framework source checkout this CLI runs from, when it does.
 
