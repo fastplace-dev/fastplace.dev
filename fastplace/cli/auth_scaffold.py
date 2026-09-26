@@ -1109,6 +1109,8 @@ thin and the rules live in the requests and the guard/provider primitives.
 
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
+
 from app.http.requests.delete_profile_request import DeleteProfileRequest
 from app.http.requests.password_update_request import PasswordUpdateRequest
 from app.http.requests.profile_request import ProfileRequest
@@ -1140,9 +1142,17 @@ class SettingsApiController(Controller):
             raise ValidationError(errors={"email": ["The email has already been taken."]})
 
         if email != str(user.email).strip().lower():
-            # The new address is unverified until its link is clicked — the
-            # verification pipeline re-runs exactly like a fresh signup.
-            await user.update(name=data["name"], email=email, email_verified_at=None)
+            try:
+                # The new address is unverified until its link is clicked — the
+                # verification pipeline re-runs exactly like a fresh signup.
+                await user.update(name=data["name"], email=email, email_verified_at=None)
+            except IntegrityError:
+                # The find-first above can lose a race to a concurrent
+                # registration; the UNIQUE constraint settles it with the
+                # same friendly 422 instead of a 500.
+                raise ValidationError(
+                    errors={"email": ["The email has already been taken."]}
+                ) from None
             await self.verification_service.send_link(user.id, email)
         else:
             await user.update(name=data["name"])
@@ -1169,6 +1179,13 @@ class SettingsApiController(Controller):
             raise ValidationError(errors=errors)
 
         await user.update(password_hash=Hash.make(data["password"]))
+        # A rotated password must kill every credential a thief already
+        # holds: the guard sweeps the OTHER sessions (the current one keeps
+        # its payload) and rotates the remember token — the same posture
+        # the password-reset flow takes; regenerate() retires this
+        # session's old ID on the next persist, so a copied cookie dies.
+        await guard().logout_other_devices(request, data["current_password"])
+        request.session.regenerate()
         flash(request, "Password updated.")
         return Redirect("/settings/security", status_code=303)
 
@@ -1386,6 +1403,7 @@ def _fresh_singletons(monkeypatch):
     from fastplace.auth.remember import reset_remember_store
     from fastplace.cache import reset_cache
     from fastplace.events import reset_listeners
+    from fastplace.http.render import reset_shared_props
     from fastplace.mail import clear_mail_outbox
     from fastplace.queue import reset_registry
 
@@ -1396,6 +1414,7 @@ def _fresh_singletons(monkeypatch):
     reset_token_store()
     reset_listeners()
     reset_registry()
+    reset_shared_props()  # share() lives in the framework package — purge_app_modules cannot see it
     clear_mail_outbox()
     yield
     reset_cache()
@@ -1403,6 +1422,7 @@ def _fresh_singletons(monkeypatch):
     reset_token_store()
     reset_listeners()
     reset_registry()
+    reset_shared_props()
     clear_mail_outbox()
 
 
@@ -1716,12 +1736,17 @@ def _augment_env_files(root: Path) -> None:
 def _augment_readme(root: Path) -> None:
     """Swap the parked-targets section for the now-real settings docs."""
     path = root / "README.md"
-    if not path.is_file() or "Parked form targets" not in path.read_text():
+    if not path.is_file():
         return
     content = path.read_text()
-    start = content.index("## Parked form targets")
+    # Guard the EXACT needle the rewrite splices on: a README that merely
+    # mentions the phrase (no heading) skips the rewrite instead of raising.
+    heading = "## Parked form targets"
+    if heading not in content:
+        return
+    start = content.index(heading)
     # The section runs to the next heading (or the end of the file).
-    rest = content[start + len("## Parked form targets") :]
+    rest = content[start + len(heading) :]
     next_heading = rest.find("\n## ")
     replacement = (
         "## Settings flows\n\n"

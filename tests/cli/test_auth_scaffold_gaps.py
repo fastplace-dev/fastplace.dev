@@ -338,3 +338,52 @@ class TestWelcomeCopy:
         assert "Fastplace" in home
         # No stripped-link placeholder spans: the doc/tutorial list is gone.
         assert "Read the Documentation" not in home
+
+
+class TestPasswordChangeRevokesSessions:
+    def test_password_update_sweeps_other_sessions_and_rotates_this_one(self, scaffolded):
+        """A rotated password must kill what a thief already holds: every
+        OTHER session dies (guard.logout_other_devices also rotates the
+        remember token) and the current session regenerates its ID."""
+        controller = (scaffolded / "app/http/controllers/settings_api_controller.py").read_text()
+        assert "logout_other_devices" in controller
+        assert "request.session.regenerate()" in controller
+        # Revocation runs after the rehash — and never before the current
+        # password has been verified.
+        assert controller.index("logout_other_devices") > controller.index("Hash.make")
+
+
+class TestEmittedConftestIsolation:
+    def test_conftest_resets_the_shared_props_registry(self, scaffolded):
+        """share() registrations live in the framework package (purge_app_modules
+        cannot see them), so the emitted conftest must reset them itself."""
+        conftest = (scaffolded / "tests/conftest.py").read_text()
+        assert "reset_shared_props" in conftest
+
+
+class TestReadmeDriftDegradation:
+    def test_readme_mentioning_the_phrase_without_the_heading_is_left_alone(
+        self, tmp_path, monkeypatch
+    ):
+        """The rewrite splices on the exact '## ' heading; a README that only
+        mentions the phrase must skip the rewrite — never raise."""
+        _minimal_project_files(tmp_path)
+        (tmp_path / "README.md").write_text(
+            "# Demo\n\nThe Parked form targets section lives elsewhere.\n"
+        )
+        result = _invoke(tmp_path, monkeypatch, "--no-migration")
+        assert result.exit_code == 0, result.output
+        readme = (tmp_path / "README.md").read_text()
+        assert "lives elsewhere" in readme
+        assert "Settings flows" not in readme
+
+
+class TestEmailChangeRace:
+    def test_integrity_error_translates_to_the_friendly_validation_error(self, scaffolded):
+        """The find-first unique check can lose a race to a concurrent
+        registration; the emitted controller must answer the UNIQUE
+        constraint with the same 422, not a 500."""
+        controller = (scaffolded / "app/http/controllers/settings_api_controller.py").read_text()
+        assert "from sqlalchemy.exc import IntegrityError" in controller
+        assert "except IntegrityError:" in controller
+        assert "The email has already been taken." in controller
