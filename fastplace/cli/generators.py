@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path, PureWindowsPath
 
 import typer
+from rich.panel import Panel
+from rich.text import Text
 
 from fastplace.console import console
 
@@ -1945,6 +1950,169 @@ def _published_fastplace_dep() -> str:
         return "fastplace>=0.1.0"
 
 
+# The installer wordmark — FASTPLACE set in solid blocks. The letterforms come
+# from a block figlet font, narrowed to a uniform seven columns so nine letters
+# fit an 80-column terminal on one line; rows join on a uniform two-column gap
+# and every glyph is padded to its full cell, so the spacing never varies with
+# a row's content — solid shapes with even air between them read clean where
+# outline figlet fonts blur their thin connectors.
+_GLYPHS: dict[str, tuple[str, ...]] = {
+    "F": ("███████", "██", "██", "█████", "██", "██", "██"),
+    "A": ("  ███", " ██ ██", "██   ██", "███████", "██   ██", "██   ██", "██   ██"),
+    "S": (" █████", "██   ██", "██", " █████", "     ██", "██   ██", " █████"),
+    "T": ("███████", "  ██", "  ██", "  ██", "  ██", "  ██", "  ██"),
+    "P": ("███████", "██   ██", "██   ██", "███████", "██", "██", "██"),
+    "L": ("██", "██", "██", "██", "██", "██", "███████"),
+    "C": (" █████", "██   ██", "██", "██", "██", "██   ██", " █████"),
+    "E": ("███████", "██", "██", "█████", "██", "██", "███████"),
+}
+_BANNER = "\n".join("  ".join(_GLYPHS[ch][row].ljust(7) for ch in "FASTPLACE") for row in range(7))
+
+
+def _begin_step(title: str) -> None:
+    """Open a named installation phase (``● Title``)."""
+    console.print(f"\n[cyan]●[/] [bold]{title}[/]")
+
+
+def _step_done(text: str) -> None:
+    console.print(f"  [green]✓[/] {text}")
+
+
+def _step_fail(text: str) -> None:
+    console.print(f"  [red]✗[/] {text}")
+
+
+def _run_step_command(cmd: list[str], cwd: Path, timeout: int = 600) -> tuple[bool, str]:
+    """Run one installer sub-command quietly.
+
+    Returns ``(ok, detail)`` where detail is a short, indented tail of the
+    command's own output — enough to diagnose a failure without flooding the
+    installer transcript.
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+        )
+    except OSError as exc:
+        return False, "\n".join(f"    {line}" for line in str(exc).splitlines())
+
+    def _tail(err: str, out: str) -> str:
+        noise = (err + "\n" + out).strip().splitlines()
+        return "\n".join(f"    {line}" for line in [ln for ln in noise if ln.strip()][-3:])
+
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # npm.cmd (the Windows shim) spawns node.exe children that inherit
+        # the captured pipes — killing only the direct child leaves them
+        # holding the pipe and communicate() draining forever, so on Windows
+        # the whole tree goes first.
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            proc.kill()
+        try:
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        tail = _tail(err or "", out or "")
+        return False, f"    timed out after {timeout}s" + (f"\n{tail}" if tail else "")
+    if proc.returncode != 0:
+        return False, _tail(err or "", out or "")
+    return True, ""
+
+
+def _install_dependencies(target: Path) -> bool:
+    """One-shot local setup for ``fastplace new --install``.
+
+    Creates the project virtualenv, installs the app editable (pulling
+    fastplace itself), runs the migrations, then installs npm packages and
+    builds the frontend assets. Every sub-step reports ✓/✗; the first
+    Python-side failure stops the Python toolchain, and npm is skipped with
+    a warning when it is not on PATH. Returns True only when everything ran —
+    the caller shortens the ready panel on True.
+    """
+    venv_bin = target / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    venv_python = venv_bin / ("python.exe" if os.name == "nt" else "python")
+    venv_fastplace = venv_bin / ("fastplace.exe" if os.name == "nt" else "fastplace")
+
+    for label, cmd, timeout in (
+        ("Virtual environment created", [sys.executable, "-m", "venv", ".venv"], 120),
+        (
+            "Python dependencies installed",
+            [str(venv_python), "-m", "pip", "install", "-e", "."],
+            600,
+        ),
+        ("Database migrated", [str(venv_fastplace), "migrate"], 300),
+    ):
+        ok, detail = _run_step_command(cmd, target, timeout=timeout)
+        if not ok:
+            _step_fail(f"{label} — finish by hand with the steps below")
+            if detail:
+                console.print(Text(detail, style="red"))
+            return False
+        _step_done(label)
+
+    npm = shutil.which("npm")
+    if npm is None:
+        _step_fail("Frontend packages — npm not found on PATH, install Node.js to build")
+        return False
+
+    for label, cmd, timeout in (
+        ("Frontend packages installed", [npm, "install"], 900),
+        ("Frontend assets built", [npm, "run", "build"], 600),
+    ):
+        ok, detail = _run_step_command(cmd, target, timeout=timeout)
+        if not ok:
+            _step_fail(f"{label} — run npm install && npm run build later")
+            if detail:
+                console.print(Text(detail, style="red"))
+            return False
+        _step_done(label)
+
+    return True
+
+
+def _next_steps_panel(
+    slug: str, *, auth: bool, installed: bool, install_failed: bool = False
+) -> None:
+    """The boxed finale — the shortest correct next-step list for what the
+    installer actually did. A failed ``--install`` run keeps the manual steps
+    but drops the celebratory green: the title says what still has to happen."""
+    venv_activate = ".venv\\Scripts\\activate" if os.name == "nt" else "source .venv/bin/activate"
+    if installed:
+        lines = [
+            f"  1. cd {slug}",
+            f"  2. {venv_activate}",
+            "  3. fastplace run dev",
+        ]
+    else:
+        lines = [
+            f"  1. cd {slug}",
+            f"  2. python -m venv .venv && {venv_activate}",
+            "  3. pip install -e .   # or: pip install fastplace once published",
+            "  4. npm install && npm run build",
+            "  5. fastplace migrate",
+            "  6. fastplace run dev",
+        ]
+    if auth:
+        lines += [
+            "",
+            "  The FIRST account at http://localhost:8000/register becomes the admin.",
+        ]
+    if install_failed:
+        title, border = "[bold]Project created — finish setup below[/]", "yellow"
+    else:
+        title, border = "[bold green]Application ready[/]", "green"
+    console.print(Panel("\n".join(lines), title=title, border_style=border, expand=False))
+    console.print("[dim]Build something great![/]")
+
+
 @generators_app.command("new")
 def new_project(
     name: str = typer.Argument(..., help="Project name (letters, digits, spaces, _ and -)"),
@@ -1953,13 +2121,25 @@ def new_project(
         "--auth/--no-auth",
         help="Install the built-in authentication scaffold (prompted when omitted).",
     ),
+    install: bool | None = typer.Option(
+        None,
+        "--install/--no-install",
+        help=(
+            "Create the virtualenv, install dependencies, migrate the database, "
+            "and build the frontend (prompted when omitted)."
+        ),
+    ),
 ) -> None:
     """Create a new Fastplace application skeleton (blueprint §3).
 
     Module-first layout, SQLite-by-default env, thin routes, bootable ASGI
-    entry — everything ``fastplace run dev`` expects, nothing more.
+    entry — everything ``fastplace run dev`` expects, nothing more. With
+    ``--install`` the fresh project is set up end to end, ready to run.
     """
     import secrets
+
+    console.print(_BANNER, style="green", markup=False, highlight=False, soft_wrap=True)
+    console.print("[dim]Fastplace application installer[/]")
 
     clean = name.strip()
     # Refuse path-shaped input up front — a silent slug rewrite would scaffold
@@ -1989,16 +2169,33 @@ def new_project(
 
     # Ask once, at creation — flag wins when given; absent flag prompts with
     # a YES default; a closed stdin (pipes, CI) falls back to YES + notice
-    # so unattended runs never hang or crash on the prompt.
+    # so unattended runs never hang or crash on the prompt. typer.confirm
+    # folds both EOF and Ctrl+C into Abort, so an interactive terminal (a
+    # tty present) re-raises: a deliberate interrupt must still abort.
     if auth is None:
         try:
             auth = typer.confirm("Install the built-in authentication scaffold?", default=True)
-        except Exception:  # non-interactive stdin — abort() in tests, EOF in pipes
+        except Exception as exc:
+            if isinstance(exc, typer.exceptions.Abort) and sys.stdin and sys.stdin.isatty():
+                raise
             console.print("[yellow]no interactive terminal — defaulting to --auth[/]")
             auth = True
-    if auth:
-        console.print("\n[bold]Installing authentication scaffold...[/]")
 
+    # Same ask for the dependency toolchain — but the fallback is NO, not
+    # YES: installing costs network and minutes, so unattended runs must not
+    # opt in (only the interactive Enter default and the explicit flag can).
+    if install is None:
+        try:
+            install = typer.confirm(
+                "Install dependencies now (Python venv, pip, migrations, npm)?", default=False
+            )
+        except Exception as exc:
+            if isinstance(exc, typer.exceptions.Abort) and sys.stdin and sys.stdin.isatty():
+                raise
+            console.print("[yellow]no interactive terminal — skipping dependency install[/]")
+            install = False
+
+    _begin_step("Creating application files")
     env = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key=secrets.token_urlsafe(48))
     env_example = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key="")
 
@@ -2078,15 +2275,19 @@ def new_project(
     # The complete frontend starter (R2): design system, shells, auth pages,
     # blank dashboard, tooling configs — every corpus file, verbatim.
     _write_scaffold_templates(target)
+    _step_done("Application created")
 
+    _begin_step("Preparing database")
     # Pre-configure the Alembic environment (what ``db:configure`` scaffolds)
     # so the printed ``fastplace migrate`` step works on a fresh project.
     from fastplace.orm.migrations import MigrationsManager
 
     for path in MigrationsManager(target).scaffold():
         console.print(f"[green]created[/] {path.relative_to(_project_root())}")
+    _step_done("Migrations configured")
 
     if auth:
+        _begin_step("Installing authentication")
         from fastplace.cli.auth_scaffold import write_auth_surface
 
         # The two config variants replace the minimal ones written moments
@@ -2125,6 +2326,7 @@ def new_project(
             _project_root(),
         )
         _write(target / "routes/web.py", _WEB_ROUTES_AUTH_TEMPLATE, _project_root(), force=True)
+        _step_done("Authentication installed")
 
         # The users table ships with the scaffold — `fastplace migrate` on a
         # fresh project creates it, no make:auth follow-up needed.
@@ -2133,37 +2335,39 @@ def new_project(
         # those modules would stay cached in sys.modules — shadowing the host
         # project's own for the rest of this CLI process's life (duplicate
         # declarative classes, wrong gates on every later boot).
-        import subprocess
-        import sys
-
         bootstrap = (
             "from pathlib import Path\n"
             "from fastplace.orm.migrations import MigrationsManager\n"
             "rev = MigrationsManager(Path('.')).make('create_users_table')\n"
             "print(rev if rev else '')\n"
         )
-        proc = subprocess.run(
-            [sys.executable, "-c", bootstrap],
-            cwd=target,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        made = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
-        if proc.returncode == 0 and made:
-            console.print(f"[green]created[/] {Path(made).relative_to(_project_root())}")
-        else:
-            console.print(f"[red]users migration failed[/]\n{proc.stderr.strip()}")
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", bootstrap],
+                cwd=target,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=180,
+            )
+            made = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+            if proc.returncode == 0 and made:
+                _step_done(f"Users table migration created ({Path(made).name})")
+                bootstrap_error = ""
+            else:
+                bootstrap_error = (proc.stderr or "").strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            bootstrap_error = str(exc)
+        if bootstrap_error:
+            _step_fail("Users table migration failed")
+            console.print(Text(bootstrap_error, style="red"))
 
-    console.print("\n[green]Fastplace app ready![/] Next steps:\n")
-    console.print(f"  cd {slug}")
-    console.print("  python -m venv .venv && source .venv/bin/activate")
-    console.print("  pip install -e .   # or: pip install fastplace once published")
-    console.print("  npm install")
-    console.print("  fastplace migrate")
-    console.print("  fastplace run dev")
-    if auth:
-        console.print(
-            "  open http://localhost:8000/register — the FIRST account you create becomes the admin"
-        )
-    console.print()
+    if install:
+        _begin_step("Installing dependencies")
+        installed = _install_dependencies(target)
+    else:
+        installed = False
+
+    _next_steps_panel(
+        slug, auth=auth, installed=installed, install_failed=install and not installed
+    )

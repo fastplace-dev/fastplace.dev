@@ -23,7 +23,19 @@ cd my-app
 an example module, migrations pre-configured, a generated `APP_KEY`, and
 frontend wiring that resolves `@fastplace/react` from your checkout.
 
+Two decisions are asked at creation and both can be pre-answered:
+`--auth/--no-auth` installs the built-in authentication scaffold
+(auth is the default), and `--install/--no-install` runs the whole
+local setup for you — virtualenv, `pip install -e .`, migrations,
+`npm install`, and the frontend build. When every install step
+succeeds, the printed next steps shrink to `cd`, activate, and
+`fastplace run dev`; a failed step keeps the full manual list, with
+the failing step's error shown so you can finish by hand.
+
 ## Install dependencies
+
+Skip this section when you scaffolded with `fastplace new --install` —
+otherwise:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate

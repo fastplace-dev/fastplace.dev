@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
+import typer
 
 from fastplace.cli import app as cli_app
 
@@ -565,3 +567,338 @@ def test_new_no_auth_keeps_minimal_web_routes(tmp_path, monkeypatch):
     assert not (root / "blog" / "app" / "http" / "controllers" / "auth_page_controller.py").exists()
     web = (root / "blog" / "routes" / "web.py").read_text()
     assert "/register" not in web and "/dashboard" not in web
+
+
+# ---------------------------------------------------------------------------
+# Installer UX — banner, named step groups, ready panel, --install
+# ---------------------------------------------------------------------------
+
+
+def test_new_prints_the_fastplace_banner(tmp_path, monkeypatch):
+    """The installer opens with the FASTPLACE wordmark and a subtitle — the
+    first thing on the wire, before any file work."""
+    from fastplace.cli.generators import _BANNER
+
+    assert len(_BANNER.splitlines()) == 7  # one row per block-letter line
+    assert max(len(row) for row in _BANNER.splitlines()) <= 79  # survives an 80-col terminal
+
+    result, _ = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0, result.output
+    assert "█" in result.output, result.output[:80]
+    assert "Fastplace application installer" in result.output
+
+
+def test_new_groups_output_into_named_steps(tmp_path, monkeypatch):
+    """Each phase runs under a ● header and closes with a ✓ result line."""
+    result, _ = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0, result.output
+    for line in (
+        "● Creating application files",
+        "✓ Application created",
+        "● Preparing database",
+        "✓ Migrations configured",
+    ):
+        assert line in result.output, result.output
+
+
+def test_new_auth_step_reports_the_surface_and_users_table(tmp_path, monkeypatch):
+    result, _ = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+    for line in (
+        "● Installing authentication",
+        "✓ Authentication installed",
+        "✓ Users table migration created",
+    ):
+        assert line in result.output, result.output
+
+
+def test_new_prints_the_ready_panel(tmp_path, monkeypatch):
+    """The finale is a boxed ready panel with the full manual setup when the
+    dependencies were not installed."""
+    result, _ = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0, result.output
+    assert "Application ready" in result.output
+    assert "Build something great!" in result.output
+    for step in (
+        "cd blog",
+        "python -m venv .venv",
+        "pip install",
+        "npm install",
+        "fastplace migrate",
+    ):
+        assert step in result.output, result.output
+
+
+def test_new_install_prompt_defaults_to_no_on_enter(tmp_path, monkeypatch):
+    """Two Enters at the prompts: auth yes (default), install no (default) —
+    no venv appears and the manual panel still lists every step."""
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", input="\n\n")
+    assert result.exit_code == 0, result.output
+    assert "Install dependencies now" in result.output
+    assert not (root / "blog" / ".venv").exists()
+    assert "pip install" in result.output
+
+
+def test_new_install_prompt_falls_back_to_no_on_closed_stdin(tmp_path, monkeypatch):
+    """Pipes/CI close stdin: the install prompt skips (no hang, no crash) —
+    the opposite of the auth prompt's YES fallback, deliberate: installing
+    costs network and minutes, so unattended runs must not opt in."""
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog")  # no input
+    assert result.exit_code == 0, result.output
+    assert "skipping dependency install" in result.output
+    assert not (root / "blog" / ".venv").exists()
+
+
+def test_new_install_flag_runs_the_dependency_steps(tmp_path, monkeypatch):
+    """--install hands the fresh project to _install_dependencies; success
+    shortens the ready panel — no manual pip/npm/migrate steps remain."""
+    from fastplace.cli import generators
+
+    called: list[Path] = []
+
+    def fake_install(target: Path) -> bool:
+        called.append(target)
+        return True
+
+    monkeypatch.setattr(generators, "_install_dependencies", fake_install)
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--install")
+    assert result.exit_code == 0, result.output
+    assert called == [root / "blog"]
+    assert "source .venv/bin/activate" in result.output
+    assert "pip install" not in result.output
+    assert "fastplace run dev" in result.output
+
+
+def test_new_install_failure_keeps_the_manual_panel(tmp_path, monkeypatch):
+    """A failed toolchain run must not print the shortened panel — the manual
+    steps stay so the user can finish by hand."""
+    from fastplace.cli import generators
+
+    monkeypatch.setattr(generators, "_install_dependencies", lambda target: False)
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--install")
+    assert result.exit_code == 0, result.output
+    assert "pip install" in result.output
+    assert "Project created — finish setup below" in result.output  # yellow panel title
+    assert "Application ready" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# _run_step_command / _install_dependencies — the --install toolchain
+# ---------------------------------------------------------------------------
+
+
+def test_run_step_command_reports_success_and_failure(tmp_path, monkeypatch):
+    """The wrapper reports ✓/✗ with a short indented tail — success, non-zero
+    exit (last three non-blank output lines), spawn OSError, and a timeout
+    that kills the child and still returns instead of hanging."""
+    from fastplace.cli import generators
+
+    class FakeProc:
+        def __init__(self, out="", err="", returncode=0):
+            self.out, self.err, self.returncode = out, err, returncode
+            self.pid = 4242
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+        def communicate(self, timeout=None):
+            assert timeout is not None, "every drain must be bounded"
+            return self.out, self.err
+
+    monkeypatch.setattr(generators.subprocess, "Popen", lambda *a, **kw: FakeProc())
+    ok, detail = generators._run_step_command(["x"], tmp_path, timeout=5)
+    assert ok and detail == ""
+
+    bad = FakeProc(err="one\n\nboom happened\nthree\nfour\nfive", returncode=3)
+    monkeypatch.setattr(generators.subprocess, "Popen", lambda *a, **kw: bad)
+    ok, detail = generators._run_step_command(["x"], tmp_path)
+    assert not ok
+    assert detail.splitlines() == ["    three", "    four", "    five"]  # last 3 non-blank
+    assert "boom happened" not in detail  # earlier noise dropped
+
+    def gone(*a, **kw):
+        raise OSError("gone")
+
+    monkeypatch.setattr(generators.subprocess, "Popen", gone)
+    ok, detail = generators._run_step_command(["x"], tmp_path)
+    assert not ok
+    assert detail == "    gone"
+
+    slow = FakeProc(err="partial death")
+
+    def timeout_first_drain(timeout=None):
+        if slow.killed:
+            return slow.out, slow.err
+        raise subprocess.TimeoutExpired(cmd="x", timeout=1)
+
+    slow.communicate = timeout_first_drain
+    monkeypatch.setattr(generators.subprocess, "Popen", lambda *a, **kw: slow)
+    ok, detail = generators._run_step_command(["x"], tmp_path, timeout=7)
+    assert not ok
+    assert slow.killed
+    assert detail.startswith("    timed out after 7s"), detail
+    assert "partial death" in detail
+
+
+def test_install_dependencies_runs_the_full_toolchain(tmp_path, monkeypatch):
+    """Success path: venv → pip install -e . → migrate → npm install → build,
+    in that order, and True only when every step ran."""
+    from fastplace.cli import generators
+
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd, cwd, timeout):  # signature of _run_step_command's target
+        calls.append((list(cmd), cwd))
+        return True, ""
+
+    monkeypatch.setattr(generators, "_run_step_command", fake_run)
+    monkeypatch.setattr(generators.shutil, "which", lambda name: "/usr/bin/npm")
+
+    target = tmp_path / "blog"
+    assert generators._install_dependencies(target) is True
+    commands = [cmd for cmd, _ in calls]
+    assert all(cwd == target for _, cwd in calls)  # every step runs inside the new project
+    heads = [Path(cmd[0]).name for cmd in commands]
+    assert heads[0].startswith("python") and commands[0][1:4] == ["-m", "venv", ".venv"]
+    assert commands[1][0] == str(target / ".venv" / "bin" / "python")
+    assert commands[1][1:] == ["-m", "pip", "install", "-e", "."]
+    assert commands[2][0] == str(target / ".venv" / "bin" / "fastplace")
+    assert commands[2][1:] == ["migrate"]
+    assert commands[3] == ["/usr/bin/npm", "install"]
+    assert commands[4] == ["/usr/bin/npm", "run", "build"]
+
+
+def test_install_dependencies_stops_after_a_python_side_failure(tmp_path, monkeypatch):
+    from fastplace.cli import generators
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd, timeout):
+        commands.append(list(cmd))
+        if "-m" in cmd and "pip" in cmd:
+            return False, "pip exploded"
+        return True, ""
+
+    monkeypatch.setattr(generators, "_run_step_command", fake_run)
+    monkeypatch.setattr(generators.shutil, "which", lambda name: "/usr/bin/npm")
+
+    assert generators._install_dependencies(tmp_path) is False
+    assert len(commands) == 2  # venv + pip; migrate/npm never attempted
+
+
+def test_install_dependencies_without_npm_reports_and_stays_false(tmp_path, monkeypatch):
+    """No npm on PATH: the Python toolchain still runs (app is usable), but
+    the result is not "everything installed" — the manual panel returns."""
+    from fastplace.cli import generators
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd, timeout):
+        commands.append(list(cmd))
+        return True, ""
+
+    monkeypatch.setattr(generators, "_run_step_command", fake_run)
+    monkeypatch.setattr(generators.shutil, "which", lambda name: None)
+
+    assert generators._install_dependencies(tmp_path) is False
+    assert len(commands) == 3  # venv, pip, migrate — npm side skipped
+
+
+def test_install_dependencies_stops_after_an_npm_side_failure(tmp_path, monkeypatch):
+    """The likeliest real-world break (no network, bad build): the npm side
+    reports failure and nothing after the failing npm step runs."""
+    from fastplace.cli import generators
+
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, cwd, timeout):
+        commands.append(list(cmd))
+        if cmd[-2:] == ["run", "build"]:
+            return False, "npm boom"
+        return True, ""
+
+    monkeypatch.setattr(generators, "_run_step_command", fake_run)
+    monkeypatch.setattr(generators.shutil, "which", lambda name: "/usr/bin/npm")
+
+    assert generators._install_dependencies(tmp_path) is False
+    assert len(commands) == 5  # the failing build is the last command; nothing runs after
+
+
+def test_new_no_install_flag_skips_the_prompt_entirely(tmp_path, monkeypatch):
+    """--no-install pre-answers the ask: no prompt, no fallback notice, no
+    .venv — the manual panel is the whole story."""
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-install")
+    assert result.exit_code == 0, result.output
+    assert "Install dependencies now" not in result.output
+    assert "skipping dependency install" not in result.output
+    assert not (root / "blog" / ".venv").exists()
+    assert "pip install" in result.output
+
+
+def test_new_users_migration_failure_stays_non_fatal(tmp_path, monkeypatch):
+    """A broken users-table bootstrap must not kill the scaffold: the ✗ line
+    prints with the error tail, the ready panel still arrives, exit stays 0."""
+    from fastplace.cli import generators
+
+    def broken_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="autogen broke")
+
+    monkeypatch.setattr(generators.subprocess, "run", broken_run)
+    monkeypatch.setattr(generators, "_install_dependencies", lambda target: True)
+
+    result, _ = _invoke_with_input(tmp_path, monkeypatch, "blog")  # auth defaults to yes
+    assert result.exit_code == 0, result.output
+    assert "✗ Users table migration failed" in result.output
+    assert "autogen broke" in result.output
+    assert "Application ready" in result.output
+
+
+def test_new_interrupt_at_a_tty_prompt_aborts(tmp_path, monkeypatch):
+    """Ctrl+C at the auth prompt on a real terminal must abort the command —
+    only the non-tty case (pipes, CI) falls back to a default."""
+    from fastplace.cli import generators
+
+    class FakeStdin:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(
+        generators.typer,
+        "confirm",
+        lambda *a, **kw: (_ for _ in ()).throw(typer.exceptions.Abort()),
+    )
+    monkeypatch.setattr(generators, "sys", types.SimpleNamespace(stdin=FakeStdin()))
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog")
+    assert result.exit_code != 0
+    assert "Aborted" in result.output
+    assert not (root / "blog").exists()  # nothing was written before the interrupt
+
+
+def test_new_interrupt_at_the_install_tty_prompt_aborts(tmp_path, monkeypatch):
+    """Same contract at the install prompt: tty Abort re-raises, skipping the
+    install while keeping the files already scaffolded."""
+    from fastplace.cli import generators
+
+    class FakeStdin:
+        def isatty(self):
+            return True
+
+    calls = {"n": 0}
+
+    def confirm(prompt, default):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return default  # auth prompt answered yes; the interrupt lands on install
+        raise typer.exceptions.Abort()
+
+    monkeypatch.setattr(generators.typer, "confirm", confirm)
+    monkeypatch.setattr(generators, "sys", types.SimpleNamespace(stdin=FakeStdin()))
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog")
+    assert result.exit_code != 0
+    assert "Aborted" in result.output
+    assert not (root / "blog" / ".venv").exists()

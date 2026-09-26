@@ -251,7 +251,7 @@ The CLI (Typer + Rich) is the main developer interface — it orchestrates serve
 | **Server** | `fastplace run dev` | Concurrently starts ASGI backend (Uvicorn with reload) & Vite dev server (HMR) |
 | | `fastplace serve` | Compiles frontend assets and launches the optimized multi-worker production ASGI server |
 | **Maintenance** | `fastplace down` / `up` | Toggle maintenance mode — every request gets a 503, then bring the application back |
-| **Scaffolding** | `fastplace new <Name>` | Creates a new application skeleton — module-first layout, `.env.example`, SQLite default |
+| **Scaffolding** | `fastplace new <Name>` | Creates a new application skeleton — module-first layout, `.env.example`, SQLite default; asks about the built-in auth scaffold, and `--install` runs the whole local setup (venv, pip, migrations, npm, frontend build) |
 | | `fastplace make:module <Name>` | Scaffolds a bounded module — `app/modules/<name>/{models,repositories,services}` |
 | | `fastplace make:controller <Name>` | Controller stub in `app/http/controllers/` |
 | | `fastplace make:model <Name> -m` | Fastplace ORM model + Alembic migration in one step |
