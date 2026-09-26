@@ -41,6 +41,8 @@ export default defineConfig({
     // so mkdir it for fresh clones/worktrees.
     command:
       `APP_ENV=production APP_KEY=e2e-test-secret-key-0123456789abcdef ` +
+      `APP_URL=http://127.0.0.1:${PORT} ` +
+      `CACHE_ALLOW_MEMORY_IN_PRODUCTION=1 ` +  // single uvicorn worker — safe here
       `DATABASE_URL=sqlite+aiosqlite:///storage/e2e.sqlite3 ` +
       `sh -c 'mkdir -p storage && ` +
       `rm -f storage/e2e.sqlite3 storage/e2e.sqlite3-wal storage/e2e.sqlite3-shm && ` +

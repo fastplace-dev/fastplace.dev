@@ -8,6 +8,7 @@ server, so no test may apply/enqueue against a real client.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import sys
 import textwrap
 import time
@@ -80,6 +81,43 @@ def test_duplicate_job_names_are_rejected_at_registration():
         @Job()  # noqa: F811 — same name on purpose
         async def duplicate():
             return None
+
+
+def test_reimport_after_module_eviction_replaces_stale_registration(tmp_path, monkeypatch):
+    root = _make_project(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/jobs/__init__.py": "",
+            "app/jobs/mail.py": """
+                from fastplace.queue import Job
+
+                @Job(name="mail_send")
+                async def mail_send(message: dict):
+                    return message
+            """,
+        },
+    )
+    monkeypatch.syspath_prepend(str(root))
+
+    # Earlier tests in the suite may leave a foreign root's `app` package
+    # cached — sweep so this import resolves against THIS project's root.
+    for name in [n for n in sys.modules if n == "app" or n.startswith("app.")]:
+        sys.modules.pop(name, None)
+
+    importlib.import_module("app.jobs.mail")  # first import registers
+    first = jobs()["mail_send"].fn
+
+    # Evict the module (what boot sandboxes do between/within boots), then
+    # re-import: a NEW function object re-registers the same dotted path.
+    sys.modules.pop("app.jobs.mail", None)
+    sys.modules.pop("app.jobs", None)
+    sys.modules.pop("app", None)
+    importlib.import_module("app.jobs.mail")
+
+    entry = jobs()["mail_send"]
+    assert entry.fn is not first
+    assert entry.fn.__module__ == "app.jobs.mail"
 
 
 # ---------------------------------------------------------------------------

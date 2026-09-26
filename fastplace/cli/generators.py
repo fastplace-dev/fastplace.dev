@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path, PureWindowsPath
 
 import typer
+from rich.panel import Panel
+from rich.text import Text
 
 from fastplace.console import console
 
@@ -1253,6 +1259,189 @@ router = Router()
 router.get("/", HomeController, "index", name="home")
 '''
 
+_AUTH_PAGE_CONTROLLER_TEMPLATE = '''"""Auth page controller — the guest auth pages.
+
+GET-only page routes behind the ``guest`` route middleware: the React pages
+render fully client-side and read their optional props with typed defaults.
+The credential endpoints live in routes/auth.py.
+"""
+
+from __future__ import annotations
+
+from app.modules.accounts.services.password_policy import frontend_rules
+from fastplace.http import Controller, Request, render
+
+
+class AuthPageController(Controller):
+    async def login(self, request: Request):
+        return render(request, component="Auth/Login", props={})
+
+    async def register(self, request: Request):
+        # The register page's client-side default is "minlength: 8;" — the
+        # server prop mirrors the same policy that validates the POST.
+        return render(
+            request,
+            component="Auth/Register",
+            props={"passwordRules": frontend_rules()},
+        )
+
+    async def forgot_password(self, request: Request):
+        return render(request, component="Auth/ForgotPassword", props={})
+
+    async def reset_password(self, request: Request):
+        # The email link lands on /reset-password/{token}?email=... — the
+        # page reads token/email from props, never from the URL directly.
+        return render(
+            request,
+            component="Auth/ResetPassword",
+            props={
+                "token": request.param("token"),
+                "email": request.query("email", ""),
+                "passwordRules": frontend_rules(),
+            },
+        )
+
+    async def verify_email(self, request: Request):
+        return render(request, component="Auth/VerifyEmail", props={})
+
+    async def confirm_password(self, request: Request):
+        return render(request, component="Auth/ConfirmPassword", props={})
+
+    async def two_factor_challenge(self, request: Request):
+        return render(request, component="Auth/TwoFactorChallenge", props={})
+'''
+
+_DASHBOARD_CONTROLLER_TEMPLATE = '''"""Dashboard page controller — the authenticated landing page."""
+
+from __future__ import annotations
+
+from fastplace.http import Controller, Request, render
+
+
+class DashboardController(Controller):
+    async def index(self, request: Request):
+        # Blank starter canvas — props arrive when the app grows real data.
+        return render(request, component="Dashboard/Index", props={})
+'''
+
+_SETTINGS_PAGES_CONTROLLER_TEMPLATE = '''"""Account settings page controller — profile and security bridge pages."""
+
+from __future__ import annotations
+
+from app.modules.accounts.services.password_policy import frontend_rules
+from fastplace.http import Controller, Request, render
+
+
+class SettingsPagesController(Controller):
+    async def profile(self, request: Request):
+        return render(request, component="Settings/Profile", props={})
+
+    async def security(self, request: Request):
+        from fastplace.config import config
+
+        user = getattr(request, "user", None)
+        return render(
+            request,
+            component="Settings/Security",
+            props={
+                "passwordRules": frontend_rules(),
+                "canManageTwoFactor": bool(config("TWO_FACTOR_ENABLED", default=True)),
+                "requiresConfirmation": True,
+                "twoFactorEnabled": getattr(user, "two_factor_confirmed_at", None) is not None,
+            },
+        )
+'''
+
+_SETTINGS_APPEARANCE_CONTROLLER_TEMPLATE = '''"""Settings appearance controller — the appearance settings bridge page."""
+
+from __future__ import annotations
+
+from fastplace.http import Controller, Request, render
+
+
+class SettingsAppearanceController(Controller):
+    async def index(self, request: Request):
+        return render(request, component="Settings/Appearance", props={})
+'''
+
+#: The auth variant of routes/web.py — the guest auth pages, the blank
+#: dashboard, and the account settings pages, each behind the same route
+#: middleware the sample app ships (guest / auth / verified).
+_WEB_ROUTES_AUTH_TEMPLATE = '''"""Web routes — bridge pages (controllers return render(...))."""
+
+from __future__ import annotations
+
+from app.http.controllers.auth_page_controller import AuthPageController
+from app.http.controllers.dashboard_controller import DashboardController
+from app.http.controllers.home_controller import HomeController
+from app.http.controllers.settings_appearance_controller import SettingsAppearanceController
+from app.http.controllers.settings_pages_controller import SettingsPagesController
+from fastplace.http import Router
+
+router = Router()
+
+router.get("/", HomeController, "index", name="home")
+router.get(
+    "/dashboard",
+    DashboardController,
+    "index",
+    name="dashboard",
+    middleware=["auth", "verified"],
+)
+
+# Account settings pages — authenticated GETs (the settings section renders
+# the app's authenticated shell); their form targets ship later.
+router.get(
+    "/settings/appearance",
+    SettingsAppearanceController,
+    "index",
+    name="settings.appearance",
+    middleware=["auth"],
+)
+router.get(
+    "/settings/profile",
+    SettingsPagesController,
+    "profile",
+    name="settings.profile",
+    middleware=["auth"],
+)
+router.get(
+    "/settings/security",
+    SettingsPagesController,
+    "security",
+    name="settings.security",
+    middleware=["auth"],
+)
+
+# Guest auth pages — anonymous GET renders behind `guest`; the credential
+# POSTs live in routes/auth.py.
+router.get("/login", AuthPageController, "login", name="auth.login", middleware=["guest"])
+router.get("/register", AuthPageController, "register", name="auth.register", middleware=["guest"])
+router.get(
+    "/forgot-password", AuthPageController, "forgot_password", name="auth.forgot_password"
+)
+router.get(
+    "/reset-password/{token}", AuthPageController, "reset_password", name="auth.reset_password"
+)
+router.get(
+    "/email/verify", AuthPageController, "verify_email", name="auth.verify_email", middleware=["auth"]
+)
+router.get(
+    "/user/confirm-password",
+    AuthPageController,
+    "confirm_password",
+    name="auth.confirm_password",
+    middleware=["auth"],
+)
+router.get(
+    "/two-factor-challenge",
+    AuthPageController,
+    "two_factor_challenge",
+    name="auth.two_factor_challenge",
+    middleware=["guest"],
+)
+'''
+
 _API_ROUTES_TEMPLATE = '''"""API routes — unified JSON API endpoints (mounted under /api/v1)."""
 
 from __future__ import annotations
@@ -1285,6 +1474,98 @@ VITE_DEV_URL = "http://localhost:5173"
 
 # Signing secret for sessions/CSRF/tokens. Empty here — set in .env.
 APP_KEY = ""
+'''
+
+# The auth variant of config/app.py — the scaffold keys plus the route
+# middleware registry the credential routes name at declaration time. The
+# kernel resolves ROUTE_MIDDLEWARE aliases eagerly at mount, so the registry
+# must ship with any route that names one or boot fails.
+_CONFIG_APP_AUTH_TEMPLATE = '''"""Application configuration defaults (env vars always win)."""
+
+APP_NAME = "{app_name}"
+APP_ENV = "local"
+# Safe by default — flip to True in .env for local debugging. The kernel also
+# force-disables debug details whenever APP_ENV=production.
+APP_DEBUG = False
+APP_URL = "http://localhost:8000"
+
+# Bridge + assets (dev)
+VITE_DEV_URL = "http://localhost:5173"
+
+# Signing secret for sessions/CSRF/tokens. Empty here — set in .env.
+APP_KEY = ""
+
+# Per-route middleware aliases: alias → "dotted.path.ToMiddleware".
+# Parameterized aliases parse as "name:arg1,arg2" at route declaration.
+ROUTE_MIDDLEWARE = {{
+    "auth": "fastplace.auth.middleware.AuthenticateMiddleware",
+    "guest": "fastplace.auth.middleware.GuestMiddleware",
+    "verified": "fastplace.auth.middleware.EnsureEmailVerifiedMiddleware",
+    "password.confirm": "fastplace.auth.middleware.EnsurePasswordConfirmedMiddleware",
+    "throttle": "fastplace.ratelimit.ThrottleMiddleware",
+    "abilities": "fastplace.auth.middleware.AbilitiesMiddleware",
+    "ability": "fastplace.auth.middleware.AbilityMiddleware",
+    "can": "fastplace.authz.middleware.CanMiddleware",
+}}
+
+# Default HTTP middleware stack (dotted paths, outermost first).
+# SharedAbilitiesMiddleware sits after ResolveUserMiddleware so request.user
+# is already resolved when abilities are precomputed.
+MIDDLEWARE = [
+    "fastplace.auth.middleware.ResolveUserMiddleware",
+    "fastplace.auth.middleware.SharedAbilitiesMiddleware",
+    "fastplace.auth.middleware.CsrfMiddleware",
+]
+'''
+
+# The auth variant of config/auth.py — the session guard wired to the ORM
+# User the scaffold installs (the "dict" provider cannot back real logins).
+_CONFIG_AUTH_ORM_TEMPLATE = '''"""Authentication guard + user-provider configuration (env vars always win)."""
+
+AUTH_DEFAULT_GUARD = "session"
+
+# Guard drivers: "session" (server-side session store) and "jwt" (stateless Bearer token).
+AUTH_GUARDS = {
+    "session": {"driver": "session"},
+    "token": {"driver": "jwt", "algorithm": "HS256", "ttl": 3600, "issuer": "fastplace"},
+}
+
+# How guards resolve an identifier back to a user: through the ORM User model
+# the auth scaffold installed. The in-memory "dict" driver stays available for
+# tests/seeders ({"driver": "dict"}).
+AUTH_PROVIDERS = {
+    "users": {
+        "driver": "orm",
+        "model": "app.modules.accounts.models.User",
+    },
+}
+AUTH_USER_PROVIDER = "users"
+
+# Login lockout (the session guard's attempt limiter): after
+# AUTH_LOGIN_MAX_ATTEMPTS failed attempts for one email|ip pair, the next
+# attempt is locked out until AUTH_LOGIN_DECAY seconds have elapsed.
+AUTH_LOGIN_MAX_ATTEMPTS = 5
+AUTH_LOGIN_DECAY = 60
+
+# Password policy in the server dialect — the "min:N" clause drives
+# registration validation and the bridge pages' passwordrules translation.
+PASSWORD_RULES = "min:8"
+
+# Password reset + email verification
+AUTH_PASSWORD_EXPIRE = 60  # minutes a reset token stays live
+AUTH_RESET_THROTTLE = 60  # seconds between reset-link emails per address
+TRUSTED_HOSTS: list[str] = []  # hosts allowed to name the origin when APP_URL is empty
+
+# Seconds a password confirmation stays valid — three hours.
+PASSWORD_TIMEOUT = 10800
+
+# Feature flag: the two-factor management endpoints + UI.
+TWO_FACTOR_ENABLED = True
+
+# Abilities precomputed into every page payload's shared auth props.
+# Zero-extra-arg abilities only — no model instance exists at props time.
+# Env override is comma-separated: AUTH_SHARED_ABILITIES=view-posts,view-profile
+AUTH_SHARED_ABILITIES: list[str] = []
 '''
 
 _CONFIG_DATABASE_TEMPLATE = '''"""Database configuration defaults (env vars always win)."""
@@ -1391,6 +1672,33 @@ _INDEX_HTML_TEMPLATE = """\
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{app_name}</title>
+    <!-- fastplace-appearance-prepaint -->
+    <script>
+      (function () {{
+        var mode = "system";
+        try {{
+          var stored = localStorage.getItem("fastplace-appearance");
+          if (stored === "light" || stored === "dark") mode = stored;
+        }} catch (e) {{}}
+        var dark =
+          mode === "dark" ||
+          (mode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        var root = document.documentElement;
+        if (mode === "light" || mode === "dark") root.setAttribute("data-theme", mode);
+        else root.removeAttribute("data-theme");
+        if (dark) root.classList.add("dark");
+        root.style.colorScheme = dark ? "dark" : "light";
+      }})();
+    </script>
+    <style>
+      html {{
+        background-color: oklch(0.985 0.005 250);
+      }}
+      html.dark {{
+        background-color: oklch(0.19 0.02 262);
+      }}
+    </style>
+    <!-- /fastplace-appearance-prepaint -->
     <!-- Dev-only source of truth; production HTML is rendered by the Python shell. -->
     <script type="module" src="/resources/js/main.jsx"></script>
   </head>
@@ -1435,18 +1743,57 @@ _PACKAGE_JSON_TEMPLATE = """\
   "type": "module",
   "scripts": {{
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "lint": "eslint . --fix",
+    "lint:check": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   }},
   "dependencies": {{
     "@fastplace/react": "{react_dep}",
+    "@radix-ui/react-avatar": "^1.2.6",
+    "@radix-ui/react-checkbox": "^1.3.11",
+    "@radix-ui/react-collapsible": "^1.1.20",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "@radix-ui/react-label": "^2.1.15",
+    "@radix-ui/react-navigation-menu": "^1.2.22",
+    "@radix-ui/react-select": "^2.3.7",
+    "@radix-ui/react-separator": "^1.1.15",
+    "@radix-ui/react-slot": "^1.3.3",
+    "@radix-ui/react-toggle": "^1.1.18",
+    "@radix-ui/react-toggle-group": "^1.1.19",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "input-otp": "^1.5.0",
+    "lucide-react": "^1.46.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.7.0",
+    "tw-animate-css": "^1.4.0"
   }},
   "devDependencies": {{
+    "@eslint/js": "^9.14.0",
     "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^9.14.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.4.2",
     "tailwindcss": "^4.0.0",
-    "vite": "^6.0.3"
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.70.0",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
   }}
 }}
 """
@@ -1464,6 +1811,12 @@ import tailwindcss from "@tailwindcss/vite";
 // - build: hashed assets + manifest.json into public/build/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // App-tree alias: dev, build, and vitest share this config.
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "resources/js"),
+    },
+  },
   root: ".",
   publicDir: "public",
   build: {
@@ -1481,97 +1834,13 @@ export default defineConfig({
     // no reverse proxy is needed.
     proxy: {},
   },
+  test: {
+    environment: "jsdom",
+    include: [
+      "resources/js/**/__tests__/**/*.{test,spec}.{ts,tsx,js,jsx}",
+    ],
+  },
 });
-"""
-
-_MAIN_JSX_TEMPLATE = """\
-import { createFastplaceApp, createPageResolver } from "@fastplace/react";
-import "../css/app.css";
-
-// Glob-declared pages: every resources/js/pages/**/*.{jsx,tsx} file is a
-// routable component, resolved by the payload's `component` name. The glob
-// is eager so pages can expose their persistent layout through a `layout`
-// static before first render.
-const resolvePage = createPageResolver(
-  import.meta.glob("./pages/**/*.{jsx,tsx,js,ts}", { eager: true }),
-);
-
-createFastplaceApp({ resolve: resolvePage }).catch((err) => {
-  console.error("[fastplace] bootstrap failed:", err);
-  const el = document.getElementById("fastplace");
-  if (el) {
-    el.textContent = "Failed to boot the Fastplace app — check the browser console.";
-  }
-});
-"""
-
-_APP_LAYOUT_TEMPLATE = """\
-import React from "react";
-import { Link, usePage } from "@fastplace/react";
-
-/**
- * The persistent application chrome — header + content slot. Pages opt in
- * via a `layout = AppLayout` static; the bridge keeps this component
- * mounted across navigation, so its state survives page swaps.
- */
-export default function AppLayout({ children }) {
-  const { props } = usePage();
-
-  return (
-    <div className="min-h-dvh bg-surface text-ink">
-      <header className="border-line bg-surface-raised border-b">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
-          <Link href="/" className="text-lg font-semibold">
-            {props.appName ?? "Fastplace"}
-          </Link>
-        </div>
-      </header>
-      <main className="mx-auto max-w-4xl px-6 py-10">{children}</main>
-    </div>
-  );
-}
-"""
-
-_HOME_PAGE_TEMPLATE = """\
-import React from "react";
-import { usePage } from "@fastplace/react";
-import AppLayout from "../../layouts/AppLayout";
-
-export default function HomeIndex() {
-  const { props } = usePage();
-
-  return (
-    <section>
-      <h1 className="text-2xl font-semibold">{props.appName ?? "Fastplace"}</h1>
-      <p className="text-ink-muted mt-2">
-        Your Fastplace app is running. Edit{" "}
-        <code>resources/js/pages/Home/Index.jsx</code> to get started.
-      </p>
-    </section>
-  );
-}
-
-// Persistent-layout opt-in — the bridge reads this static on the component.
-HomeIndex.layout = AppLayout;
-"""
-
-_APP_CSS_TEMPLATE = """\
-/*
- * Fastplace global styles — the single source of truth for the color theme.
- * Components use these tokens via Tailwind utility classes (bg-surface,
- * text-ink, border-line, …).
- */
-@import "tailwindcss";
-
-@theme {
-  --color-surface: oklch(0.985 0.002 250);
-  --color-surface-raised: oklch(1 0 0);
-  --color-ink: oklch(0.2 0.02 258);
-  --color-ink-muted: oklch(0.5 0.02 258);
-  --color-line: oklch(0.9 0.01 258);
-  --color-brand-500: oklch(0.62 0.17 258);
-  --color-brand-600: oklch(0.55 0.18 258);
-}
 """
 
 _README_TEMPLATE = """\
@@ -1589,6 +1858,16 @@ deployable modular monolith.
     fastplace migrate
     fastplace run dev
 
+## Parked form targets
+
+The starter ships the full settings UI. These form targets are intentionally
+unrouted until you wire their backends: profile update (PATCH
+`/settings/profile`), account deletion (DELETE `/settings/profile`), password
+change (PUT `/settings/password`), and passkeys (`/user/passkeys*`). The
+login, registration, password-reset, email-verification, and two-factor flows
+are fully routed. Wire the parked endpoints in your own controllers when you
+need them.
+
 ## Layout
 
 - `app/modules/<name>/` — bounded feature modules (models/, repositories/, services/)
@@ -1603,6 +1882,44 @@ deployable modular monolith.
 def _slugify_project(name: str) -> str:
     """``My Blog App`` → ``my-blog-app`` (also the target directory name)."""
     return re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+
+
+def scaffold_templates_dir() -> str:
+    """The shipped frontend starter corpus — package-data next to this module.
+
+    ``fastplace new`` walks this tree verbatim into every new project: the
+    design-system components, the app/auth/settings shells, the auth pages,
+    the blank dashboard, and the root tooling configs.
+    """
+    return str(Path(__file__).parent / "scaffold_templates")
+
+
+# Binary assets cannot round-trip through read_text() — copy them byte-exact.
+_BINARY_SUFFIXES = {".ico", ".png", ".jpg", ".jpeg", ".gif", ".woff", ".woff2"}
+
+
+def _write_scaffold_templates(target: Path) -> None:
+    """Walk the shipped starter corpus into a freshly scaffolded project.
+
+    Every file lands at its corpus-relative path, verbatim: the design system,
+    the app/auth/settings shells, the auth pages, the blank dashboard, the
+    root tooling configs (tsconfig, eslint), and the public assets. Text
+    files go through ``_write`` (non-clobber, consistent console output);
+    binaries are byte-copied.
+    """
+    corpus = Path(scaffold_templates_dir())
+    for src in sorted(corpus.rglob("*")):
+        if not src.is_file() or src.name == ".DS_Store":
+            continue
+        rel = src.relative_to(corpus)
+        dest = target / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.suffix in _BINARY_SUFFIXES:
+            if not dest.exists():
+                shutil.copyfile(src, dest)
+                console.print(f"[green]created[/] {dest.relative_to(_project_root())}")
+            continue
+        _write(dest, src.read_text(), _project_root())
 
 
 def _framework_checkout() -> Path | None:
@@ -1633,16 +1950,196 @@ def _published_fastplace_dep() -> str:
         return "fastplace>=0.1.0"
 
 
+# The installer wordmark — FASTPLACE set in solid blocks. The letterforms come
+# from a block figlet font, narrowed to a uniform seven columns so nine letters
+# fit an 80-column terminal on one line; rows join on a uniform two-column gap
+# and every glyph is padded to its full cell, so the spacing never varies with
+# a row's content — solid shapes with even air between them read clean where
+# outline figlet fonts blur their thin connectors.
+_GLYPHS: dict[str, tuple[str, ...]] = {
+    "F": ("███████", "██", "██", "█████", "██", "██", "██"),
+    "A": ("  ███", " ██ ██", "██   ██", "███████", "██   ██", "██   ██", "██   ██"),
+    "S": (" █████", "██   ██", "██", " █████", "     ██", "██   ██", " █████"),
+    "T": ("███████", "  ██", "  ██", "  ██", "  ██", "  ██", "  ██"),
+    "P": ("███████", "██   ██", "██   ██", "███████", "██", "██", "██"),
+    "L": ("██", "██", "██", "██", "██", "██", "███████"),
+    "C": (" █████", "██   ██", "██", "██", "██", "██   ██", " █████"),
+    "E": ("███████", "██", "██", "█████", "██", "██", "███████"),
+}
+_BANNER = "\n".join("  ".join(_GLYPHS[ch][row].ljust(7) for ch in "FASTPLACE") for row in range(7))
+
+
+def _begin_step(title: str) -> None:
+    """Open a named installation phase (``● Title``)."""
+    console.print(f"\n[cyan]●[/] [bold]{title}[/]")
+
+
+def _step_done(text: str) -> None:
+    console.print(f"  [green]✓[/] {text}")
+
+
+def _step_fail(text: str) -> None:
+    console.print(f"  [red]✗[/] {text}")
+
+
+def _run_step_command(cmd: list[str], cwd: Path, timeout: int = 600) -> tuple[bool, str]:
+    """Run one installer sub-command quietly.
+
+    Returns ``(ok, detail)`` where detail is a short, indented tail of the
+    command's own output — enough to diagnose a failure without flooding the
+    installer transcript.
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+        )
+    except OSError as exc:
+        return False, "\n".join(f"    {line}" for line in str(exc).splitlines())
+
+    def _tail(err: str, out: str) -> str:
+        noise = (err + "\n" + out).strip().splitlines()
+        return "\n".join(f"    {line}" for line in [ln for ln in noise if ln.strip()][-3:])
+
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # npm.cmd (the Windows shim) spawns node.exe children that inherit
+        # the captured pipes — killing only the direct child leaves them
+        # holding the pipe and communicate() draining forever, so on Windows
+        # the whole tree goes first.
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            proc.kill()
+        try:
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        tail = _tail(err or "", out or "")
+        return False, f"    timed out after {timeout}s" + (f"\n{tail}" if tail else "")
+    if proc.returncode != 0:
+        return False, _tail(err or "", out or "")
+    return True, ""
+
+
+def _install_dependencies(target: Path) -> bool:
+    """One-shot local setup for ``fastplace new --install``.
+
+    Creates the project virtualenv, installs the app editable (pulling
+    fastplace itself), runs the migrations, then installs npm packages and
+    builds the frontend assets. Every sub-step reports ✓/✗; the first
+    Python-side failure stops the Python toolchain, and npm is skipped with
+    a warning when it is not on PATH. Returns True only when everything ran —
+    the caller shortens the ready panel on True.
+    """
+    venv_bin = target / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    venv_python = venv_bin / ("python.exe" if os.name == "nt" else "python")
+    venv_fastplace = venv_bin / ("fastplace.exe" if os.name == "nt" else "fastplace")
+
+    for label, cmd, timeout in (
+        ("Virtual environment created", [sys.executable, "-m", "venv", ".venv"], 120),
+        (
+            "Python dependencies installed",
+            [str(venv_python), "-m", "pip", "install", "-e", "."],
+            600,
+        ),
+        ("Database migrated", [str(venv_fastplace), "migrate"], 300),
+    ):
+        ok, detail = _run_step_command(cmd, target, timeout=timeout)
+        if not ok:
+            _step_fail(f"{label} — finish by hand with the steps below")
+            if detail:
+                console.print(Text(detail, style="red"))
+            return False
+        _step_done(label)
+
+    npm = shutil.which("npm")
+    if npm is None:
+        _step_fail("Frontend packages — npm not found on PATH, install Node.js to build")
+        return False
+
+    for label, cmd, timeout in (
+        ("Frontend packages installed", [npm, "install"], 900),
+        ("Frontend assets built", [npm, "run", "build"], 600),
+    ):
+        ok, detail = _run_step_command(cmd, target, timeout=timeout)
+        if not ok:
+            _step_fail(f"{label} — run npm install && npm run build later")
+            if detail:
+                console.print(Text(detail, style="red"))
+            return False
+        _step_done(label)
+
+    return True
+
+
+def _next_steps_panel(
+    slug: str, *, auth: bool, installed: bool, install_failed: bool = False
+) -> None:
+    """The boxed finale — the shortest correct next-step list for what the
+    installer actually did. A failed ``--install`` run keeps the manual steps
+    but drops the celebratory green: the title says what still has to happen."""
+    venv_activate = ".venv\\Scripts\\activate" if os.name == "nt" else "source .venv/bin/activate"
+    if installed:
+        lines = [
+            f"  1. cd {slug}",
+            f"  2. {venv_activate}",
+            "  3. fastplace run dev",
+        ]
+    else:
+        lines = [
+            f"  1. cd {slug}",
+            f"  2. python -m venv .venv && {venv_activate}",
+            "  3. pip install -e .   # or: pip install fastplace once published",
+            "  4. npm install && npm run build",
+            "  5. fastplace migrate",
+            "  6. fastplace run dev",
+        ]
+    if auth:
+        lines += [
+            "",
+            "  The FIRST account at http://localhost:8000/register becomes the admin.",
+        ]
+    if install_failed:
+        title, border = "[bold]Project created — finish setup below[/]", "yellow"
+    else:
+        title, border = "[bold green]Application ready[/]", "green"
+    console.print(Panel("\n".join(lines), title=title, border_style=border, expand=False))
+    console.print("[dim]Build something great![/]")
+
+
 @generators_app.command("new")
 def new_project(
     name: str = typer.Argument(..., help="Project name (letters, digits, spaces, _ and -)"),
+    auth: bool | None = typer.Option(
+        None,
+        "--auth/--no-auth",
+        help="Install the built-in authentication scaffold (prompted when omitted).",
+    ),
+    install: bool | None = typer.Option(
+        None,
+        "--install/--no-install",
+        help=(
+            "Create the virtualenv, install dependencies, migrate the database, "
+            "and build the frontend (prompted when omitted)."
+        ),
+    ),
 ) -> None:
     """Create a new Fastplace application skeleton (blueprint §3).
 
     Module-first layout, SQLite-by-default env, thin routes, bootable ASGI
-    entry — everything ``fastplace run dev`` expects, nothing more.
+    entry — everything ``fastplace run dev`` expects, nothing more. With
+    ``--install`` the fresh project is set up end to end, ready to run.
     """
     import secrets
+
+    console.print(_BANNER, style="green", markup=False, highlight=False, soft_wrap=True)
+    console.print("[dim]Fastplace application installer[/]")
 
     clean = name.strip()
     # Refuse path-shaped input up front — a silent slug rewrite would scaffold
@@ -1670,14 +2167,48 @@ def new_project(
         console.print(f"[red]error[/] {slug}/ already exists and is not empty")
         raise typer.Exit(code=1)
 
+    # Ask once, at creation — flag wins when given; absent flag prompts with
+    # a YES default; a closed stdin (pipes, CI) falls back to YES + notice
+    # so unattended runs never hang or crash on the prompt. typer.confirm
+    # folds both EOF and Ctrl+C into Abort, so an interactive terminal (a
+    # tty present) re-raises: a deliberate interrupt must still abort.
+    if auth is None:
+        try:
+            auth = typer.confirm("Install the built-in authentication scaffold?", default=True)
+        except Exception as exc:
+            if isinstance(exc, typer.exceptions.Abort) and sys.stdin and sys.stdin.isatty():
+                raise
+            console.print("[yellow]no interactive terminal — defaulting to --auth[/]")
+            auth = True
+
+    # Same ask for the dependency toolchain — but the fallback is NO, not
+    # YES: installing costs network and minutes, so unattended runs must not
+    # opt in (only the interactive Enter default and the explicit flag can).
+    if install is None:
+        try:
+            install = typer.confirm(
+                "Install dependencies now (Python venv, pip, migrations, npm)?", default=False
+            )
+        except Exception as exc:
+            if isinstance(exc, typer.exceptions.Abort) and sys.stdin and sys.stdin.isatty():
+                raise
+            console.print("[yellow]no interactive terminal — skipping dependency install[/]")
+            install = False
+
+    _begin_step("Creating application files")
     env = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key=secrets.token_urlsafe(48))
     env_example = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key="")
 
     # Local-install wiring: when the CLI runs from the framework checkout,
-    # dependency specs point at it so installs resolve pre-publish.
+    # dependency specs point at it so installs resolve pre-publish. The npm
+    # side only qualifies when packages/react carries a built dist/ (its
+    # entry points there); a bare source checkout would install a package
+    # nothing can resolve, so it falls back to the published registry spec.
     checkout = _framework_checkout()
     fastplace_dep = f"fastplace @ file://{checkout}" if checkout else _published_fastplace_dep()
-    react_dep = f"file:{checkout / 'packages' / 'react'}" if checkout else "^0.1.0"
+    react_dep = "^0.1.0"
+    if checkout and (checkout / "packages/react/dist/fastplace-react.js").is_file():
+        react_dep = f"file:{checkout / 'packages' / 'react'}"
 
     # (path, content) pairs — written through _write so a re-run never
     # clobbers hand edits in existing files.
@@ -1711,12 +2242,6 @@ def new_project(
         ),
         (Path("app/models/__init__.py"), _INIT_TEMPLATE.format(doc="Shared base model classes")),
         (Path("database/seeders/.gitkeep"), ""),
-        (Path("resources/js/main.jsx"), _MAIN_JSX_TEMPLATE),
-        (Path("resources/js/layouts/AppLayout.jsx"), _APP_LAYOUT_TEMPLATE),
-        (Path("resources/js/pages/Home/Index.jsx"), _HOME_PAGE_TEMPLATE),
-        (Path("resources/js/components/.gitkeep"), ""),
-        (Path("resources/js/hooks/.gitkeep"), ""),
-        (Path("resources/css/app.css"), _APP_CSS_TEMPLATE),
         (Path("routes/__init__.py"), _INIT_TEMPLATE.format(doc="Thin route entry points.")),
         (Path("routes/web.py"), _WEB_ROUTES_TEMPLATE),
         (Path("routes/api.py"), _API_ROUTES_TEMPLATE),
@@ -1747,17 +2272,102 @@ def new_project(
     for rel, content in writes:
         _write(target / rel, content, _project_root())
 
+    # The complete frontend starter (R2): design system, shells, auth pages,
+    # blank dashboard, tooling configs — every corpus file, verbatim.
+    _write_scaffold_templates(target)
+    _step_done("Application created")
+
+    _begin_step("Preparing database")
     # Pre-configure the Alembic environment (what ``db:configure`` scaffolds)
     # so the printed ``fastplace migrate`` step works on a fresh project.
     from fastplace.orm.migrations import MigrationsManager
 
     for path in MigrationsManager(target).scaffold():
         console.print(f"[green]created[/] {path.relative_to(_project_root())}")
+    _step_done("Migrations configured")
 
-    console.print("\n[green]Fastplace app ready![/] Next steps:\n")
-    console.print(f"  cd {slug}")
-    console.print("  python -m venv .venv && source .venv/bin/activate")
-    console.print("  pip install -e .   # or: pip install fastplace once published")
-    console.print("  npm install")
-    console.print("  fastplace migrate")
-    console.print("  fastplace run dev\n")
+    if auth:
+        _begin_step("Installing authentication")
+        from fastplace.cli.auth_scaffold import write_auth_surface
+
+        # The two config variants replace the minimal ones written moments
+        # ago by this same command (force=True is safe — never hand edits).
+        _write(
+            target / "config/app.py",
+            _CONFIG_APP_AUTH_TEMPLATE.format(app_name=app_name),
+            _project_root(),
+            force=True,
+        )
+        _write(target / "config/auth.py", _CONFIG_AUTH_ORM_TEMPLATE, _project_root(), force=True)
+        write_auth_surface(target)
+
+        # The auth variant's page layer — the guest auth pages, the blank
+        # dashboard, and the settings pages. web.py replaces the minimal
+        # one written moments ago by this same command (force=True is safe —
+        # never hand edits); the controllers are new files.
+        _write(
+            target / "app/http/controllers/auth_page_controller.py",
+            _AUTH_PAGE_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(
+            target / "app/http/controllers/dashboard_controller.py",
+            _DASHBOARD_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(
+            target / "app/http/controllers/settings_pages_controller.py",
+            _SETTINGS_PAGES_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(
+            target / "app/http/controllers/settings_appearance_controller.py",
+            _SETTINGS_APPEARANCE_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(target / "routes/web.py", _WEB_ROUTES_AUTH_TEMPLATE, _project_root(), force=True)
+        _step_done("Authentication installed")
+
+        # The users table ships with the scaffold — `fastplace migrate` on a
+        # fresh project creates it, no make:auth follow-up needed.
+        # Autogenerate runs in a subprocess: env.py's model discovery imports
+        # every app.* module of the project it generates for, and in-process
+        # those modules would stay cached in sys.modules — shadowing the host
+        # project's own for the rest of this CLI process's life (duplicate
+        # declarative classes, wrong gates on every later boot).
+        bootstrap = (
+            "from pathlib import Path\n"
+            "from fastplace.orm.migrations import MigrationsManager\n"
+            "rev = MigrationsManager(Path('.')).make('create_users_table')\n"
+            "print(rev if rev else '')\n"
+        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", bootstrap],
+                cwd=target,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=180,
+            )
+            made = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+            if proc.returncode == 0 and made:
+                _step_done(f"Users table migration created ({Path(made).name})")
+                bootstrap_error = ""
+            else:
+                bootstrap_error = (proc.stderr or "").strip()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            bootstrap_error = str(exc)
+        if bootstrap_error:
+            _step_fail("Users table migration failed")
+            console.print(Text(bootstrap_error, style="red"))
+
+    if install:
+        _begin_step("Installing dependencies")
+        installed = _install_dependencies(target)
+    else:
+        installed = False
+
+    _next_steps_panel(
+        slug, auth=auth, installed=installed, install_failed=install and not installed
+    )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from fastplace.cli.generators import _project_root, _write, console, generators_app
@@ -39,6 +41,10 @@ class User(Model):
     two_factor_secret: str | None = Field(text=True, default=None)
     two_factor_recovery_codes: str | None = Field(text=True, default=None)
     two_factor_confirmed_at: datetime.datetime | None = None
+
+    # Admin grant — set only by explicit service/CLI code, never fillable:
+    # mass assignment must never escalate privileges (OWASP).
+    is_admin: bool = Field(default=False)
 '''
 _USER_REPOSITORY_TEMPLATE = '''"""User data access — the accounts module's repository layer."""
 
@@ -57,8 +63,20 @@ class UserRepository:
     async def find_by_id(self, user_id) -> User | None:
         return await User.find(user_id)
 
-    async def create_user(self, *, name: str, email: str, password: str) -> User:
-        return await User.create(name=name, email=email, password_hash=Hash.make(password))
+    async def create_user(
+        self, *, name: str, email: str, password: str, is_admin: bool = False
+    ) -> User:
+        # is_admin deliberately bypasses User.create(): the column is not
+        # mass-assignable, so admin grants flow only through this explicit
+        # keyword — never from a request payload.
+        user = User(
+            name=name,
+            email=email,
+            password_hash=Hash.make(password),
+            is_admin=is_admin,
+        )
+        await user.save()
+        return user
 '''
 _AUTH_SERVICE_TEMPLATE = '''"""Credential login/logout — the service layer over the session guard."""
 
@@ -284,7 +302,13 @@ class RegistrationService:
         if errors:
             raise ValidationError(errors=errors)
 
-        user = await self.repository.create_user(name=name, email=email, password=password)
+        # Binding product rule: the FIRST real signup owns the app — admin
+        # by registration count, never by seeded credentials. Later signups
+        # stay regular until a developer promotes them (user:create --admin).
+        is_first_user = await User.count() == 0
+        user = await self.repository.create_user(
+            name=name, email=email, password=password, is_admin=is_first_user
+        )
         await dispatch(DomainEvent("Registered", {"user_id": user.id, "email": user.email}))
         await guard().login(request, user)
         return user
@@ -851,30 +875,6 @@ router.get(
 )
 '''
 
-_USER_SEEDER_TEMPLATE = '''"""User seeder — the first account for a fresh project."""
-
-from __future__ import annotations
-
-import datetime
-import os
-
-from app.modules.accounts.models.user import User
-from fastplace.auth.hashing import Hash
-
-
-async def run() -> None:
-    email = os.environ.get("SEED_USER_EMAIL", "admin@example.com")
-    password = os.environ.get("SEED_USER_PASSWORD", "password")
-    if await User.where(User.email == email).first() is not None:
-        return
-    await User.create(
-        name="Admin",
-        email=email,
-        password_hash=Hash.make(password),
-        email_verified_at=datetime.datetime.now(datetime.UTC),
-    )
-'''
-
 _GATES_TEMPLATE = '''"""Project gate registrations — imported by the kernel at boot (spec §4.15).
 
 Every ability the ``can:`` middleware or ``authorize()`` names must be
@@ -894,12 +894,116 @@ async def view_dashboard(user, *args):
 
 @gate.before
 async def superuser(user, ability, *args):
-    # Example global hook: the seeded admin passes every check. Delete or
-    # tighten for your project.
-    if user is not None and getattr(user, "email", None) == "admin@example.com":
+    # The first registered account (is_admin) passes every check. Grant is
+    # data, not identity: promote via `fastplace user:create --admin` or a
+    # direct DB edit.
+    if user is not None and getattr(user, "is_admin", False):
         return True
     return None
 '''
+
+
+_ACCOUNTS_MODELS_INIT_TEMPLATE = """from app.modules.accounts.models.user import User
+
+__all__ = ["User"]
+"""
+
+_MAIL_JOB_TEMPLATE = '''"""Mail delivery job + the Registered verification listener.
+
+``mail_send`` is the queue entry point (queued only when MAIL_DRIVER=smtp
+and QUEUE_DRIVER=saq — see fastplace.mail.Mail.send); the listener runs
+in-process (``Registered`` has no same-named @Job, so dispatch never
+auto-enqueues it).
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastplace.errors import ConfigurationError
+from fastplace.events import DomainEvent, listen
+from fastplace.mail import Mail, message_from_dict
+from fastplace.queue import Job
+
+logger = logging.getLogger(__name__)
+
+
+@Job(name="mail_send")
+async def mail_send(message: dict) -> None:
+    """Deliver one queued MailMessage payload (param name matters: saq
+    hijacks handler kwargs named timeout/ttl/kwargs)."""
+    await Mail.deliver(message_from_dict(message))
+
+
+async def send_registration_verification(event: DomainEvent) -> None:
+    """Mail the verification link for a freshly registered account."""
+    from app.modules.accounts.services.verification_service import VerificationService
+
+    email = str(event.payload["email"])
+    try:
+        await VerificationService().send_link(int(event.payload["user_id"]), email)
+    except ConfigurationError:
+        # Empty APP_KEY is the documented dev default (config/app.py) and the
+        # account is already committed by the time this listener runs — skip
+        # the signed link rather than fail the whole registration.
+        logger.warning("APP_KEY is not set — skipping verification email for %s", email)
+
+
+# listen() is a plain function, NOT a decorator factory — explicit call.
+listen("Registered", send_registration_verification)
+'''
+
+# The single source of truth for the auth scaffold's file surface — shared
+# by `fastplace new --auth` and `fastplace make:auth` so the two paths can
+# never diverge. (relative path, template text) pairs, in write order.
+AUTH_FILES: list[tuple[str, str]] = [
+    ("app/modules/accounts/models/user.py", _USER_MODEL_TEMPLATE),
+    # The models package must re-export User: config/auth.py points the ORM
+    # provider at the dotted path app.modules.accounts.models.User, and an
+    # empty __init__ 500s every authenticated request after registration.
+    ("app/modules/accounts/models/__init__.py", _ACCOUNTS_MODELS_INIT_TEMPLATE),
+    ("app/modules/accounts/repositories/user_repository.py", _USER_REPOSITORY_TEMPLATE),
+    ("app/modules/accounts/services/auth_service.py", _AUTH_SERVICE_TEMPLATE),
+    ("app/modules/accounts/services/password_policy.py", _PASSWORD_POLICY_TEMPLATE),
+    (
+        "app/modules/accounts/services/password_reset_service.py",
+        _PASSWORD_RESET_SERVICE_TEMPLATE,
+    ),
+    (
+        "app/modules/accounts/services/registration_service.py",
+        _REGISTRATION_SERVICE_TEMPLATE,
+    ),
+    ("app/modules/accounts/services/two_factor_service.py", _TWO_FACTOR_SERVICE_TEMPLATE),
+    ("app/modules/accounts/services/verification_service.py", _VERIFICATION_SERVICE_TEMPLATE),
+    ("app/http/requests/login_request.py", _LOGIN_REQUEST_TEMPLATE),
+    ("app/http/requests/register_request.py", _REGISTER_REQUEST_TEMPLATE),
+    ("app/http/requests/confirm_password_request.py", _CONFIRM_PASSWORD_REQUEST_TEMPLATE),
+    ("app/http/requests/forgot_password_request.py", _FORGOT_PASSWORD_REQUEST_TEMPLATE),
+    ("app/http/requests/reset_password_request.py", _RESET_PASSWORD_REQUEST_TEMPLATE),
+    ("app/http/controllers/auth_api_controller.py", _AUTH_API_CONTROLLER_TEMPLATE),
+    ("app/http/controllers/two_factor_api_controller.py", _TWO_FACTOR_API_CONTROLLER_TEMPLATE),
+    ("routes/auth.py", _AUTH_ROUTES_TEMPLATE),
+    ("app/auth/gates.py", _GATES_TEMPLATE),
+    # The kernel imports app/jobs at boot (import_jobs) — without this file
+    # the Registered event has no listener and no verification mail sends.
+    ("app/jobs/mail.py", _MAIL_JOB_TEMPLATE),
+]
+
+# Package markers so pkgutil/import_gates discovery finds the new code.
+AUTH_PACKAGE_MARKERS: tuple[str, ...] = (
+    "app/modules/accounts/__init__.py",
+    "app/modules/accounts/repositories/__init__.py",
+    "app/modules/accounts/services/__init__.py",
+    "app/auth/__init__.py",
+)
+
+
+def write_auth_surface(root: Path) -> None:
+    """Write every auth-scaffold file (non-clobbering) under ``root``."""
+    for rel, template in AUTH_FILES:
+        _write(root / rel, template, root)
+    for rel in AUTH_PACKAGE_MARKERS:
+        _write(root / rel, "", root)
 
 
 @generators_app.command("make:auth")
@@ -913,50 +1017,7 @@ def make_auth(
     """Scaffold the auth surface (spec §4.17) — new files only."""
     root = _project_root()
 
-    _write(root / "app/modules/accounts/models/user.py", _USER_MODEL_TEMPLATE, root)
-    _write(
-        root / "app/modules/accounts/repositories/user_repository.py",
-        _USER_REPOSITORY_TEMPLATE,
-        root,
-    )
-    for name, template in (
-        ("auth_service.py", _AUTH_SERVICE_TEMPLATE),
-        ("password_policy.py", _PASSWORD_POLICY_TEMPLATE),
-        ("password_reset_service.py", _PASSWORD_RESET_SERVICE_TEMPLATE),
-        ("registration_service.py", _REGISTRATION_SERVICE_TEMPLATE),
-        ("two_factor_service.py", _TWO_FACTOR_SERVICE_TEMPLATE),
-        ("verification_service.py", _VERIFICATION_SERVICE_TEMPLATE),
-    ):
-        _write(root / "app/modules/accounts/services" / name, template, root)
-    for name, template in (
-        ("login_request.py", _LOGIN_REQUEST_TEMPLATE),
-        ("register_request.py", _REGISTER_REQUEST_TEMPLATE),
-        ("confirm_password_request.py", _CONFIRM_PASSWORD_REQUEST_TEMPLATE),
-        ("forgot_password_request.py", _FORGOT_PASSWORD_REQUEST_TEMPLATE),
-        ("reset_password_request.py", _RESET_PASSWORD_REQUEST_TEMPLATE),
-    ):
-        _write(root / "app/http/requests" / name, template, root)
-    _write(
-        root / "app/http/controllers/auth_api_controller.py", _AUTH_API_CONTROLLER_TEMPLATE, root
-    )
-    _write(
-        root / "app/http/controllers/two_factor_api_controller.py",
-        _TWO_FACTOR_API_CONTROLLER_TEMPLATE,
-        root,
-    )
-    _write(root / "routes/auth.py", _AUTH_ROUTES_TEMPLATE, root)
-    _write(root / "database/seeders/user_seeder.py", _USER_SEEDER_TEMPLATE, root)
-    _write(root / "app/auth/gates.py", _GATES_TEMPLATE, root)
-
-    # Package markers so pkgutil/import_gates discovery finds the new code.
-    for marker in (
-        root / "app/modules/accounts/__init__.py",
-        root / "app/modules/accounts/models/__init__.py",
-        root / "app/modules/accounts/repositories/__init__.py",
-        root / "app/modules/accounts/services/__init__.py",
-        root / "app/auth/__init__.py",
-    ):
-        _write(marker, "", root)
+    write_auth_surface(root)
 
     if migration:
         from fastplace.cli.database import _manager
@@ -970,7 +1031,7 @@ def make_auth(
 
     console.print("\n[bold]Auth scaffold complete.[/] Manual steps left:")
     console.print("  1. [cyan]fastplace migrate[/] — create the users table")
-    console.print("  2. [cyan]fastplace db:seed[/] — seed the first user")
+    console.print("  2. open /register — the FIRST account you create becomes the admin")
     console.print("  3. point AUTH_PROVIDERS at the ORM User (the default in config/auth.py)")
     console.print("  4. add MAIL_* keys to .env for reset/verification mail")
     console.print("  5. set AUTH_SHARED_ABILITIES in config/auth.py for useCan() props")

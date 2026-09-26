@@ -83,11 +83,12 @@ def test_pyproject_declares_trove_classifiers():
         assert needle in classifiers_block, needle
 
 
-def test_sdist_and_wheel_carry_the_migration_templates():
-    """``fastplace new`` (and ``migrate`` on a fresh project) copies the Alembic
-    env/script templates out of the *installed* package. A wheel or sdist that
-    omits them crashes the primary onboarding path with FileNotFoundError —
-    found the hard way via a clean-room wheel install."""
+@pytest.fixture(scope="module")
+def built_artifacts():
+    """One wheel + sdist build shared by the artifact-content tests.
+
+    A full ``python -m build`` costs tens of seconds — the artifact tests
+    must not each pay it."""
     pytest.importorskip("build", reason="packaging toolchain (build) not installed")
     import subprocess
     import tarfile
@@ -99,22 +100,49 @@ def test_sdist_and_wheel_carry_the_migration_templates():
         check=True,
         capture_output=True,
     )
+    wheel = next(_BUILD_DIR.glob("fastplace-*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        wheel_names = set(archive.namelist())
+    sdist = next(_BUILD_DIR.glob("fastplace-*.tar.gz"))
+    with tarfile.open(sdist) as archive:
+        sdist_names = {member.name.split("/", 1)[-1] for member in archive.getmembers()}
+    return wheel, sdist, wheel_names, sdist_names
+
+
+def test_sdist_and_wheel_carry_the_migration_templates(built_artifacts):
+    """``fastplace new`` (and ``migrate`` on a fresh project) copies the Alembic
+    env/script templates out of the *installed* package. A wheel or sdist that
+    omits them crashes the primary onboarding path with FileNotFoundError —
+    found the hard way via a clean-room wheel install."""
+    wheel, sdist, wheel_names, sdist_names = built_artifacts
     templates = {
         "fastplace/orm/migrations/templates/env.py.tpl",
         "fastplace/orm/migrations/templates/script.py.mako",
     }
-
-    wheel = next(_BUILD_DIR.glob("fastplace-*.whl"))
-    with zipfile.ZipFile(wheel) as archive:
-        names = set(archive.namelist())
-    missing = templates - names
+    missing = templates - wheel_names
     assert not missing, f"wheel {wheel.name} omits: {sorted(missing)}"
-
-    sdist = next(_BUILD_DIR.glob("fastplace-*.tar.gz"))
-    with tarfile.open(sdist) as archive:
-        names = {member.name.split("/", 1)[-1] for member in archive.getmembers()}
-    missing = templates - names
+    missing = templates - sdist_names
     assert not missing, f"sdist {sdist.name} omits: {sorted(missing)}"
+
+
+def test_sdist_and_wheel_carry_the_scaffold_templates(built_artifacts):
+    """The frontend starter corpus is package-data under ``fastplace.cli`` —
+    an installed ``fastplace new`` walks it verbatim. A wheel or sdist that
+    omits even one file silently ships a degraded starter kit."""
+    from fastplace.cli.generators import scaffold_templates_dir
+
+    wheel, sdist, wheel_names, sdist_names = built_artifacts
+    corpus = Path(scaffold_templates_dir())
+    expected = sorted(
+        str(Path("fastplace") / p.relative_to(corpus.parent.parent))
+        for p in corpus.rglob("*")
+        if p.is_file()
+    )
+    assert expected, "corpus must not be empty"
+    missing = [name for name in expected if name not in wheel_names]
+    assert not missing, f"wheel {wheel.name} omits: {missing[:5]} (+{len(missing) - 5} more)"
+    missing = [name for name in expected if name not in sdist_names]
+    assert not missing, f"sdist {sdist.name} omits: {missing[:5]} (+{len(missing) - 5} more)"
 
 
 def test_tenancy_pyproject_declares_project_urls():

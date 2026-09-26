@@ -514,3 +514,29 @@ def test_env_template_binds_async_drivers(project):
     assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
     env_py = (project / "database" / "migrations" / "env.py").read_text()
     assert "normalize_database_url" in env_py
+
+
+def test_config_version_locations_is_absolute(project, monkeypatch):
+    """version_locations must resolve regardless of process CWD.
+
+    A relative value resolves against the CWD alembic happens to run from —
+    `fastplace new` autogenerates the users migration from the PARENT of the
+    project directory, and there a relative path either finds nothing or, far
+    worse, a stranger's revisions directory (an outer checkout's), which fails
+    autogenerate with "Target database is not up to date."
+    """
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+
+    from pathlib import Path
+
+    from fastplace.orm.migrations.manager import MigrationsManager
+
+    manager = MigrationsManager(project)
+    outside = Path(project / ".." / "elsewhere").resolve()
+    outside.mkdir(exist_ok=True)
+    monkeypatch.chdir(outside)
+
+    cfg = manager._config()
+    locations = cfg.get_main_option("version_locations")
+    assert Path(locations).is_absolute(), locations
+    assert Path(locations) == manager.versions_dir

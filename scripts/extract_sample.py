@@ -54,6 +54,33 @@ _INDEX_HTML_TEMPLATE = """\
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{app_name}</title>
+    <!-- fastplace-appearance-prepaint -->
+    <script>
+      (function () {{
+        var mode = "system";
+        try {{
+          var stored = localStorage.getItem("fastplace-appearance");
+          if (stored === "light" || stored === "dark") mode = stored;
+        }} catch (e) {{}}
+        var dark =
+          mode === "dark" ||
+          (mode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        var root = document.documentElement;
+        if (mode === "light" || mode === "dark") root.setAttribute("data-theme", mode);
+        else root.removeAttribute("data-theme");
+        if (dark) root.classList.add("dark");
+        root.style.colorScheme = dark ? "dark" : "light";
+      }})();
+    </script>
+    <style>
+      html {{
+        background-color: oklch(0.985 0.005 250);
+      }}
+      html.dark {{
+        background-color: oklch(0.19 0.02 262);
+      }}
+    </style>
+    <!-- /fastplace-appearance-prepaint -->
     <!-- Dev-only source of truth; production HTML is rendered by the Python shell. -->
     <script type="module" src="/resources/js/main.jsx"></script>
   </head>
@@ -74,18 +101,57 @@ _PACKAGE_JSON_TEMPLATE = """\
   "type": "module",
   "scripts": {{
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "lint": "eslint . --fix",
+    "lint:check": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   }},
   "dependencies": {{
     "@fastplace/react": "{react_dep}",
+    "@radix-ui/react-avatar": "^1.2.6",
+    "@radix-ui/react-checkbox": "^1.3.11",
+    "@radix-ui/react-collapsible": "^1.1.20",
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-dropdown-menu": "^2.1.24",
+    "@radix-ui/react-label": "^2.1.15",
+    "@radix-ui/react-navigation-menu": "^1.2.22",
+    "@radix-ui/react-select": "^2.3.7",
+    "@radix-ui/react-separator": "^1.1.15",
+    "@radix-ui/react-slot": "^1.3.3",
+    "@radix-ui/react-toggle": "^1.1.18",
+    "@radix-ui/react-toggle-group": "^1.1.19",
+    "@radix-ui/react-tooltip": "^1.2.16",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "input-otp": "^1.5.0",
+    "lucide-react": "^1.46.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.7.0",
+    "tw-animate-css": "^1.4.0"
   }},
   "devDependencies": {{
+    "@eslint/js": "^9.14.0",
     "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^9.14.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.4.2",
     "tailwindcss": "^4.0.0",
-    "vite": "^6.0.3"
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.70.0",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
   }}
 }}
 """
@@ -103,6 +169,12 @@ import tailwindcss from "@tailwindcss/vite";
 // - build: hashed assets + manifest.json into public/build/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // App-tree alias: dev, build, and vitest share this config.
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "resources/js"),
+    },
+  },
   root: ".",
   publicDir: "public",
   build: {
@@ -119,6 +191,12 @@ export default defineConfig({
     // The dev shell points straight at this server (see fastplace/http/assets.py);
     // no reverse proxy is needed.
     proxy: {},
+  },
+  test: {
+    environment: "jsdom",
+    include: [
+      "resources/js/**/__tests__/**/*.{test,spec}.{ts,tsx,js,jsx}",
+    ],
   },
 });
 """

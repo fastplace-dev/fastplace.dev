@@ -37,7 +37,12 @@ def isolate_project_state():
     reset_db()
     saved_path = list(sys.path)
     saved_modules = dict(sys.modules)
-    saved_tables = set(Model.metadata.tables)
+    # Table snapshot as a mapping, not a set: CLI introspection (collect_models)
+    # evicts foreign tables for its sandbox and — persist mode — leaves them
+    # out, so teardown must also put back what the test REMOVED, or later
+    # suites (tests/http's db.create_all builds schema from this metadata)
+    # silently lose the repo project's tables.
+    saved_tables = dict(Model.metadata.tables)
     parked = {
         name: module
         for name, module in saved_modules.items()
@@ -47,8 +52,15 @@ def isolate_project_state():
         del sys.modules[name]
     yield
     reset_db()
-    for key in set(Model.metadata.tables) - saved_tables:
+    # Additions first (a same-named tmp table must go before the snapshot's
+    # owner can return), then restore removals. FacadeDict is immutable, so
+    # re-registration goes through the internal entry point MetaData itself
+    # uses when a Table is first defined.
+    for key in set(Model.metadata.tables) - set(saved_tables):
         Model.metadata.remove(Model.metadata.tables[key])
+    for key, table in saved_tables.items():
+        if key not in Model.metadata.tables:
+            Model.metadata._add_table(key, table.schema, table)  # noqa: SLF001 — no public re-add
     for name in [m for m in list(sys.modules) if m not in saved_modules]:
         del sys.modules[name]
     sys.modules.update(parked)

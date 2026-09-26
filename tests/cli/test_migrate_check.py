@@ -11,6 +11,12 @@ import pytest
 from _isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 from typer.testing import CliRunner
 
+# Registered at collection time, like tests/cli/test_model_inspect.py — the
+# repo project's tables then sit on the global metadata while these tests
+# boot scaffolded projects in-process, which is exactly the cross-project
+# leak the sandbox in MigrationsManager.make and collect_models must scope out.
+import app.modules.accounts.models  # noqa: E402, F401
+import app.modules.projects.models  # noqa: E402, F401
 from fastplace.cli import app as cli_app
 
 runner = CliRunner()
@@ -98,3 +104,29 @@ def test_framework_tables_are_not_on_model_metadata(migrated):
         "fastplace_migrations",
     ):
         assert framework_table not in Model.metadata.tables
+
+
+def test_autogenerate_scopes_to_the_project_models(tmp_path, monkeypatch):
+    """Foreign tables registered in-process never leak into autogenerate.
+
+    The collection-time imports at the top of this file leave the repo
+    project's model classes mapped on the global metadata with their modules
+    parked out of ``sys.modules`` by the isolation fixture. A scaffolded
+    project's ``make:migration`` must diff only its own models — otherwise
+    the generated revision creates the foreign tables too, and ``migrate``
+    builds them in the fresh database only for ``migrate:check`` to demand
+    their removal.
+    """
+    _scaffold(tmp_path, monkeypatch, {"post": POST_MODEL})
+    for args in (["db:configure"], ["make:migration", "create_posts_table"], ["migrate"]):
+        result = runner.invoke(cli_app, args)
+        assert result.exit_code == 0, result.output
+
+    revisions = sorted((tmp_path / "database" / "migrations" / "versions").glob("*.py"))
+    body = "\n".join(p.read_text() for p in revisions)
+    assert "users" not in body  # the repo's tables never enter the revision
+    assert "posts" in body
+
+    result = runner.invoke(cli_app, ["migrate:check"])
+    assert result.exit_code == 0, result.output
+    assert "clean" in _out(result)
