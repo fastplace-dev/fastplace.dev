@@ -170,6 +170,9 @@ def user_create(
     password: str | None = typer.Option(
         None, "--password", help="The plaintext password (prompted hidden when omitted)."
     ),
+    admin: bool = typer.Option(
+        False, "--admin", help="Grant the admin flag (promotion path for regular users)."
+    ),
 ) -> None:
     """Create an account through the project's accounts repository."""
     load_env()
@@ -216,8 +219,11 @@ def user_create(
     from sqlalchemy.exc import IntegrityError
 
     try:
-        user = asyncio.run(repository.create_user(name=name, email=email, password=password))
+        user = asyncio.run(
+            repository.create_user(name=name, email=email, password=password, is_admin=admin)
+        )
     except IntegrityError:
         console.print(f"[red]a user with email {email} already exists[/]")
         raise typer.Exit(code=1) from None
-    console.print(f"[green]✓[/] user created: {user.name} <{user.email}> (id {user.id})")
+    grant = " [yellow](admin)[/] " if admin else " "
+    console.print(f"[green]✓[/] user created:{grant}{user.name} <{user.email}> (id {user.id})")

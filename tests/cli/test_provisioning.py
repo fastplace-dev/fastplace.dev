@@ -111,14 +111,20 @@ class FakeUserRepository:
     async def find_by_email(self, email: str):
         return email if email in self.emails else None
 
-    async def create_user(self, *, name: str, email: str, password: str):
+    async def create_user(self, *, name: str, email: str, password: str, is_admin: bool = False):
         from fastplace.auth.hashing import Hash
 
         self.created.append(
-            {"name": name, "email": email, "password": password, "digest": Hash.make(password)}
+            {
+                "name": name,
+                "email": email,
+                "password": password,
+                "digest": Hash.make(password),
+                "is_admin": is_admin,
+            }
         )
         self.emails.add(email)
-        return SimpleNamespace(id=len(self.created), name=name, email=email)
+        return SimpleNamespace(id=len(self.created), name=name, email=email, is_admin=is_admin)
 
 
 @pytest.fixture()
@@ -325,7 +331,7 @@ def test_user_create_loses_the_duplicate_race_gracefully(project, monkeypatch):
         """find_by_email misses (the rival's insert is uncommitted), then the
         insert itself loses the race at the flush."""
 
-        async def create_user(self, *, name, email, password):
+        async def create_user(self, *, name, email, password, is_admin=False):
             raise IntegrityError(
                 "INSERT INTO users ...", {}, Exception("UNIQUE constraint failed: users.email")
             )
@@ -371,6 +377,42 @@ def test_user_create_rejects_empty_password(project, fake_repo):
     result = runner.invoke(cli_app, ["user:create"], input="X\nx@y.z\n\n")
     assert result.exit_code == 1
     assert fake_repo.created == []
+
+
+def test_user_create_admin_flag_grants_the_flag(project, fake_repo):
+    # The promotion path: --admin must reach the repository as is_admin=True.
+    result = runner.invoke(
+        cli_app,
+        [
+            "user:create",
+            "--name",
+            "Grace",
+            "--email",
+            "grace@example.com",
+            "--password",
+            "s3cret-pass",
+            "--admin",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_repo.created[0]["is_admin"] is True
+
+
+def test_user_create_without_admin_flag_stays_regular(project, fake_repo):
+    result = runner.invoke(
+        cli_app,
+        [
+            "user:create",
+            "--name",
+            "Grace",
+            "--email",
+            "grace@example.com",
+            "--password",
+            "s3cret-pass",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_repo.created[0]["is_admin"] is False
 
 
 def test_user_create_without_accounts_module_exits_one(project, monkeypatch):
@@ -491,3 +533,62 @@ def test_user_create_end_to_end_through_real_repository(accounts_project):
     from fastplace.auth.hashing import Hash
 
     assert Hash.check("analytical-engine", verify.stdout.strip())
+
+
+def test_user_create_admin_flag_end_to_end(accounts_project):
+    """--admin through the real repository: the stored row carries is_admin."""
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "APP_ENV"}
+
+    def run_snippet(code: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=accounts_project,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+
+    schema = run_snippet(
+        "import asyncio; from fastplace.db import db; "
+        "import app.modules.accounts.models.user; asyncio.run(db.create_all())"
+    )
+    assert schema.returncode == 0, schema.stderr
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from fastplace.cli import app; app()",
+            "user:create",
+            "--name",
+            "Grace Hopper",
+            "--email",
+            "grace@example.test",
+            "--password",
+            "compiler-pioneer",
+            "--admin",
+        ],
+        cwd=accounts_project,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+
+    verify = run_snippet(
+        "import asyncio\n"
+        "from app.modules.accounts.models.user import User\n"
+        "async def main():\n"
+        "    user = await User.where(User.email == 'grace@example.test').first()\n"
+        "    assert user is not None\n"
+        "    print('IS_ADMIN', user.is_admin)\n"
+        "asyncio.run(main())"
+    )
+    assert verify.returncode == 0, verify.stderr
+    assert "IS_ADMIN True" in verify.stdout
