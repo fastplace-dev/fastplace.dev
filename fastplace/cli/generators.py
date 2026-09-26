@@ -1253,6 +1253,189 @@ router = Router()
 router.get("/", HomeController, "index", name="home")
 '''
 
+_AUTH_PAGE_CONTROLLER_TEMPLATE = '''"""Auth page controller — the guest auth pages.
+
+GET-only page routes behind the ``guest`` route middleware: the React pages
+render fully client-side and read their optional props with typed defaults.
+The credential endpoints live in routes/auth.py.
+"""
+
+from __future__ import annotations
+
+from app.modules.accounts.services.password_policy import frontend_rules
+from fastplace.http import Controller, Request, render
+
+
+class AuthPageController(Controller):
+    async def login(self, request: Request):
+        return render(request, component="Auth/Login", props={})
+
+    async def register(self, request: Request):
+        # The register page's client-side default is "minlength: 8;" — the
+        # server prop mirrors the same policy that validates the POST.
+        return render(
+            request,
+            component="Auth/Register",
+            props={"passwordRules": frontend_rules()},
+        )
+
+    async def forgot_password(self, request: Request):
+        return render(request, component="Auth/ForgotPassword", props={})
+
+    async def reset_password(self, request: Request):
+        # The email link lands on /reset-password/{token}?email=... — the
+        # page reads token/email from props, never from the URL directly.
+        return render(
+            request,
+            component="Auth/ResetPassword",
+            props={
+                "token": request.param("token"),
+                "email": request.query("email", ""),
+                "passwordRules": frontend_rules(),
+            },
+        )
+
+    async def verify_email(self, request: Request):
+        return render(request, component="Auth/VerifyEmail", props={})
+
+    async def confirm_password(self, request: Request):
+        return render(request, component="Auth/ConfirmPassword", props={})
+
+    async def two_factor_challenge(self, request: Request):
+        return render(request, component="Auth/TwoFactorChallenge", props={})
+'''
+
+_DASHBOARD_CONTROLLER_TEMPLATE = '''"""Dashboard page controller — the authenticated landing page."""
+
+from __future__ import annotations
+
+from fastplace.http import Controller, Request, render
+
+
+class DashboardController(Controller):
+    async def index(self, request: Request):
+        # Blank starter canvas — props arrive when the app grows real data.
+        return render(request, component="Dashboard/Index", props={})
+'''
+
+_SETTINGS_PAGES_CONTROLLER_TEMPLATE = '''"""Account settings page controller — profile and security bridge pages."""
+
+from __future__ import annotations
+
+from app.modules.accounts.services.password_policy import frontend_rules
+from fastplace.http import Controller, Request, render
+
+
+class SettingsPagesController(Controller):
+    async def profile(self, request: Request):
+        return render(request, component="Settings/Profile", props={})
+
+    async def security(self, request: Request):
+        from fastplace.config import config
+
+        user = getattr(request, "user", None)
+        return render(
+            request,
+            component="Settings/Security",
+            props={
+                "passwordRules": frontend_rules(),
+                "canManageTwoFactor": bool(config("TWO_FACTOR_ENABLED", default=True)),
+                "requiresConfirmation": True,
+                "twoFactorEnabled": getattr(user, "two_factor_confirmed_at", None) is not None,
+            },
+        )
+'''
+
+_SETTINGS_APPEARANCE_CONTROLLER_TEMPLATE = '''"""Settings appearance controller — the appearance settings bridge page."""
+
+from __future__ import annotations
+
+from fastplace.http import Controller, Request, render
+
+
+class SettingsAppearanceController(Controller):
+    async def index(self, request: Request):
+        return render(request, component="Settings/Appearance", props={})
+'''
+
+#: The auth variant of routes/web.py — the guest auth pages, the blank
+#: dashboard, and the account settings pages, each behind the same route
+#: middleware the sample app ships (guest / auth / verified).
+_WEB_ROUTES_AUTH_TEMPLATE = '''"""Web routes — bridge pages (controllers return render(...))."""
+
+from __future__ import annotations
+
+from app.http.controllers.auth_page_controller import AuthPageController
+from app.http.controllers.dashboard_controller import DashboardController
+from app.http.controllers.home_controller import HomeController
+from app.http.controllers.settings_appearance_controller import SettingsAppearanceController
+from app.http.controllers.settings_pages_controller import SettingsPagesController
+from fastplace.http import Router
+
+router = Router()
+
+router.get("/", HomeController, "index", name="home")
+router.get(
+    "/dashboard",
+    DashboardController,
+    "index",
+    name="dashboard",
+    middleware=["auth", "verified"],
+)
+
+# Account settings pages — authenticated GETs (the settings section renders
+# the app's authenticated shell); their form targets ship later.
+router.get(
+    "/settings/appearance",
+    SettingsAppearanceController,
+    "index",
+    name="settings.appearance",
+    middleware=["auth"],
+)
+router.get(
+    "/settings/profile",
+    SettingsPagesController,
+    "profile",
+    name="settings.profile",
+    middleware=["auth"],
+)
+router.get(
+    "/settings/security",
+    SettingsPagesController,
+    "security",
+    name="settings.security",
+    middleware=["auth"],
+)
+
+# Guest auth pages — anonymous GET renders behind `guest`; the credential
+# POSTs live in routes/auth.py.
+router.get("/login", AuthPageController, "login", name="auth.login", middleware=["guest"])
+router.get("/register", AuthPageController, "register", name="auth.register", middleware=["guest"])
+router.get(
+    "/forgot-password", AuthPageController, "forgot_password", name="auth.forgot_password"
+)
+router.get(
+    "/reset-password/{token}", AuthPageController, "reset_password", name="auth.reset_password"
+)
+router.get(
+    "/email/verify", AuthPageController, "verify_email", name="auth.verify_email", middleware=["auth"]
+)
+router.get(
+    "/user/confirm-password",
+    AuthPageController,
+    "confirm_password",
+    name="auth.confirm_password",
+    middleware=["auth"],
+)
+router.get(
+    "/two-factor-challenge",
+    AuthPageController,
+    "two_factor_challenge",
+    name="auth.two_factor_challenge",
+    middleware=["guest"],
+)
+'''
+
 _API_ROUTES_TEMPLATE = '''"""API routes — unified JSON API endpoints (mounted under /api/v1)."""
 
 from __future__ import annotations
@@ -1877,6 +2060,32 @@ def new_project(
         _write(target / "config/auth.py", _CONFIG_AUTH_ORM_TEMPLATE, _project_root(), force=True)
         write_auth_surface(target)
 
+        # The auth variant's page layer — the guest auth pages, the blank
+        # dashboard, and the settings pages. web.py replaces the minimal
+        # one written moments ago by this same command (force=True is safe —
+        # never hand edits); the controllers are new files.
+        _write(
+            target / "app/http/controllers/auth_page_controller.py",
+            _AUTH_PAGE_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(
+            target / "app/http/controllers/dashboard_controller.py",
+            _DASHBOARD_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(
+            target / "app/http/controllers/settings_pages_controller.py",
+            _SETTINGS_PAGES_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(
+            target / "app/http/controllers/settings_appearance_controller.py",
+            _SETTINGS_APPEARANCE_CONTROLLER_TEMPLATE,
+            _project_root(),
+        )
+        _write(target / "routes/web.py", _WEB_ROUTES_AUTH_TEMPLATE, _project_root(), force=True)
+
         # The users table ships with the scaffold — `fastplace migrate` on a
         # fresh project creates it, no make:auth follow-up needed.
         # Autogenerate runs in a subprocess: env.py's model discovery imports
@@ -1912,4 +2121,9 @@ def new_project(
     console.print("  pip install -e .   # or: pip install fastplace once published")
     console.print("  npm install")
     console.print("  fastplace migrate")
-    console.print("  fastplace run dev\n")
+    console.print("  fastplace run dev")
+    if auth:
+        console.print(
+            "  open http://localhost:8000/register — the FIRST account you create becomes the admin"
+        )
+    console.print()

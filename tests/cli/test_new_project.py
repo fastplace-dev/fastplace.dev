@@ -416,3 +416,36 @@ def test_new_auth_leaves_no_scaffold_modules_cached(tmp_path, monkeypatch):
 
     leaked = {name for name in sys.modules if name.startswith("app.")} - leaked_before
     assert not leaked, f"scaffold modules leaked into sys.modules: {sorted(leaked)}"
+
+
+def test_new_auth_emits_page_routes_and_controllers(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+    for rel in (
+        "app/http/controllers/auth_page_controller.py",
+        "app/http/controllers/dashboard_controller.py",
+        "app/http/controllers/settings_pages_controller.py",
+        "app/http/controllers/settings_appearance_controller.py",
+    ):
+        assert (root / "blog" / rel).is_file(), f"missing {rel}"
+    web = (root / "blog" / "routes" / "web.py").read_text()
+    assert '"/register"' in web and '"guest"' in web
+    assert '"/dashboard"' in web and '"verified"' in web
+    assert '"/settings/profile"' in web
+
+
+def test_new_auth_next_steps_mention_register(tmp_path, monkeypatch):
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--auth")
+    assert result.exit_code == 0, result.output
+    assert "/register" in result.output
+    assert "admin" in result.output.lower()
+
+
+def test_new_no_auth_keeps_minimal_web_routes(tmp_path, monkeypatch):
+    """The page layer belongs to the auth variant only — --no-auth keeps the
+    minimal two-route web.py and no extra controllers."""
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0, result.output
+    assert not (root / "blog" / "app" / "http" / "controllers" / "auth_page_controller.py").exists()
+    web = (root / "blog" / "routes" / "web.py").read_text()
+    assert "/register" not in web and "/dashboard" not in web
