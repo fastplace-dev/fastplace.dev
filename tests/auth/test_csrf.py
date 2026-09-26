@@ -144,6 +144,63 @@ class TestCsrfValidation:
             assert response.status_code == 419, method
 
 
+class TestCsrfRedirectBack:
+    """A browser form post with a stale token redirects back with flashed
+    errors — the same no-JS contract validation failures already honor —
+    while bridge and API clients keep the 419 JSON envelope."""
+
+    BROWSER_HEADERS = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+
+    async def test_browser_post_with_a_stale_token_redirects_back(self, auth_client):
+        await auth_client.get("/page")  # session + token the form came from
+        response = await auth_client.post(
+            "/submit",
+            data={"_token": "expired-token-value"},
+            headers={**self.BROWSER_HEADERS, "Referer": "http://test/page"},
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "http://test/page"
+
+    async def test_the_redirect_back_flashes_the_token_error_once(self, auth_client):
+        import html as html_module
+        import json as json_module
+
+        await auth_client.get("/page")
+        await auth_client.post(
+            "/submit",
+            data={"_token": "expired-token-value"},
+            headers=self.BROWSER_HEADERS,
+        )
+        page = await auth_client.get("/page", headers={"Accept": "text/html"})
+        payload = page.text.split('data-page="', 1)[1].split('"', 1)[0]
+        props = json_module.loads(html_module.unescape(payload))["props"]
+        assert props["errors"] == {"_token": ["The page has expired. Please try again."]}
+        again = await auth_client.get("/page", headers={"Accept": "text/html"})
+        assert "errors" not in again.text.split('data-page="', 1)[1].split('"', 1)[0]
+
+    async def test_bridge_post_keeps_the_419_envelope(self, auth_client):
+        await auth_client.get("/page")
+        response = await auth_client.post(
+            "/submit",
+            data={"_token": "expired-token-value"},
+            headers={"X-Fastplace-Request": "true"},
+        )
+        assert response.status_code == 419
+        assert "CSRF" in response.json()["message"]
+
+    async def test_json_client_keeps_the_419_envelope(self, auth_client):
+        await auth_client.get("/page")
+        response = await auth_client.post(
+            "/submit",
+            json={"_token": "expired-token-value"},
+            headers={"Accept": "application/json"},
+        )
+        assert response.status_code == 419
+
+
 class TestCsrfRenderIntegration:
     def _request(self, session: dict) -> SimpleNamespace:
         return SimpleNamespace(

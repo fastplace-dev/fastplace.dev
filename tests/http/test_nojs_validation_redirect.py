@@ -33,6 +33,8 @@ def routes() -> Router:
     r.get("/form", form_page)
     r.post("/submit", submit)
     r.get("/search", search)
+    r.get("/dual", form_page)
+    r.post("/dual", submit)
     return r
 
 
@@ -81,7 +83,9 @@ async def test_nojs_form_post_redirects_back_with_flashed_errors(client):
     assert "errors" not in _page_payload(again.text)["props"]
 
 
-async def test_nojs_post_without_referer_falls_back_to_request_path(client):
+async def test_nojs_post_without_referer_never_lands_on_a_post_only_path(client):
+    """The own-path fallback must serve GET — a POST-only endpoint would 405
+    (or worse, loop) when the browser follows the 303."""
     response = await client.post(
         "/submit",
         content="name=ab",
@@ -91,7 +95,20 @@ async def test_nojs_post_without_referer_falls_back_to_request_path(client):
         },
     )
     assert response.status_code == 303
-    assert response.headers["location"] == "/submit"
+    assert response.headers["location"] == "/"
+
+
+async def test_nojs_post_keeps_own_path_when_it_serves_get(client):
+    response = await client.post(
+        "/dual",
+        content="name=ab",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html",
+        },
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/dual"
 
 
 async def test_nojs_post_rejects_cross_site_referer(client):
@@ -105,7 +122,7 @@ async def test_nojs_post_rejects_cross_site_referer(client):
         },
     )
     assert response.status_code == 303
-    assert response.headers["location"] == "/submit"
+    assert response.headers["location"] == "/"
 
 
 async def test_bridge_post_keeps_the_422_envelope(client):

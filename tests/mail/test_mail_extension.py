@@ -87,3 +87,51 @@ def test_register_transport_rejects_bad_input():
         register_transport("   ", lambda m: None)  # type: ignore[arg-type]
     with pytest.raises(ConfigurationError, match="async callable"):
         register_transport("acme", "not-callable")  # type: ignore[arg-type]
+
+
+def test_register_transport_rejects_a_sync_callable():
+    import functools
+
+    with pytest.raises(ConfigurationError, match="async callable"):
+
+        def send_sync(message: MailMessage) -> None:
+            return None
+
+        _register("acme-sync", send_sync)  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError, match="async callable"):
+        _register("acme-lambda", lambda message: None)  # type: ignore[arg-type]
+
+    # A sync wrapper around an async function is still sync — functools
+    # unwrapping must not whitelist it.
+    async def send_async(message: MailMessage) -> None:
+        return None
+
+    with pytest.raises(ConfigurationError, match="async callable"):
+        _register("acme-wrapped", functools.partial(lambda m: None, None))  # type: ignore[arg-type]
+
+
+def test_register_transport_accepts_partial_wrapped_async():
+    import functools
+
+    delivered: list[MailMessage] = []
+
+    async def send_acme(message: MailMessage, label: str) -> None:
+        delivered.append(message)
+
+    _register("acme-partial", functools.partial(send_acme, label="x"))
+    assert callable(transport_for("acme-partial"))
+
+
+def test_register_transport_accepts_bound_and_standalone_async():
+    class Driver:
+        async def send(self, message: MailMessage) -> None:
+            return None
+
+    _register("acme-bound", Driver().send)
+
+    async def send_plain(message: MailMessage) -> None:
+        return None
+
+    _register("acme-plain", send_plain)
+    assert callable(transport_for("acme-bound"))
+    assert callable(transport_for("acme-plain"))

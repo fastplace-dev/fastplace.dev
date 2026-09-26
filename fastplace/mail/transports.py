@@ -6,6 +6,8 @@ and run via ``MAIL_DRIVER=<name>``.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 from pathlib import Path
 from typing import Any
@@ -95,18 +97,36 @@ async def send_via_smtp(message: MailMessage) -> None:
 _TRANSPORTS: dict[str, Any] = {}
 
 
+def _is_async_sender(sender: Any) -> bool:
+    """True when ``sender`` is awaitable-callable — an ``async def`` function.
+
+    ``functools.partial`` wrappers are unwrapped so a curried async sender
+    still registers; anything else sync (a plain function or lambda) fails
+    here instead of exploding at first send.
+    """
+    target = sender
+    while isinstance(target, functools.partial):
+        target = target.func
+    return asyncio.iscoroutinefunction(target)
+
+
 def register_transport(name: str, sender: Any) -> None:
     """Register a mail transport callable under a ``MAIL_DRIVER`` name.
 
     The public extension API for third-party drivers: applications and
     packages call this at boot and select the driver with
-    ``MAIL_DRIVER=<name>``. Re-registering a name replaces its sender —
+    ``MAIL_DRIVER=<name>``. The sender must be an ``async def`` callable
+    taking one ``MailMessage`` — a sync callable is rejected at registration
+    rather than at first send. Re-registering a name replaces its sender —
     the built-ins (log/memory/smtp) register through this same API below.
     """
     if not isinstance(name, str) or not name.strip():
         raise ConfigurationError("transport name must be a non-empty string")
-    if not callable(sender):
-        raise ConfigurationError(f"transport '{name}' must be an async callable")
+    if not callable(sender) or not _is_async_sender(sender):
+        raise ConfigurationError(
+            f"transport '{name}' must be an async callable "
+            "(async def send(message: MailMessage) -> None)"
+        )
     _TRANSPORTS[name] = sender
 
 

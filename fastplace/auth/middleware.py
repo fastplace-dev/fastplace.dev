@@ -40,6 +40,10 @@ CSRF_SESSION_KEY = "_token"
 CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 AUTH_EDGE_KEY = "fastplace_auth_edge"
 
+#: Flashed on redirect-back when a browser post carries a stale token —
+#: keyed under ``_token`` so the form re-renders with a fresh one.
+CSRF_EXPIRED_MESSAGE = "The page has expired. Please try again."
+
 #: Sentinel distinguishing "no queued cookie" from a queued clear (None).
 _UNSET = object()
 
@@ -181,6 +185,16 @@ class CsrfMiddleware(Middleware):
         expected = request.session.get(CSRF_SESSION_KEY)
         supplied = await self._supplied_token(request)
         if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+            # A browser form post with a stale/expired token gets the same
+            # no-JS redirect-back treatment as a validation failure — the
+            # visitor keeps their typed input and sees the expiry message.
+            # Bridge and API clients keep the 419 JSON envelope.
+            from fastplace.http.redirect_back import redirect_back_with_errors, wants_redirect_back
+
+            if wants_redirect_back(request):
+                return redirect_back_with_errors(
+                    request, {CSRF_SESSION_KEY: [CSRF_EXPIRED_MESSAGE]}
+                )
             return Json({"message": "CSRF token mismatch."}, status_code=419)
 
         response = await call_next(request)
