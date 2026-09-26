@@ -41,6 +41,10 @@ class User(Model):
     two_factor_secret: str | None = Field(text=True, default=None)
     two_factor_recovery_codes: str | None = Field(text=True, default=None)
     two_factor_confirmed_at: datetime.datetime | None = None
+
+    # Admin grant — set only by explicit service/CLI code, never fillable:
+    # mass assignment must never escalate privileges (OWASP).
+    is_admin: bool = Field(default=False)
 '''
 _USER_REPOSITORY_TEMPLATE = '''"""User data access — the accounts module's repository layer."""
 
@@ -59,8 +63,20 @@ class UserRepository:
     async def find_by_id(self, user_id) -> User | None:
         return await User.find(user_id)
 
-    async def create_user(self, *, name: str, email: str, password: str) -> User:
-        return await User.create(name=name, email=email, password_hash=Hash.make(password))
+    async def create_user(
+        self, *, name: str, email: str, password: str, is_admin: bool = False
+    ) -> User:
+        # is_admin deliberately bypasses User.create(): the column is not
+        # mass-assignable, so admin grants flow only through this explicit
+        # keyword — never from a request payload.
+        user = User(
+            name=name,
+            email=email,
+            password_hash=Hash.make(password),
+            is_admin=is_admin,
+        )
+        await user.save()
+        return user
 '''
 _AUTH_SERVICE_TEMPLATE = '''"""Credential login/logout — the service layer over the session guard."""
 
@@ -286,7 +302,13 @@ class RegistrationService:
         if errors:
             raise ValidationError(errors=errors)
 
-        user = await self.repository.create_user(name=name, email=email, password=password)
+        # Binding product rule: the FIRST real signup owns the app — admin
+        # by registration count, never by seeded credentials. Later signups
+        # stay regular until a developer promotes them (user:create --admin).
+        is_first_user = await User.count() == 0
+        user = await self.repository.create_user(
+            name=name, email=email, password=password, is_admin=is_first_user
+        )
         await dispatch(DomainEvent("Registered", {"user_id": user.id, "email": user.email}))
         await guard().login(request, user)
         return user
