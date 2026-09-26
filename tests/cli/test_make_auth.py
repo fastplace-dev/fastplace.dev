@@ -94,3 +94,17 @@ class TestMakeAuth:
         assert result.exit_code == 0
         for step in ("migrate", "db:seed", "MAIL_"):
             assert step in result.output
+
+
+def test_manifest_lists_every_auth_file():
+    """The shared manifest is the single source of truth for the auth surface —
+    both ``fastplace new --auth`` and ``make:auth`` consume it."""
+    from fastplace.cli.auth_scaffold import AUTH_FILES
+
+    rels = [rel for rel, _ in AUTH_FILES]
+    assert "routes/auth.py" in rels
+    assert "app/modules/accounts/models/user.py" in rels
+    assert "app/auth/gates.py" in rels
+    assert len(rels) == len(set(rels))  # no duplicates
+    # The templated file count must not silently shrink.
+    assert len(rels) >= 18

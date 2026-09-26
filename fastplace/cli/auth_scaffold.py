@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from fastplace.cli.generators import _project_root, _write, console, generators_app
@@ -902,6 +904,54 @@ async def superuser(user, ability, *args):
 '''
 
 
+# The single source of truth for the auth scaffold's file surface — shared
+# by `fastplace new --auth` and `fastplace make:auth` so the two paths can
+# never diverge. (relative path, template text) pairs, in write order.
+AUTH_FILES: list[tuple[str, str]] = [
+    ("app/modules/accounts/models/user.py", _USER_MODEL_TEMPLATE),
+    ("app/modules/accounts/repositories/user_repository.py", _USER_REPOSITORY_TEMPLATE),
+    ("app/modules/accounts/services/auth_service.py", _AUTH_SERVICE_TEMPLATE),
+    ("app/modules/accounts/services/password_policy.py", _PASSWORD_POLICY_TEMPLATE),
+    (
+        "app/modules/accounts/services/password_reset_service.py",
+        _PASSWORD_RESET_SERVICE_TEMPLATE,
+    ),
+    (
+        "app/modules/accounts/services/registration_service.py",
+        _REGISTRATION_SERVICE_TEMPLATE,
+    ),
+    ("app/modules/accounts/services/two_factor_service.py", _TWO_FACTOR_SERVICE_TEMPLATE),
+    ("app/modules/accounts/services/verification_service.py", _VERIFICATION_SERVICE_TEMPLATE),
+    ("app/http/requests/login_request.py", _LOGIN_REQUEST_TEMPLATE),
+    ("app/http/requests/register_request.py", _REGISTER_REQUEST_TEMPLATE),
+    ("app/http/requests/confirm_password_request.py", _CONFIRM_PASSWORD_REQUEST_TEMPLATE),
+    ("app/http/requests/forgot_password_request.py", _FORGOT_PASSWORD_REQUEST_TEMPLATE),
+    ("app/http/requests/reset_password_request.py", _RESET_PASSWORD_REQUEST_TEMPLATE),
+    ("app/http/controllers/auth_api_controller.py", _AUTH_API_CONTROLLER_TEMPLATE),
+    ("app/http/controllers/two_factor_api_controller.py", _TWO_FACTOR_API_CONTROLLER_TEMPLATE),
+    ("routes/auth.py", _AUTH_ROUTES_TEMPLATE),
+    ("database/seeders/user_seeder.py", _USER_SEEDER_TEMPLATE),
+    ("app/auth/gates.py", _GATES_TEMPLATE),
+]
+
+# Package markers so pkgutil/import_gates discovery finds the new code.
+AUTH_PACKAGE_MARKERS: tuple[str, ...] = (
+    "app/modules/accounts/__init__.py",
+    "app/modules/accounts/models/__init__.py",
+    "app/modules/accounts/repositories/__init__.py",
+    "app/modules/accounts/services/__init__.py",
+    "app/auth/__init__.py",
+)
+
+
+def write_auth_surface(root: Path) -> None:
+    """Write every auth-scaffold file (non-clobbering) under ``root``."""
+    for rel, template in AUTH_FILES:
+        _write(root / rel, template, root)
+    for rel in AUTH_PACKAGE_MARKERS:
+        _write(root / rel, "", root)
+
+
 @generators_app.command("make:auth")
 def make_auth(
     migration: bool = typer.Option(
@@ -913,50 +963,7 @@ def make_auth(
     """Scaffold the auth surface (spec §4.17) — new files only."""
     root = _project_root()
 
-    _write(root / "app/modules/accounts/models/user.py", _USER_MODEL_TEMPLATE, root)
-    _write(
-        root / "app/modules/accounts/repositories/user_repository.py",
-        _USER_REPOSITORY_TEMPLATE,
-        root,
-    )
-    for name, template in (
-        ("auth_service.py", _AUTH_SERVICE_TEMPLATE),
-        ("password_policy.py", _PASSWORD_POLICY_TEMPLATE),
-        ("password_reset_service.py", _PASSWORD_RESET_SERVICE_TEMPLATE),
-        ("registration_service.py", _REGISTRATION_SERVICE_TEMPLATE),
-        ("two_factor_service.py", _TWO_FACTOR_SERVICE_TEMPLATE),
-        ("verification_service.py", _VERIFICATION_SERVICE_TEMPLATE),
-    ):
-        _write(root / "app/modules/accounts/services" / name, template, root)
-    for name, template in (
-        ("login_request.py", _LOGIN_REQUEST_TEMPLATE),
-        ("register_request.py", _REGISTER_REQUEST_TEMPLATE),
-        ("confirm_password_request.py", _CONFIRM_PASSWORD_REQUEST_TEMPLATE),
-        ("forgot_password_request.py", _FORGOT_PASSWORD_REQUEST_TEMPLATE),
-        ("reset_password_request.py", _RESET_PASSWORD_REQUEST_TEMPLATE),
-    ):
-        _write(root / "app/http/requests" / name, template, root)
-    _write(
-        root / "app/http/controllers/auth_api_controller.py", _AUTH_API_CONTROLLER_TEMPLATE, root
-    )
-    _write(
-        root / "app/http/controllers/two_factor_api_controller.py",
-        _TWO_FACTOR_API_CONTROLLER_TEMPLATE,
-        root,
-    )
-    _write(root / "routes/auth.py", _AUTH_ROUTES_TEMPLATE, root)
-    _write(root / "database/seeders/user_seeder.py", _USER_SEEDER_TEMPLATE, root)
-    _write(root / "app/auth/gates.py", _GATES_TEMPLATE, root)
-
-    # Package markers so pkgutil/import_gates discovery finds the new code.
-    for marker in (
-        root / "app/modules/accounts/__init__.py",
-        root / "app/modules/accounts/models/__init__.py",
-        root / "app/modules/accounts/repositories/__init__.py",
-        root / "app/modules/accounts/services/__init__.py",
-        root / "app/auth/__init__.py",
-    ):
-        _write(marker, "", root)
+    write_auth_surface(root)
 
     if migration:
         from fastplace.cli.database import _manager
