@@ -406,11 +406,61 @@ def _install_session_middleware(app: FastAPI, cfg: _ConfigShim, *, app_env: str)
     )
 
 
+def _wants_redirect_back(request: Any) -> bool:
+    """True when a validation failure should redirect back, not answer 422 JSON.
+
+    Browser form posts (unsafe method, ``text/html`` accept, no bridge
+    header) re-render their form; the SPA bridge and API clients keep the
+    JSON envelope. A session is required to flash the errors — without one
+    the errors would be lost on the redirect.
+    """
+    from fastplace.http.error_pages import wants_html
+
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return False
+    if not wants_html(request):
+        return False
+    try:
+        return isinstance(request.session, dict)
+    except Exception:
+        return False
+
+
+def _safe_back_url(request: Any) -> str:
+    """The referer when it stays on this origin, else the request's own path."""
+    from urllib.parse import urlsplit
+
+    referer = request.headers.get("referer")
+    if referer:
+        netloc = urlsplit(referer).netloc
+        # A relative referer has no authority; a cross-site one must never
+        # become the redirect target (open-redirect guard).
+        if not netloc or netloc == request.headers.get("host", ""):
+            return referer
+    return request.scope.get("path", "/") + (
+        f"?{request.scope['query_string'].decode('latin-1')}"
+        if request.scope.get("query_string")
+        else ""
+    )
+
+
+def _redirect_back_with_errors(request: Any, exc: FastplaceError) -> Response:
+    from fastplace.http.flash import flash_errors
+    from fastplace.http.response import Redirect
+
+    flash_errors(request, getattr(exc, "errors", None) or {})
+    return Redirect(_safe_back_url(request), status_code=303)
+
+
 def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
     from fastapi.exceptions import RequestValidationError
 
     @app.exception_handler(FastplaceError)
     async def fastplace_error_handler(request: Any, exc: FastplaceError) -> Response:
+        from fastplace.errors import ValidationError
+
+        if isinstance(exc, ValidationError) and _wants_redirect_back(request):
+            return _redirect_back_with_errors(request, exc)
         payload: dict[str, Any] = {"message": exc.message}
         code = getattr(exc, "code", None)
         if code:

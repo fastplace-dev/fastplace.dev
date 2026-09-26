@@ -1,4 +1,8 @@
-"""Mail transports — log, memory (tests), and smtp (optional aiosmtplib)."""
+"""Mail transports — built-ins (log, memory, smtp) plus the public registry.
+
+Third-party drivers plug in with ``register_transport(name, async sender)``
+and run via ``MAIL_DRIVER=<name>``.
+"""
 
 from __future__ import annotations
 
@@ -85,11 +89,35 @@ async def send_via_smtp(message: MailMessage) -> None:
     )
 
 
-_TRANSPORTS = {
-    "log": send_via_log,
-    "memory": send_via_memory,
-    "smtp": send_via_smtp,
-}
+#: Registry of MAIL_DRIVER name -> async sender ``(MailMessage) -> None``.
+#: Third-party drivers join through ``register_transport`` — the public
+#: extension point — never by touching this dict directly.
+_TRANSPORTS: dict[str, Any] = {}
+
+
+def register_transport(name: str, sender: Any) -> None:
+    """Register a mail transport callable under a ``MAIL_DRIVER`` name.
+
+    The public extension API for third-party drivers: applications and
+    packages call this at boot and select the driver with
+    ``MAIL_DRIVER=<name>``. Re-registering a name replaces its sender —
+    the built-ins (log/memory/smtp) register through this same API below.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigurationError("transport name must be a non-empty string")
+    if not callable(sender):
+        raise ConfigurationError(f"transport '{name}' must be an async callable")
+    _TRANSPORTS[name] = sender
+
+
+def unregister_transport(name: str) -> None:
+    """Drop a registered transport (test isolation and teardown)."""
+    _TRANSPORTS.pop(name, None)
+
+
+register_transport("log", send_via_log)
+register_transport("memory", send_via_memory)
+register_transport("smtp", send_via_smtp)
 
 
 def transport_for(driver: str | None = None) -> Any:

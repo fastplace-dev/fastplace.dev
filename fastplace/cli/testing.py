@@ -7,10 +7,16 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
 from fastplace.console import console
+
+if TYPE_CHECKING:
+    from typing import Literal
+
+    from fastplace.cli._doctor import Check
 
 testing_app = typer.Typer(help="Testing workflows and environment diagnostics.")
 
@@ -631,7 +637,48 @@ def _probe_write(path: Path) -> bool:
         return False
 
 
-_DEV_EXTRAS: tuple[str, ...] = ("httpx", "asgi_lifespan", "pytest", "pytest_asyncio")
+#: Dev tooling a scaffolded app's tests import — missing any of these FAILS.
+_REQUIRED_DEV_EXTRAS: tuple[str, ...] = ("httpx", "pytest", "pytest_asyncio")
+
+#: Optional test conveniences — a missing one WARNS (never blocks CI): the
+#: scaffold's tests drive httpx's ASGITransport directly, so asgi-lifespan
+#: is only needed by suites that wrap the app lifespan.
+_WARNED_DEV_EXTRAS: tuple[str, ...] = ("asgi_lifespan",)
+
+#: Fix advice for missing dev tooling — matches the scaffolded app's
+#: ``[project.optional-dependencies] dev`` extra (`fastplace new` ships it).
+_DEV_EXTRA_FIX = "pip install -e '.[dev]'"
+
+_PYTEST_CONFIG_MARKERS: tuple[tuple[str, str], ...] = (
+    ("pytest.ini", "[pytest]"),
+    ("pyproject.toml", "[tool.pytest.ini_options]"),
+    ("tox.ini", "[pytest]"),
+    ("setup.cfg", "[tool:pytest]"),
+)
+
+
+def _pytest_config_check(root: Path) -> Check:
+    """Is a pytest config discoverable at the project root?
+
+    pytest runs with defaults without one, so this warns rather than fails —
+    but a scaffolded app ships ``[tool.pytest.ini_options]`` and losing it
+    silently changes testpaths/asyncio behavior.
+    """
+    from fastplace.cli._doctor import Check
+
+    for filename, marker in _PYTEST_CONFIG_MARKERS:
+        candidate = root / filename
+        try:
+            if marker in candidate.read_text(encoding="utf-8"):
+                return Check(name="pytest-config", status="pass", detail=filename)
+        except OSError:
+            continue
+    return Check(
+        name="pytest-config",
+        status="warn",
+        detail="no pytest config at the project root (defaults apply)",
+        fix="add [tool.pytest.ini_options] to pyproject.toml",
+    )
 
 
 @testing_app.command("test:doctor")
@@ -648,15 +695,20 @@ def test_doctor() -> None:
     reset_config(root)
 
     def dev_extras() -> list[Check]:
+        extras: tuple[tuple[str, Literal["fail", "warn"]], ...] = (
+            *[(name, "fail") for name in _REQUIRED_DEV_EXTRAS],
+            *[(name, "warn") for name in _WARNED_DEV_EXTRAS],
+        )
         rows = []
-        for name in _DEV_EXTRAS:
+        for name, missing_status in extras:
             error = _probe_import(name)
+            status = "pass" if error is None else missing_status
             rows.append(
                 Check(
                     name=f"dev:{name}",
-                    status="pass" if error is None else "fail",
+                    status=status,
                     detail=error or "importable",
-                    fix="" if error is None else "pip install -e '.[dev]'",
+                    fix="" if error is None else _DEV_EXTRA_FIX,
                 )
             )
         return rows
@@ -763,6 +815,7 @@ def test_doctor() -> None:
             "test environment",
             [
                 dev_extras,
+                lambda: _pytest_config_check(root),
                 matrix_extras,
                 node_binaries,
                 browsers,

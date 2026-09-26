@@ -9,6 +9,45 @@ from __future__ import annotations
 from typing import Any
 
 
+def _human_field_name(loc: tuple) -> str:
+    """Display name for a field path — the leaf, underscores spelled out."""
+    if not loc:
+        return "body"
+    leaf = str(loc[-1])
+    if leaf.isdigit():  # list index — the full path reads better here
+        return ".".join(str(part) for part in loc).replace("_", " ")
+    return leaf.replace("_", " ")
+
+
+def _humanize_validation_message(item: Any) -> str:
+    """Map one pydantic error to a human sentence.
+
+    Frozen patterns cover the common edge cases (required, length, email);
+    everything else falls back to the pydantic message with its internal
+    wrapper stripped so service validators still read like sentences.
+    """
+    error_type = str(item.get("type", ""))
+    raw = str(item.get("msg", "invalid"))
+    field = _human_field_name(item.get("loc") or ())
+    ctx = item.get("ctx") or {}
+    if error_type == "missing":
+        return f"The {field} field is required."
+    if error_type == "string_too_short" and "min_length" in ctx:
+        return f"The {field} must be at least {ctx['min_length']} characters."
+    if error_type == "string_too_long" and "max_length" in ctx:
+        return f"The {field} may not be greater than {ctx['max_length']} characters."
+    if error_type == "email" or "not a valid email" in raw.lower():
+        return f"The {field} field must be a valid email address."
+    cleaned = raw
+    for prefix in ("Value error, ", "Assertion failed, "):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :]
+            break
+    if cleaned and cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned if cleaned.endswith(".") else cleaned + "."
+
+
 class Request:
     """Framework request wrapper handed to every controller."""
 
@@ -132,7 +171,7 @@ class Request:
             errors: dict[str, list[str]] = {}
             for item in exc.errors():
                 loc = ".".join(str(part) for part in item.get("loc", ()) or ("body",))
-                errors.setdefault(loc or "body", []).append(str(item.get("msg", "invalid")))
+                errors.setdefault(loc or "body", []).append(_humanize_validation_message(item))
             raise ValidationError("The given data was invalid.", errors=errors) from exc
 
     # -- authentication -------------------------------------------------------

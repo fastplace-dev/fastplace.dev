@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from fastplace.http.flash import FLASH_SESSION_KEY
+from fastplace.http.flash import ERRORS_FLASH_KEY, FLASH_SESSION_KEY
 from fastplace.http.request import Request
 from fastplace.http.response import Html, Json, Response
 
@@ -113,6 +113,11 @@ def page_payload(request: Request, component: str, props: Any) -> dict:
             value = session.pop(FLASH_SESSION_KEY, None)
             if value is not None:
                 props.setdefault("status", value)
+            # Flashed validation errors (no-JS redirect-back) surface the
+            # same one-shot way — page props win over the flashed map.
+            errors = session.pop(ERRORS_FLASH_KEY, None)
+            if errors:
+                props.setdefault("errors", errors)
         # No-JS form posts cannot read the <meta> tag — every page's props
         # carry the session CSRF token so hidden ``_token`` inputs can use it.
         token = _session_csrf_token(request)

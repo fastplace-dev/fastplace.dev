@@ -185,8 +185,15 @@ class ServerSessionMiddleware:
             return
 
         if not session:
-            # Nothing in the payload — not worth a row or a cookie mint. (A
-            # logout clear goes through the invalidate path above.)
+            # Nothing in the payload — not worth a new row or cookie mint. But
+            # a DIRTY empty session (one-shot flash consumed, last key removed)
+            # must tear down the row behind its existing ID — skipping the
+            # write would let the stale payload resurrect on the next load.
+            # A logout clear goes through the invalidate path above.
+            if session.is_dirty and session.session_id:
+                await self.store.destroy(session.session_id)
+                headers.append((b"set-cookie", self._delete_cookie_header().encode("latin-1")))
+                message["headers"] = headers
             return
 
         # Write on mutation, on rotation, or on the half-life touch — a

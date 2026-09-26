@@ -58,6 +58,12 @@ from fastplace.orm import Field, Model
 
 
 class Post(Model):
+    # A private table name: the repo's own sample app also maps a Post whose
+    # table lands in the shared declarative metadata, and a same-named table
+    # here would make this file's import collide with it (InvalidRequestError
+    # inside collect_models reads as "no known models").
+    __tablename__ = "search_query_posts"
+
     title: str = Field()
 """
 

@@ -29,6 +29,8 @@ def build_asgi_app(actions: dict[str, str]):
             session["counter"] = session.get("counter", 0) + 1
         elif action == "set":
             session["flag"] = "on"
+        elif action == "pop":
+            session.pop("flag", None)
         elif action == "regenerate":
             session.regenerate()
         elif action == "invalidate":
@@ -167,3 +169,26 @@ def test_server_session_dirty_tracking():
     assert not session.is_dirty
     session["b"] = 2
     assert session.is_dirty
+
+
+async def test_consuming_the_last_key_destroys_the_row_and_expires_the_cookie():
+    """Emptying a previously-persisted session must not resurrect the old payload.
+
+    One-shot flash channels pop their key on render — if the pop (a dirty,
+    now-empty session) skipped persisting, the flashed value would come back
+    on every later visit.
+    """
+    store = MemorySessionStore()
+    async with build_client(store, actions={"/set": "set", "/pop": "pop"}) as client:
+        first = await client.get("/set")
+        session_id = first.cookies["fastplace_session"]
+        popped = await client.get("/pop")
+        assert await store.read(session_id) is None
+        assert "fastplace_session" in popped.headers.get("set-cookie", "")
+        # A later write mints a fresh row, not a resurrection of the old one.
+        again = await client.get("/set")
+        new_id = again.cookies["fastplace_session"]
+        assert new_id != session_id
+        stored = await store.read(new_id)
+        assert stored is not None
+        assert stored.payload["flag"] == "on"

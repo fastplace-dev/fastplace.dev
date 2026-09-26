@@ -1,9 +1,10 @@
 """Fastplace mail — a minimal facade over pluggable transports (spec §4.8).
 
 Drivers: ``log`` (default), ``memory`` (tests), ``smtp`` (optional extra
-``fastplace[mail]``). Sending queues ONLY when both MAIL_DRIVER=smtp and
-QUEUE_DRIVER=saq — local drivers deliver inline so tests and dev see work
-immediately.
+``fastplace[mail]``) — plus anything registered via
+``register_transport(name, async sender)`` (third-party providers). Sending
+queues ONLY when both MAIL_DRIVER=smtp and QUEUE_DRIVER=saq — local drivers
+deliver inline so tests and dev see work immediately.
 """
 
 from __future__ import annotations
@@ -15,10 +16,12 @@ from fastplace.mail.message import MailMessage, message_as_dict, message_from_di
 from fastplace.mail.transports import (
     clear_mail_outbox,
     mail_outbox,
+    register_transport,
     send_via_log,
     send_via_memory,
     send_via_smtp,
     transport_for,
+    unregister_transport,
 )
 
 __all__ = [
@@ -28,9 +31,12 @@ __all__ = [
     "mail_outbox",
     "message_as_dict",
     "message_from_dict",
+    "register_transport",
     "send_via_log",
     "send_via_memory",
     "send_via_smtp",
+    "transport_for",
+    "unregister_transport",
 ]
 
 
