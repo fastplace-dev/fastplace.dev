@@ -1993,10 +1993,15 @@ def new_project(
     env_example = _ENV_TEMPLATE.format(app_name=app_name, slug=slug, app_key="")
 
     # Local-install wiring: when the CLI runs from the framework checkout,
-    # dependency specs point at it so installs resolve pre-publish.
+    # dependency specs point at it so installs resolve pre-publish. The npm
+    # side only qualifies when packages/react carries a built dist/ (its
+    # entry points there); a bare source checkout would install a package
+    # nothing can resolve, so it falls back to the published registry spec.
     checkout = _framework_checkout()
     fastplace_dep = f"fastplace @ file://{checkout}" if checkout else _published_fastplace_dep()
-    react_dep = f"file:{checkout / 'packages' / 'react'}" if checkout else "^0.1.0"
+    react_dep = "^0.1.0"
+    if checkout and (checkout / "packages/react/dist/fastplace-react.js").is_file():
+        react_dep = f"file:{checkout / 'packages' / 'react'}"
 
     # (path, content) pairs — written through _write so a re-run never
     # clobbers hand edits in existing files.

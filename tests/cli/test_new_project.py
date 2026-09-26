@@ -304,6 +304,9 @@ def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
 
     checkout = Path(fastplace.__file__).resolve().parents[1]
     from_source_checkout = (checkout / "packages" / "react").is_dir()
+    # The npm file: wiring requires a BUILT packages/react/dist (its entry
+    # points live there); a bare source checkout falls back to the registry.
+    dist_built = (checkout / "packages/react/dist/fastplace-react.js").is_file()
 
     _, root = _invoke(tmp_path, monkeypatch, "blog")
     pyproject = (root / "blog" / "pyproject.toml").read_text()
@@ -314,10 +317,12 @@ def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
     assert "[tool.setuptools]" in pyproject
     if from_source_checkout:
         assert f"fastplace @ file://{checkout}" in pyproject
-        assert '"@fastplace/react": "file:' in package_json
     else:  # pragma: no cover — CI/dev always runs from the checkout
         assert '"fastplace>=' in pyproject
-        assert '"@fastplace/react": "^' in package_json
+    if from_source_checkout and dist_built:
+        assert '"@fastplace/react": "file:' in package_json
+    else:
+        assert '"@fastplace/react": "^0.1.0"' in package_json
 
 
 def _invoke_with_input(tmp_path, monkeypatch, name: str, *args: str, input: str | None = None):
