@@ -67,12 +67,15 @@ CAPABILITY_GROUPS: dict[str, dict[str, bool]] = {
         "window_functions": False,
         "cte": False,
         "returning": False,
-        "full_text": True,
+        # The document adapter emits no $text and no $vectorSearch query —
+        # Atlas Vector Search is a hosted-only feature the framework has no
+        # path for. Never claim a capability the query builder cannot emit.
+        "full_text": False,
         "trigram": False,
         "json": True,
         "json_path": True,
-        "vector": True,  # Atlas Vector Search
-        "similarity_search": True,
+        "vector": False,
+        "similarity_search": False,
         "advisory_locks": False,
         "read_replicas": True,
         "row_level_security": False,
