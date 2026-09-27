@@ -112,3 +112,85 @@ def test_build_mount_404s_gracefully_without_a_build(tmp_path):
 
     with TestClient(app) as client:
         assert client.get("/build/assets/never-built.js").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Serve runtime forces built assets (ssr-G5 / tfa-G7)
+# ---------------------------------------------------------------------------
+
+
+def test_serve_runtime_ignores_the_vite_dev_url(tmp_path, monkeypatch):
+    """FASTPLACE_RUNTIME=serve (set by `fastplace serve`) beats APP_ENV=local.
+
+    A local-env serve used to emit dead localhost:5173 script tags — or
+    worse, execute whatever foreign project owned that port.
+    """
+    manifest = tmp_path / "public" / "build" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"resources/js/main.jsx": {"file": "assets/main-Ab12Cd.js"}}')
+    monkeypatch.setenv("FASTPLACE_RUNTIME", "serve")
+    tags = asset_tags(tmp_path, vite_dev_url="http://localhost:5173", app_env="local")
+    assert "/build/assets/main-Ab12Cd.js" in tags
+    assert "localhost:5173" not in tags
+
+
+def test_dev_runtime_keeps_dev_tags(tmp_path, monkeypatch):
+    manifest = tmp_path / "public" / "build" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"resources/js/main.jsx": {"file": "assets/main-Ab12Cd.js"}}')
+    monkeypatch.delenv("FASTPLACE_RUNTIME", raising=False)
+    tags = asset_tags(tmp_path, vite_dev_url="http://localhost:5173", app_env="local")
+    assert "localhost:5173/resources/js/main.jsx" in tags
+
+
+# ---------------------------------------------------------------------------
+# Cache-Control on static mounts (serve-G5)
+# ---------------------------------------------------------------------------
+
+
+def test_hashed_build_assets_are_immutable(tmp_path):
+    from fastapi import FastAPI
+
+    from fastplace.http.kernel import _install_static_mounts
+
+    app = FastAPI()
+    asset = tmp_path / "public" / "build" / "assets" / "main-Ab12Cd.js"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("console.log('v1');")
+    root_file = tmp_path / "public" / "build" / "manifest.json"
+    root_file.write_text("{}")
+    _install_static_mounts(app, tmp_path)
+
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        hashed = client.get("/build/assets/main-Ab12Cd.js")
+        unhashed = client.get("/build/manifest.json")
+    assert hashed.status_code == 200
+    assert hashed.headers["cache-control"] == "public, max-age=31536000, immutable"
+    # Non-hashed build output revalidates quickly — no year-long trap.
+    assert unhashed.status_code == 200
+    assert unhashed.headers["cache-control"] == "public, max-age=300"
+
+
+def test_public_root_files_get_short_cache(tmp_path):
+    from fastapi import FastAPI
+
+    from fastplace.http.kernel import _install_static_mounts
+
+    app = FastAPI()
+    robots = tmp_path / "public" / "robots.txt"
+    robots.parent.mkdir(parents=True)
+    robots.write_text("User-agent: *\n")
+    _install_static_mounts(app, tmp_path)
+
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        resp = client.get("/robots.txt")
+        missing = client.get("/nope.txt")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=300"
+    # Missing files carry no cache policy at all.
+    assert missing.status_code == 404
+    assert "cache-control" not in missing.headers

@@ -138,3 +138,148 @@ def production_error_page(request: Any) -> Html:
 </body>
 </html>"""
     return Html(body, status_code=500)
+
+
+_STATUS_LABELS: dict[int, str] = {
+    400: "Bad Request",
+    401: "Unauthorized",
+    402: "Payment Required",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    408: "Request Timeout",
+    409: "Conflict",
+    410: "Gone",
+    413: "Payload Too Large",
+    415: "Unsupported Media Type",
+    418: "I'm a teapot",
+    419: "Page Expired",
+    422: "Unprocessable Entity",
+    429: "Too Many Requests",
+    500: "Server Error",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout",
+}
+
+
+def _status_label(status_code: int) -> str:
+    return _STATUS_LABELS.get(status_code, "Error")
+
+
+def _iter_routes(routes: Any) -> list[tuple[str | None, set[str] | None]]:
+    """Flatten the app's route tree (FastAPI wraps included routers)."""
+    flat: list[tuple[str | None, set[str] | None]] = []
+    for route in routes or []:
+        nested = getattr(route, "original_router", None)
+        if nested is not None:
+            flat.extend(_iter_routes(nested.routes))
+            continue
+        flat.append((getattr(route, "path", None), getattr(route, "methods", None)))
+    return flat
+
+
+def _registered_routes_card(request: Any) -> str:
+    """Debug orientation: the routes this app actually answers (capped)."""
+    rows: list[str] = []
+    app = getattr(request, "app", None)
+    for path, methods in _iter_routes(getattr(app, "routes", None)):
+        if not path or path.startswith(("/openapi", "/api/docs", "/docs/")):
+            continue
+        if methods:
+            shown = ",".join(sorted(m for m in methods if m not in ("HEAD", "OPTIONS")))
+            rows.append(f"{shown or 'ANY':8s} {path}")
+        else:
+            rows.append(f"{'MOUNT':8s} {path}")
+        if len(rows) >= 30:
+            rows.append("…")
+            break
+    if not rows:
+        return ""
+    body = "\n".join(html.escape(row) for row in rows)
+    return (
+        f'  <div class="card">\n    <h2>Registered routes</h2>\n    <pre>{body}</pre>\n  </div>\n'
+    )
+
+
+def http_error_page(
+    request: Any,
+    status_code: int,
+    detail: str,
+    *,
+    debug: bool = False,
+    headers: dict[str, str] | None = None,
+) -> Html:
+    """Styled page for HTTP error statuses shown to browser navigations.
+
+    Replaces the bare ``{"message": ...}`` JSON a 404 navigation used to
+    get: titled, ``lang``-attributed, consistent with the 500 pages. In
+    debug mode it adds the registered-routes card so a mistyped URL is
+    obvious at a glance.
+    """
+    label = _status_label(status_code)
+    title = f"{status_code} {label} — Fastplace"
+    detail_html = ""
+    if detail and detail.strip() and str(detail) != str(status_code):
+        detail_html = '  <div class="card"><pre>' + html.escape(str(detail)) + "</pre></div>\n"
+    routes_card = _registered_routes_card(request) if debug else ""
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)}</title>
+<style>{_PAGE_CSS}</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">Fastplace</div>
+  <h1><span class="status">{status_code}</span> {html.escape(label)}</h1>
+
+{detail_html}  <div class="card">
+    <pre>The page you are looking for could not be served.</pre>
+  </div>
+
+{routes_card}  <p class="hint"><em>→</em> <a href="/" style="color:#34d399;">Back to the application</a></p>
+</div>
+</body>
+</html>"""
+    return Html(body, status_code=status_code, headers=headers)
+
+
+def boot_error_page(error_text: str, tb_text: str = "") -> Html:
+    """The dev-shell 503: the backend failed to (re)load, this page refreshes.
+
+    Served by ``fastplace.http.dev_shell`` when the project import raises.
+    The meta refresh brings the browser back the moment the reloader
+    recovers, so a mid-edit syntax error costs a spinner, not a hang.
+    """
+    tb_lines = [line for line in tb_text.splitlines() if line.strip()]
+    tb_tail = "\n".join(tb_lines[-12:])
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="2">
+<title>503 Backend failed to reload — Fastplace</title>
+<style>{_PAGE_CSS}</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">Fastplace</div>
+  <h1><span class="status">503</span> Backend failed to reload</h1>
+
+  <div class="card exception"><pre>{html.escape(error_text)}</pre></div>
+
+  <div class="card frames">
+    <h2>Traceback</h2>
+    <pre>{html.escape(tb_tail)}</pre>
+  </div>
+
+  <p class="hint">Fix the error and save — this page reloads automatically
+  every 2 seconds. The full traceback is in your terminal.</p>
+</div>
+</body>
+</html>"""
+    return Html(body, status_code=503)
