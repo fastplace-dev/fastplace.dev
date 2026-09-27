@@ -10,7 +10,41 @@ import typer
 
 from fastplace.console import console
 
-database_app = typer.Typer(help="Database: migrations, seeders, schema state.")
+
+class _EnvLoadingTyper(typer.Typer):
+    """Typer whose commands load the project .env before running.
+
+    The running app resolves its database from .env (the kernel loads it
+    at create_app); the CLI must share that source or `migrate` writes a
+    stray SQLite file while the served app points at PostgreSQL/MySQL.
+    A group callback is NOT the place for this: Typer drops a sub-app's
+    callback when the app is mounted with ``add_typer(name="")`` — the
+    flat-command merge has no group hook (it only warns). Wrapping at
+    registration instead means every command on this app loads .env, and
+    a command added later cannot regress the behavior by forgetting a
+    call. Idempotent and non-destructive: load_dotenv never overrides a
+    real environment variable, so exported values keep winning.
+    """
+
+    def command(self, *args, **kwargs):
+        import functools
+
+        register = super().command(*args, **kwargs)
+
+        def decorator(fn):
+            @functools.wraps(fn)
+            def _load_env_then_run(*fn_args, **fn_kwargs):
+                from fastplace.config import load_env
+
+                load_env(_project_root() / ".env")
+                return fn(*fn_args, **fn_kwargs)
+
+            return register(_load_env_then_run)
+
+        return decorator
+
+
+database_app = _EnvLoadingTyper(help="Database: migrations, seeders, schema state.")
 
 _MIGRATIONS_NOT_CONFIGURED = typer.style(
     "Migrations are not configured — run ", fg=typer.colors.YELLOW

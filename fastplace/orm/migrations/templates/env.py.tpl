@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastplace.config import config  # noqa: E402
+from fastplace.config import config, load_env  # noqa: E402
 from fastplace.orm.manager import normalize_database_url  # noqa: E402
 from fastplace.orm.model import Model  # noqa: E402
 from fastplace.orm.registry import import_all_models  # noqa: E402
@@ -28,6 +28,11 @@ alembic_config = context.config
 
 if alembic_config.config_file_name is not None:
     fileConfig(alembic_config.config_file_name)
+
+# Same config source as the running app: a bare `alembic upgrade` (no
+# fastplace CLI involved) must still resolve the .env DATABASE_URL. Never
+# overrides a real environment variable.
+load_env(PROJECT_ROOT / ".env")
 
 # Discover declared models so autogenerate diffs against full metadata.
 import_all_models(PROJECT_ROOT)

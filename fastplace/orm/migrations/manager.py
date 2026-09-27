@@ -183,9 +183,13 @@ class MigrationsManager:
     # required.
 
     def _database_url(self) -> str:
-        from fastplace.config import config
+        from fastplace.config import config, load_env
         from fastplace.orm.manager import normalize_database_url
 
+        # Belt-and-braces alongside the CLI group callback: a programmatic
+        # caller (no CLI involved) still resolves the same DATABASE_URL the
+        # running app sees. load_dotenv never overrides a real env var.
+        load_env(self.root / ".env")
         # Bare schemes (mysql://, postgresql://) bind to the async driver —
         # the same contract as the runtime DatabaseManager, or Alembic would
         # reach for the sync drivers (MySQLdb / psycopg2) that are not installed.
