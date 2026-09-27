@@ -22,6 +22,7 @@ constructing the driver never touches the network.
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 import inspect
 import logging
@@ -352,6 +353,27 @@ async def _check_restart_sentinel(ctx: dict[str, Any]) -> None:
     raise asyncio.CancelledError
 
 
+def _adapt_sa_handler(fn: JobFn) -> JobFn:
+    """Wrap a ``@Job`` handler for saq's calling convention.
+
+    saq's ``Worker.process()`` invokes every registered function as
+    ``function(context, **kwargs)`` — the ctx dict rides as a leading
+    positional. The documented ``@Job`` shape is ``fn(**kwargs)`` with no
+    context parameter, so registering handlers bare breaks production
+    dispatch two ways: a kwarg-carrying job dies with ``TypeError: got
+    multiple values for argument``, and a no-kwarg job silently receives
+    the ctx dict as its first declared parameter. The shim absorbs the
+    positional and forwards only the dispatched kwargs. ``functools.wraps``
+    keeps the handler's name/doc visible in saq's logs.
+    """
+
+    @functools.wraps(fn)
+    async def _wrapped(_ctx: dict[str, Any], **kwargs: Any) -> Any:
+        return await fn(**kwargs)
+
+    return _wrapped  # type: ignore[return-value]
+
+
 class SaqQueue:
     """Production driver on SAQ + redis — everything connects lazily.
 
@@ -453,7 +475,9 @@ class SaqQueue:
         """
         from saq import Worker
 
-        functions = [(entry.name, entry.fn) for entry in registry.values()]
+        functions = [
+            (entry.name, _adapt_sa_handler(entry.fn)) for entry in registry.values()
+        ]
         hooks = [_check_restart_sentinel]
         caller_hooks = kwargs.pop("before_process", None)
         if caller_hooks is not None:

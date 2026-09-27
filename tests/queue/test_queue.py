@@ -395,6 +395,54 @@ def test_saq_worker_assembly_registers_jobs_by_name():
 
 
 # ---------------------------------------------------------------------------
+# build_worker handler shape — saq calls fn(ctx, **kwargs); @Job handlers are
+# documented as fn(**kwargs). The worker must adapt, not the developer.
+# ---------------------------------------------------------------------------
+
+
+async def test_saq_worker_function_accepts_ctx_and_forwards_kwargs():
+    """saq's process() invokes ``function(context, **kwargs)`` — the registered
+    callable must accept that leading ctx positional and hand the handler
+    ONLY its dispatched kwargs (q1-G1/q2-G1)."""
+    seen: dict = {}
+
+    @Job(name="shape.kwargs_probe")
+    async def probe(user_id: int, timeout: str = "unset"):
+        seen["call"] = (user_id, timeout)
+        return "done"
+
+    driver = SaqQueue(url="redis://localhost:6379/2", name="fastplace")
+    worker = driver.build_worker()
+
+    result = await worker.functions["shape.kwargs_probe"](
+        {"worker": object(), "job": object()},  # saq's ctx positional
+        user_id=3,
+        timeout="payload",  # a Job-dataclass field name — must stay a kwarg
+    )
+    assert seen["call"] == (3, "payload")
+    assert result == "done"
+
+
+async def test_saq_worker_function_shields_no_kwarg_handler_from_ctx():
+    """A no-kwargs handler dispatched with no kwargs must receive nothing —
+    the bare-handler bug silently fed it saq's ctx dict as its first
+    declared parameter."""
+    ran: list[object] = []
+
+    @Job(name="shape.bare_probe")
+    async def bare():
+        ran.append(True)
+        return None
+
+    driver = SaqQueue(url="redis://localhost:6379/2", name="fastplace")
+    worker = driver.build_worker()
+
+    result = await worker.functions["shape.bare_probe"]({"worker": object()})
+    assert result is None
+    assert ran == [True]
+
+
+# ---------------------------------------------------------------------------
 # SaqQueue.dispatch_delayed — scheduled enqueue via an explicit Job
 # ---------------------------------------------------------------------------
 
