@@ -368,3 +368,20 @@ def test_build_payload_is_a_public_classmethod():
 
     payload = Note._build_payload({"views": 3})
     assert payload == {"views": 3, "title": "untitled"}
+
+
+def test_collection_is_a_public_accessor(monkeypatch):
+    """Aggregations ($group pipelines, indexes, bulkWrite) need the raw
+    AsyncCollection — the public ``collection()`` hands it over without
+    forcing reach into the ``_mongo_collection`` internals."""
+    import fastplace.orm.documents as documents_module
+    from fastplace.orm.documents import Document
+
+    class Invoice(Document):
+        amount: int = 0
+
+    resolved = {}
+    monkeypatch.setattr(documents_module, "documents_database", lambda: resolved, raising=True)
+    resolved["invoices"] = object()  # stand-in collection handle
+
+    assert Invoice.collection() is resolved["invoices"]
