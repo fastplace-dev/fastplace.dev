@@ -433,6 +433,16 @@ def test_db_configure_mongodb_writes_the_document_adapter_url(project):
     assert "MONGODB_URL=mongodb://localhost:27017/fastplace" in env
 
 
+def test_db_configure_mongodb_says_migrations_stay_relational(project):
+    """Mongo has no schema migrations — the scaffolded Alembic env targets
+    DATABASE_URL. Saying nothing leaves users believing `migrate` shapes
+    their Mongo database; it does not, and never will."""
+    result = runner.invoke(cli_app, ["db:configure", "mongodb"])
+    assert result.exit_code == 0, result.output
+    assert "migrate" in result.output
+    assert "Mongo" in result.output
+
+
 def test_db_configure_keeps_env_example_in_sync(project):
     result = runner.invoke(cli_app, ["db:configure", "postgresql"])
     assert result.exit_code == 0, result.output

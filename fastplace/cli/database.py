@@ -220,6 +220,12 @@ def db_configure(
         written = _write_driver_env(driver, root, force=force)
         for key in written:
             console.print(f"[green]set[/] {key} in .env ({driver})")
+        if driver == "mongodb":
+            console.print(
+                "[dim]note: Mongo is the document adapter — collections are "
+                "schemaless, so `migrate` never touches them; the scaffolded "
+                "migrations still target DATABASE_URL (relational).[/]"
+            )
 
 
 @database_app.command("make:migration")
