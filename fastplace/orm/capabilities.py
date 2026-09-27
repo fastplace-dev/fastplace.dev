@@ -82,13 +82,19 @@ CAPABILITY_GROUPS: dict[str, dict[str, bool]] = {
 _ALIASES = {"postgres": "postgresql", "sqlite3": "sqlite", "mariadb": "mysql"}
 
 
+def normalize_driver(driver: str) -> str:
+    """Canonical family name for a driver alias (``postgres`` → ``postgresql``)."""
+    lowered = str(driver).strip().lower()
+    return _ALIASES.get(lowered, lowered)
+
+
 def driver_from_url(url: str) -> str:
     """Derive the driver name from a connection URL scheme.
 
     Case-insensitive — URLs pasted from dashboards arrive in any casing.
     """
     scheme = url.split(":", 1)[0].split("+", 1)[0].lower()
-    return _ALIASES.get(scheme, scheme)
+    return normalize_driver(scheme)
 
 
 class Capabilities:
