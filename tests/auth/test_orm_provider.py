@@ -7,6 +7,8 @@ identifier extraction, and `find(pk)` round-trips.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from fastplace.auth.providers import OrmUserProvider, provider_from_config
@@ -22,32 +24,66 @@ def db_url(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _reset_db_and_registry():
+def _reset_db():
     from fastplace.db import reset_db
 
     reset_db()
     yield
     reset_db()
-    from fastplace.orm.model import Model
 
-    Model.metadata.clear()
-    from sqlalchemy.orm import clear_mappers
 
-    clear_mappers()
+def _inline_model(name: str, table: str) -> type[Model]:
+    """A per-test model on the shared base with unique class/table names.
+
+    The shared declarative base outlives every test, so a repeated
+    "AuthUser"/"auth_users" would collide with the earlier definition —
+    and clearing the shared registry to dodge that would strand every
+    model module another test file already imported.
+    """
+    tag = uuid.uuid4().hex[:8]
+    return type(
+        f"{name}{tag}",
+        (Model,),
+        {
+            "__tablename__": f"{table}_{tag}",
+            "__annotations__": {"id": int, "email": str},
+            "id": Field(primary_key=True),
+        },
+    )
+
+
+async def test_the_db_reset_never_clears_the_shared_model_registry(
+    db_url, account_model, monkeypatch
+):
+    """The autouse reset disposes engines only. Clearing the shared
+    declarative metadata or the global mapper registry strands every model
+    module another test file already imported — downstream tests (CLI model
+    introspection, in-process scaffolds) then see phantom models or table
+    collisions for the rest of the session."""
+
+    def _forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("shared model registry must never be cleared here")
+
+    monkeypatch.setattr(Model.metadata, "clear", _forbidden)
+    monkeypatch.setattr("sqlalchemy.orm.clear_mappers", _forbidden)
+
+    user = await account_model.create(email="firoz@example.test")
+    assert await OrmUserProvider(account_model).resolve(user.id) is not None
 
 
 @pytest.fixture()
 async def account_model(db_url):
-    class AuthUser(Model):
-        __tablename__ = "auth_users"
-
-        id: int = Field(primary_key=True)
-        email: str
+    model = _inline_model("AuthUser", "auth_users")
 
     from fastplace.db import db
 
     await db.create_all()
-    return AuthUser
+    try:
+        yield model
+    finally:
+        # Take only our own table back off the shared metadata — the
+        # throwaway class must not surface in later autogenerate scopes.
+        Model.metadata.remove(model.__table__)
 
 
 async def test_identifier_extracts_the_primary_key(account_model):
@@ -79,10 +115,13 @@ async def test_resolve_returns_none_for_unknown_ids(account_model):
 def test_dotted_model_path_imports_lazily(tmp_path, monkeypatch):
     (tmp_path / "accounts_pkg").mkdir()
     (tmp_path / "accounts_pkg" / "__init__.py").write_text("")
+    # A unique table name: this module executes against the shared base,
+    # and the test may run more than once in one session.
+    table = f"lazy_members_{uuid.uuid4().hex[:8]}"
     (tmp_path / "accounts_pkg" / "models.py").write_text(
         "from fastplace.orm import Field, Model\n\n"
         "class Member(Model):\n"
-        "    __tablename__ = 'lazy_members'\n"
+        f"    __tablename__ = '{table}'\n"
         "    id: int = Field(primary_key=True)\n"
         "    email: str\n"
     )
@@ -94,6 +133,10 @@ def test_dotted_model_path_imports_lazily(tmp_path, monkeypatch):
     assert provider.model.__name__ == "Member"
     del sys.modules["accounts_pkg.models"]
     del sys.modules["accounts_pkg"]
+    # Same courtesy: our throwaway table leaves the shared metadata again.
+    from fastplace.orm.model import Model
+
+    Model.metadata.remove(Model.metadata.tables[table])
 
 
 def test_provider_from_config_builds_the_orm_driver():

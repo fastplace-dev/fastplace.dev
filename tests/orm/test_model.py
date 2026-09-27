@@ -41,6 +41,34 @@ async def test_tablename_convention(db_url):
     assert InvoiceLine.__tablename__ == "invoice_lines"
 
 
+def test_redeclaring_a_tablename_replaces_the_declaration(db_url):
+    """Re-executed model modules (in-process project boots, importer
+    evictions) redeclare declarative classes whose tables are still
+    registered. The superseded declaration is disposed — its table leaves
+    the metadata, its mapper and string-lookup entry are released — and the
+    new definition owns the name outright; a stale class lingering in the
+    registry surfaces later as ``Multiple classes found for path``."""
+    tag = uuid.uuid4().hex[:8]
+    namespace = {
+        "__tablename__": f"redeclared_posts_{tag}",
+        "__annotations__": {"id": int, "title": str},
+        "id": Field(primary_key=True),
+    }
+    first = type(f"Redeclared{tag}A", (Model,), dict(namespace))
+
+    second = type(f"Redeclared{tag}B", (Model,), dict(namespace))
+
+    assert Model.metadata.tables[second.__tablename__] is second.__table__
+    # the superseded declaration is left fully unmapped — nothing behind it
+    # to resolve ambiguously in the declarative registry
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.exc import NoInspectionAvailable
+
+    with pytest.raises(NoInspectionAvailable):
+        sa_inspect(first)
+    Model.metadata.remove(second.__table__)
+
+
 async def test_create_and_find_roundtrip(created):
     User = created
     user = await User.create(name="Firoz", email="firoz@example.com")

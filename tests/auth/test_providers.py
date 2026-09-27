@@ -80,37 +80,77 @@ class TestDictProviderCredentials:
 
 
 @pytest.fixture(autouse=True)
-def _reset_db_and_registry(monkeypatch, tmp_path):
-    from sqlalchemy.orm import clear_mappers
-
+def _reset_db(monkeypatch, tmp_path):
     from fastplace.db import reset_db
-    from fastplace.orm.model import Model
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/providers.db")
     monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
     reset_db()
-    Model.metadata.clear()
-    clear_mappers()
     yield
     reset_db()
-    Model.metadata.clear()
-    clear_mappers()
+
+
+def _inline_model() -> type:
+    """A per-test model on the shared base with unique class/table names.
+
+    The shared declarative base outlives every test, so a repeated
+    "CredentialUser" would collide with the earlier definition — and
+    clearing the shared registry to dodge that would strand every model
+    module another test file already imported.
+    """
+    import uuid
+
+    from fastplace.orm import Field, Model
+
+    tag = uuid.uuid4().hex[:8]
+    return type(
+        f"CredentialUser{tag}",
+        (Model,),
+        {
+            "__tablename__": f"auth_credential_users_{tag}",
+            "__annotations__": {"id": int, "email": str, "password_hash": str},
+            "id": Field(primary_key=True),
+            "email": Field(unique=True),
+            "password_hash": Field(default=""),
+        },
+    )
+
+
+async def test_the_db_reset_never_clears_the_shared_model_registry(monkeypatch):
+    """Engine reset only — same invariant as test_orm_provider.py pins."""
+    from fastplace.auth.providers import OrmUserProvider
+    from fastplace.db import db
+    from fastplace.orm.model import Model
+
+    def _forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("shared model registry must never be cleared here")
+
+    monkeypatch.setattr(Model.metadata, "clear", _forbidden)
+    monkeypatch.setattr("sqlalchemy.orm.clear_mappers", _forbidden)
+
+    model = _inline_model()
+    await db.create_all()
+    user = await model.create(email="firoz@example.test", password_hash="x")
+    try:
+        assert await OrmUserProvider(model).resolve(user.id) is not None
+    finally:
+        Model.metadata.remove(model.__table__)
 
 
 @pytest.fixture()
 async def credential_model():
     from fastplace.db import db
-    from fastplace.orm import Field, Model
+    from fastplace.orm.model import Model
 
-    class CredentialUser(Model):
-        __tablename__ = "auth_credential_users"
-
-        id: int = Field(primary_key=True)
-        email: str = Field(unique=True)
-        password_hash: str = Field(default="")
+    model = _inline_model()
 
     await db.create_all()
-    return CredentialUser
+    try:
+        yield model
+    finally:
+        # Take only our own table back off the shared metadata — the
+        # throwaway class must not surface in later autogenerate scopes.
+        Model.metadata.remove(model.__table__)
 
 
 class TestOrmProviderCredentials:

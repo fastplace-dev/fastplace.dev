@@ -86,6 +86,7 @@ class Model(AsyncAttrs, DeclarativeBase):
         if not abstract:
             _validate_dispatches(cls)
             _transform_declarative_fields(cls)
+            _replace_superseded_declaration(cls)
         super().__init_subclass__(**kwargs)
 
     # ------------------------------------------------------------------
@@ -777,6 +778,49 @@ def _transform_declarative_fields(cls: type) -> None:
 
     cls.__annotations__ = resolved_annotations
     cls.__tablename__ = tablename  # type: ignore[attr-defined]
+
+
+def _replace_superseded_declaration(cls: type) -> None:
+    """A redeclared model replaces its predecessor instead of colliding.
+
+    Re-executing a model module (in-process project boots, importer
+    evictions) redefines declarative classes whose tables are still on the
+    shared metadata. SQLAlchemy refuses the Table outright and leaves the
+    stale class in the string-lookup registry, where it surfaces later as
+    ``Multiple classes found for path`` ambiguity. The superseded
+    declaration is therefore disposed explicitly — its table leaves the
+    metadata, its mapper and registry entries are released — and the new
+    definition owns the name outright.
+    """
+    tablename = cls.__dict__.get("__tablename__")
+    if tablename is None:
+        return
+    if tablename in Model.metadata.tables:
+        Model.metadata.remove(Model.metadata.tables[tablename])
+    stale: list[type] = []
+    stack = [Model]
+    while stack:
+        for subclass in stack.pop().__subclasses__():
+            stack.append(subclass)
+            if (
+                subclass is not cls
+                and subclass.__module__ == cls.__module__
+                and getattr(subclass, "__tablename__", None) == tablename
+            ):
+                stale.append(subclass)
+    registry = Model.registry
+    for other in stale:
+        manager = getattr(other, "_sa_class_manager", None)
+        if manager is not None:
+            # The per-class teardown that registry.dispose() gives every
+            # class at once: dispose flags on the mapper, the registry entry
+            # and instrumentation, and the manager itself — a disposed
+            # manager left in registry._managers breaks the next
+            # configure_mappers() with a None mapper.
+            registry._dispose_manager_and_mapper(manager)  # noqa: SLF001
+            registry._managers.pop(manager, None)  # noqa: SLF001
+        else:  # pragma: no cover — an uninstrumented subclass has no manager
+            registry._dispose_cls(other)  # noqa: SLF001
 
 
 def ConfigurationError_cls(cls: type, attr: str, detail: str) -> Exception:

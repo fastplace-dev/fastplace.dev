@@ -48,20 +48,22 @@ def clean_company_context():
 
 @pytest.fixture(autouse=True)
 def reset_model_registry():
-    """Fresh metadata/mappers per test (mirrors tests/orm/conftest.py).
+    """Sweep each test's own tables; never clear the shared registry.
 
-    The package's own model-bearing modules are evicted with the registry —
+    The package's own model-bearing modules are re-imported per test —
+    redeclarations replace cleanly at the base, and only this test's
+    additions leave the metadata afterwards. A global
+    ``metadata.clear()``/``clear_mappers()`` would strand every model module
+    another suite already imported (see ``tests/_registry.py``).
     ``context`` stays cached so every re-import shares one ContextVar.
     """
     import sys
 
+    from tests._registry import metadata_baseline, sweep_added_tables
+
+    baseline = metadata_baseline()
     yield
-    from sqlalchemy.orm import clear_mappers
-
-    from fastplace.orm import Model
-
-    Model.metadata.clear()
-    clear_mappers()
+    sweep_added_tables(baseline)
     for name in [
         m
         for m in list(sys.modules)

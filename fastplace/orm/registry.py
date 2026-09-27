@@ -43,10 +43,17 @@ def project_boot_sandbox(root: Path, *, persist: bool = False) -> Iterator[None]
 
     Cached modules in the project namespaces are snapshotted and restored,
     so booting one project never leaves it hijacking ``import
-    asgi``/``routes``/``app`` for the rest of the process — *foreign* ones
-    only: modules of the project being booted stay cached, keeping imports
-    cache hits instead of re-executions that would redefine declarative
-    classes. The ORM's metadata is just as global: two projects that both
+    asgi``/``routes``/``app`` for the rest of the process — and nothing the
+    boot imported survives it either, the project's own modules included: a
+    long-lived process (a host embedding the boot, the pytest process) that
+    imports its own ``routes`` afterward must not resolve this project's
+    cache. Re-importing on a later boot is safe — a redeclared model
+    replaces its superseded declaration instead of colliding with it.
+    ``persist=True`` is the carve-out for model imports: the caller uses the
+    registered classes after the block and resolves them through ``sys.modules``,
+    so the project's ``app.*`` modules stay cached — ``routes``/``asgi``
+    never do. The
+    ORM's metadata is just as global: two projects that both
     define a table (every auth scaffold ships ``users``) would collide on
     the second boot with ``Table 'users' is already defined for this
     MetaData instance``. Tables owned by *foreign* app models are therefore
@@ -102,7 +109,34 @@ def project_boot_sandbox(root: Path, *, persist: bool = False) -> Iterator[None]
             if n.split(".", 1)[0] in PROJECT_NAMESPACES and not module_is_local(m, root)
         ]:
             sys.modules.pop(name)
+        # Router entries never outlive the boot, persist or not: the
+        # process's next ``import routes`` must resolve its own project, not
+        # whatever this boot introspected. Model modules are the exception a
+        # persist caller relies on — class resolution through sys.modules
+        # after the block — so their entries are re-asserted after the
+        # foreign snapshot comes back (the booted project wins its names).
+        if persist:
+            survivors = {
+                n: m
+                for n, m in sys.modules.items()
+                if n.split(".", 1)[0] == "app" and module_is_local(m, root)
+            }
+        for name in [
+            n
+            for n, m in sys.modules.items()
+            if n.split(".", 1)[0] in PROJECT_NAMESPACES - {"app"} and module_is_local(m, root)
+        ]:
+            sys.modules.pop(name)
         sys.modules.update(saved_modules)
+        if persist:
+            sys.modules.update(survivors)
+        else:
+            for name in [
+                n
+                for n, m in sys.modules.items()
+                if n.split(".", 1)[0] in PROJECT_NAMESPACES and module_is_local(m, root)
+            ]:
+                sys.modules.pop(name)
         if not persist:
             # Drop what this boot registered beyond the baseline…
             for key in list(metadata.tables):
