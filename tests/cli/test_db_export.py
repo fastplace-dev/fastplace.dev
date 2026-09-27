@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import re
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-# Autouse fixture: clean db/model/module state per test (see _isolation.py).
+# Autouse fixture: clean db/model/module/environ state per test (see
+# _isolation.py — the environ confinement there replaced this file's own).
 from _isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 from typer.testing import CliRunner
 
@@ -17,15 +17,6 @@ from fastplace.cli import app as cli_app
 
 runner = CliRunner()
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-
-@pytest.fixture(autouse=True)
-def _hermetic_environ():
-    """Confine os.environ changes to the test that caused them."""
-    env_before = dict(os.environ)
-    yield
-    os.environ.clear()
-    os.environ.update(env_before)
 
 
 def _out(result) -> str:

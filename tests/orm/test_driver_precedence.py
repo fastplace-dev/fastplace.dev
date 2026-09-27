@@ -21,8 +21,7 @@ from fastplace.orm.manager import DatabaseManager, _connections_from_config
 #: What `fastplace new` ships — the exact trap: driver + URL declared as a
 #: sqlite pair in the module, switched later through DATABASE_URL alone.
 SCAFFOLD_DATABASE_PY = (
-    "DATABASE_DRIVER = 'sqlite'\n"
-    "DATABASE_URL = 'sqlite+aiosqlite:///./database.sqlite3'\n"
+    "DATABASE_DRIVER = 'sqlite'\nDATABASE_URL = 'sqlite+aiosqlite:///./database.sqlite3'\n"
 )
 
 
@@ -129,8 +128,7 @@ def test_untouched_scaffold_pair_stays_silent(bind_project, monkeypatch, caplog)
 
 def test_named_connection_driver_checked_against_its_url(bind_project, monkeypatch, caplog):
     bind_project(
-        SCAFFOLD_DATABASE_PY
-        + "DATABASE_CONNECTIONS = {\n"
+        SCAFFOLD_DATABASE_PY + "DATABASE_CONNECTIONS = {\n"
         "    'analytics': {'driver': 'postgresql', 'url': 'mysql://user@localhost/ffw2_an'},\n"
         "}\n"
     )

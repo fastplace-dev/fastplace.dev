@@ -510,6 +510,21 @@ def test_db_configure_rewrites_every_duplicate_of_a_key(project):
     assert "stale" not in env
 
 
+def test_env_file_loads_do_not_leak_into_later_tests():
+    """db commands load the invoked project's .env — the process must not keep it.
+
+    The test above invokes db:configure with an .env carrying
+    ``APP_NAME=TestApp``; the command's dotenv load writes that into
+    os.environ, where nothing in this suite tracks it (monkeypatch only
+    restores what IT set). Env-first config then hands later suites a
+    foreign APP_NAME — the sample-suite dashboard assertion this pair once
+    broke. Runs right after the leaker in file order on purpose.
+    """
+    import os
+
+    assert os.environ.get("APP_NAME") != "TestApp"
+
+
 def test_db_configure_placeholder_switch_needs_no_force(project):
     """Switching between known placeholder values stays friction-free."""
     assert runner.invoke(cli_app, ["db:configure", "postgresql"]).exit_code == 0
