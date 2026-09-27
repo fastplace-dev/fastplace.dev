@@ -12,7 +12,8 @@ describe("AlertError", () => {
     render(<AlertError errors={["First failure"]} />);
 
     const alert = screen.getByRole("alert");
-    expect(alert.className).toContain("text-destructive-foreground");
+    expect(alert.className).toContain("text-destructive");
+    expect(alert.className).toContain("border-destructive/50");
     expect(alert).toHaveTextContent("Something went wrong.");
   });
 

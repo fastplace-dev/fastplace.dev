@@ -387,3 +387,226 @@ class TestEmailChangeRace:
         assert "from sqlalchemy.exc import IntegrityError" in controller
         assert "except IntegrityError:" in controller
         assert "The email has already been taken." in controller
+
+
+class TestTwoFactorStatusRoute:
+    """a11y2-G5: after confirming their password, the 2FA enable journey 404s
+    — the frozen frontend GETs /user/two-factor-authentication to recover and
+    the scaffolded surface had no such route. The status GET must exist and
+    walk browser visitors back to the security page."""
+
+    def test_status_route_is_emitted_with_the_section_middleware(self, scaffolded):
+        routes = (scaffolded / "routes/auth.py").read_text()
+        block = routes.split('router.get(\n    "/user/two-factor-authentication"')[1]
+        block = block.split("router.")[0]
+        assert "TwoFactorApiController" in block
+        assert '"status"' in block
+        assert 'name="auth.two_factor.status"' in block
+        assert "middleware=_TWO_FACTOR_MIDDLEWARE" in block
+
+    def test_status_controller_redirects_browsers_and_answers_api_clients(self, scaffolded):
+        controller = (scaffolded / "app/http/controllers/two_factor_api_controller.py").read_text()
+        assert "async def status" in controller
+        # Browser/fetch visitors (bridge header or no JSON Accept) walk back
+        # to the security page; the fetch layer follows the 303 and swaps in
+        # the page payload, so a re-click of Enable runs against a confirmed
+        # session. JSON clients get the boolean.
+        assert 'Redirect("/settings/security", status_code=303)' in controller
+        assert 'Json({"enabled": enabled})' in controller
+
+    def test_service_exposes_is_enabled(self, scaffolded):
+        service = (scaffolded / "app/modules/accounts/services/two_factor_service.py").read_text()
+        assert "async def is_enabled" in service
+        # R10 semantics: the flag check runs before the verdict, so a
+        # disabled surface 404s here exactly like every other method.
+        body = service.split("async def is_enabled")[1].split("async def")[0]
+        assert "_require_enabled()" in body
+        assert "two_factor_confirmed_at" in body
+
+
+class TestSettingsServiceBoundary:
+    """supp-2-G6: the settings controller reached straight into the accounts
+    module's repository layer — a lint:modules violation shipped green in
+    every scaffolded app because nothing re-ran the lint on the tree."""
+
+    def test_user_service_is_emitted_at_the_service_seam(self, scaffolded):
+        service = scaffolded / "app/modules/accounts/services/user_service.py"
+        assert service.is_file()
+        content = service.read_text()
+        assert "class UserService" in content
+        assert "async def email_in_use" in content
+
+    def test_settings_controller_consumes_the_service_not_the_repository(self, scaffolded):
+        controller = (scaffolded / "app/http/controllers/settings_api_controller.py").read_text()
+        assert "from app.modules.accounts.services.user_service import UserService" in controller
+        assert "UserRepository" not in controller
+        assert "email_in_use" in controller
+
+    def test_scaffolded_tree_passes_module_lint(self, scaffolded):
+        from fastplace.modules import lint_imports
+
+        violations = lint_imports(scaffolded)
+        assert violations == [], [v.message for v in violations]
+
+
+class TestPyprojectExtras:
+    def test_dependency_carries_queue_and_webauthn_extras(self, scaffolded):
+        """q2-G6: the scaffold ships app/jobs/mail.py (the queue-backed
+        verification listener), so the emitted dependency needs the queue
+        extra beside webauthn — not webauthn alone."""
+        import tomllib
+
+        data = tomllib.loads((scaffolded / "pyproject.toml").read_text())
+        deps = data["project"]["dependencies"]
+        assert any(dep.startswith("fastplace[queue,webauthn]") for dep in deps), deps
+
+    def test_mysql_extra_ships_documented(self, scaffolded):
+        """mysql-G4: parity with the framework's own extras — a scaffolded
+        app can `pip install -e ".[mysql]"` without inventing the pins."""
+        import tomllib
+
+        data = tomllib.loads((scaffolded / "pyproject.toml").read_text())
+        extras = data["project"]["optional-dependencies"]
+        assert "mysql" in extras
+        assert "asyncmy>=0.2.9" in extras["mysql"]
+        assert "cryptography>=42" in extras["mysql"]
+
+
+class TestPolicyModuleOption:
+    """sweep-G12: policies belong under app/modules/<name>/policies/ where
+    Gate auto-discovers them; make:policy could only write app/authz/."""
+
+    def test_module_option_writes_the_discovered_path(self, tmp_path, monkeypatch):
+        from typer.testing import CliRunner
+
+        (tmp_path / "app" / "modules" / "billing" / "models").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli_app, ["make:policy", "Invoice", "--module", "billing"])
+        assert result.exit_code == 0, result.output
+        # Symmetric with the app/authz default layout: <stem>_policy.py file
+        # inside the module's policies/ package.
+        assert (
+            tmp_path / "app" / "modules" / "billing" / "policies" / "invoice_policy.py"
+        ).is_file()
+        assert (tmp_path / "app" / "modules" / "billing" / "policies" / "__init__.py").is_file()
+
+    def test_module_layout_resolves_through_gate_discovery(self, tmp_path, monkeypatch):
+        """sweep-G12's point: Gate._resolve_policy must actually FIND the
+        emitted policy. Discovery reads the <ModelName>Policy attribute off
+        the app/modules/<m>/policies package, so the package __init__ must
+        re-export the class — an empty marker leaves the binding dead and
+        every authorized action on the model raises ConfigurationError."""
+        import importlib
+        import sys
+
+        from typer.testing import CliRunner
+
+        # Regular-package markers so the project's app/ (first on sys.path
+        # below) beats the framework checkout's own app/ — a regular package
+        # anywhere on sys.path wins over a namespace portion earlier on it.
+        (tmp_path / "app" / "modules" / "billing" / "models").mkdir(parents=True)
+        for marker in (
+            "app/__init__.py",
+            "app/modules/__init__.py",
+            "app/modules/billing/__init__.py",
+        ):
+            (tmp_path / marker).write_text("")
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli_app, ["make:policy", "Invoice", "--module", "billing"])
+        assert result.exit_code == 0, result.output
+
+        saved = {k: m for k, m in sys.modules.items() if k == "app" or k.startswith("app.")}
+        for key in saved:
+            sys.modules.pop(key, None)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        try:
+            policies = importlib.import_module("app.modules.billing.policies")
+            assert hasattr(policies, "InvoicePolicy"), sorted(policies.__dict__)
+
+            class Invoice:
+                pass  # discovery only reads __module__ / __name__
+
+            Invoice.__module__ = "app.modules.billing.models.invoice"
+            from fastplace.authz.gate import Gate
+
+            resolved = Gate()._resolve_policy(Invoice)
+            assert resolved is not None
+            assert resolved.__name__ == "InvoicePolicy"
+        finally:
+            for key in [k for k in sys.modules if k == "app" or k.startswith("app.")]:
+                sys.modules.pop(key)
+            sys.modules.update(saved)
+
+    def test_second_policy_in_a_module_appends_its_re_export(self, tmp_path, monkeypatch):
+        """Two policies in one module: the second run must EXTEND the package
+        __init__, not skip it (the non-clobbering _write would leave the new
+        class undiscovered)."""
+        from typer.testing import CliRunner
+
+        (tmp_path / "app" / "modules" / "billing" / "models").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        assert (
+            runner.invoke(cli_app, ["make:policy", "Invoice", "--module", "billing"]).exit_code == 0
+        )
+        assert (
+            runner.invoke(cli_app, ["make:policy", "CreditNote", "--module", "billing"]).exit_code
+            == 0
+        )
+
+        init = (tmp_path / "app" / "modules" / "billing" / "policies" / "__init__.py").read_text()
+        assert "InvoicePolicy" in init
+        assert "CreditNotePolicy" in init
+
+    def test_module_option_rejects_path_escapes(self, tmp_path, monkeypatch):
+        from typer.testing import CliRunner
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli_app, ["make:policy", "Invoice", "--module", "../evil"])
+        assert result.exit_code != 0
+        assert not (tmp_path / "app" / "modules" / "evil").exists()
+
+    def test_default_stays_app_authz(self, tmp_path, monkeypatch):
+        from typer.testing import CliRunner
+
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli_app, ["make:policy", "Invoice"])
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "app" / "authz" / "invoice_policy.py").is_file()
+
+    def test_default_template_documents_the_module_option(self):
+        from fastplace.cli.generators import _POLICY_TEMPLATE
+
+        content = _POLICY_TEMPLATE.format(name="Invoice")
+        assert "--module" in content
+        # The documented mechanism must match Gate._resolve_policy: the
+        # <Model>Policy ATTRIBUTE on the policies package — not a filename
+        # scan (the comment once described a path discovery never reads).
+        assert "Gate reads the InvoicePolicy attribute" in content
+
+
+class TestAlertDestructiveTokens:
+    def test_template_alert_carries_option_b_destructive_tokens(self):
+        """The destructive variant must survive both themes by contrast, not
+        by a foreground token that collapses onto the alert's own background
+        (W4 owns the template copy; W5 syncs the repo counterpart)."""
+        alert = (CORPUS / "resources/js/components/ui/alert.tsx").read_text()
+        assert "text-destructive border-destructive/50" in alert
+        assert "*:data-[slot=alert-description]:text-destructive/80" in alert
+
+
+class TestEmittedTwoFactorJourney:
+    def test_feature_suite_carries_the_full_enable_journey(self, scaffolded):
+        """The emitted suite must exercise the shipped 2FA UI's loop over
+        HTTP — password-confirmation wall, status recovery, QR/secret, a
+        pyotp-confirmed enable, and the recovery codes — with pyotp (a core
+        framework dependency, no extra install)."""
+        suite = (scaffolded / "tests/feature/test_auth_flow.py").read_text()
+        assert "import pyotp" in suite
+        assert '"/user/two-factor-authentication"' in suite
+        assert '"/user/confirm-password"' in suite
+        assert '"/user/two-factor-qr-code"' in suite
+        assert '"/user/two-factor-secret-key"' in suite
+        assert '"/user/confirmed-two-factor-authentication"' in suite
+        assert '"/user/two-factor-recovery-codes"' in suite
+        assert "pyotp.TOTP" in suite

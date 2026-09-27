@@ -1,4 +1,4 @@
-import { Form, Head, type PageLayout } from "@fastplace/react";
+import { Form, Head, usePage, type PageLayout } from "@fastplace/react";
 import { useRef } from "react";
 import type { PropsWithChildren } from "react";
 
@@ -22,7 +22,9 @@ type Props = {
 } & ManagePasskeysProps &
   ManageTwoFactorProps;
 
-function SecurityPage(props: Props) {
+function SecurityPage() {
+  // Bridge props arrive via the page payload, not component arguments.
+  const props = usePage<Props>().props;
   const passwordInput = useRef<HTMLInputElement>(null);
   const currentPasswordInput = useRef<HTMLInputElement>(null);
 

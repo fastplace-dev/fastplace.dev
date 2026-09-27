@@ -96,3 +96,81 @@ def test_corpus_tests_never_import_cut_pages():
         )
     ]
     assert hits == []
+
+
+# The corpus overlaps the repo beyond resources/js: the styles, the public
+# assets, and the root tooling configs. Every overlapping file must stay
+# byte-equal with its repo counterpart unless named in INTENTIONALLY_DIVERGED
+# — the repo copy is the verified-working reference (bridge props via
+# usePage, a11y fixes), and hand-maintaining two versions of one file rots.
+_OVERLAY_DIRS = ("resources", "public")
+_OVERLAY_FILES = ("eslint.config.js", "tsconfig.json")
+
+# Corpus files whose repo counterpart is INTENTIONALLY different (keys are
+# repo-root-relative). Everything else in the overlay with a repo counterpart
+# must stay byte-equal.
+INTENTIONALLY_DIVERGED = {
+    # Starter-specific rewrites of repo pages (demo nav vs framework docs).
+    "resources/js/components/app-sidebar.tsx",
+    "resources/js/pages/Home/Index.tsx",
+    "resources/js/pages/__tests__/Home.test.tsx",
+    # W4 moved the TEMPLATES ahead of the repo copies (option-B destructive
+    # tokens, component + the two tests that pin them). W5 owns resources/js
+    # — remove these entries once it syncs.
+    "resources/js/components/ui/alert.tsx",
+    "resources/js/components/ui/__tests__/alert.test.tsx",
+    "resources/js/components/__tests__/alert-error.test.tsx",
+    # The starter config drops repo-only ignores/aliases (docs/, packages/,
+    # agent worktrees) an app template never needs.
+    "eslint.config.js",
+    "tsconfig.json",
+}
+
+# Overlay files that are starter-ONLY (no repo counterpart, pinned by name so
+# a repo-side rename/delete of any OTHER file fails loudly instead of
+# silently shrinking byte-sync coverage — the relocated twin of drift).
+STARTER_ONLY = {
+    # The repo dashboard is sample-domain Index.jsx; the starter ships a
+    # blank canvas instead.
+    "resources/js/pages/Dashboard/Index.tsx",
+    "public/robots.txt",
+    "public/apple-touch-icon.png",
+}
+
+
+def _overlay_paths():
+    for directory in _OVERLAY_DIRS:
+        yield from (CORPUS / directory).rglob("*")
+    for name in _OVERLAY_FILES:
+        yield CORPUS / name
+
+
+def test_corpus_overlay_stays_byte_synced_with_the_repo():
+    repo_root = CORPUS.parents[2]
+    drifted = []
+    unpaired = []
+    for path in sorted(_overlay_paths()):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(CORPUS)
+        counterpart = repo_root / rel
+        if not counterpart.is_file():
+            if str(rel) not in STARTER_ONLY:
+                unpaired.append(str(rel))
+            continue
+        if path.read_bytes() != counterpart.read_bytes():
+            drifted.append(str(rel))
+    assert unpaired == [], f"corpus files lost their repo counterpart: {unpaired}"
+    assert sorted(drifted) == sorted(INTENTIONALLY_DIVERGED)
+
+
+def test_intentionally_diverged_entries_still_diverge():
+    # An allowlisted pair that became byte-equal again (alert.tsx once W5
+    # lands) must LEAVE the allowlist — otherwise the list rots into cover
+    # for drift nobody re-examines.
+    repo_root = CORPUS.parents[2]
+    for rel in INTENTIONALLY_DIVERGED:
+        corpus_file = CORPUS / rel
+        repo_file = repo_root / rel
+        assert corpus_file.is_file() and repo_file.is_file(), rel
+        assert corpus_file.read_bytes() != repo_file.read_bytes(), rel

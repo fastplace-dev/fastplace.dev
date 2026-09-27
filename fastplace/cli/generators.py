@@ -810,7 +810,14 @@ from __future__ import annotations
 class {name}Policy:
     """Authorization policy for {name}."""
 
-    # Bind to a model with gate.policy(Model, {name}Policy) in app/auth/gates.py.
+    # Two homes:
+    #   * app/authz/ (this file) — bind explicitly with
+    #     gate.policy(Model, {name}Policy) in app/auth/gates.py.
+    #   * app/modules/<module>/policies/ — regenerate with
+    #     `fastplace make:policy {name} --module <module>` (the module slug,
+    #     e.g. billing). Gate reads the {name}Policy attribute off the
+    #     module's policies package, so no explicit bind is needed for
+    #     models in that module.
     async def view_any(self, user) -> bool:
         return True
 
@@ -819,14 +826,68 @@ class {name}Policy:
 '''
 
 
+def _write_policy_reexport(policies_dir: Path, module: str, stem: str, root: Path) -> str:
+    """Create or extend the module's policies package so Gate discovers it.
+
+    Gate._resolve_policy reads the ``<Model>Policy`` attribute off the
+    ``app.modules.<m>.policies`` package — an empty ``__init__`` leaves the
+    binding dead. The first policy writes a fresh ``__init__`` re-exporting
+    the class; every later one APPENDS its line (the non-clobbering _write
+    would skip the file and leave the new class undiscovered). Returns the
+    re-exported class name.
+    """
+    dotted = module.replace("/", ".")
+    class_name = f"{_pascal(stem)}Policy"
+    line = f"from app.modules.{dotted}.policies.{stem}_policy import {class_name}\n"
+    init = policies_dir / "__init__.py"
+    if init.is_file():
+        if line in init.read_text():
+            return class_name  # already re-exported — nothing to append
+        with init.open("a") as handle:
+            handle.write(line)
+        console.print(f"[green]re-exported[/] {class_name} in {init.relative_to(root)}")
+        return class_name
+    policies_dir.mkdir(parents=True, exist_ok=True)
+    init.write_text(
+        '"""Module policies — Gate discovers the <Model>Policy attributes here."""\n\n' + line
+    )
+    console.print(f"[green]created[/] {init.relative_to(root)}")
+    return class_name
+
+
 @generators_app.command("make:policy")
 def make_policy(
     name: str = typer.Argument(..., help="Policy name in PascalCase"),
+    module: str = typer.Option(
+        None,
+        "--module",
+        help=(
+            "Write to app/modules/<module>/policies/ (module slug, e.g. billing); "
+            "the package re-export makes Gate discover the policy."
+        ),
+    ),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
-    """Create an authorization policy stub in app/authz/."""
+    """Create an authorization policy stub (app/authz/ by default)."""
     root = _project_root()
     clean = _clean_name(name, "policy")
+    if module:
+        # Gate._resolve_policy reads the <ModelName>Policy attribute off the
+        # app.modules.<m>.policies package, so the policy file keeps the
+        # symmetric <stem>_policy.py name and the package __init__ re-exports
+        # the class. The class name derives from the cleaned stem — a
+        # lowercase invocation still yields InvoicePolicy, the only spelling
+        # discovery looks up.
+        validated = _clean_module(module)
+        policies_dir = root / "app" / "modules" / validated / "policies"
+        _write_policy_reexport(policies_dir, validated, clean, root)
+        _write(
+            policies_dir / f"{clean}_policy.py",
+            _POLICY_TEMPLATE.format(name=_pascal(clean)),
+            root,
+            force=force,
+        )
+        return
     _write(root / "app" / "authz" / "__init__.py", "", root)
     _write(
         root / "app" / "authz" / f"{clean}_policy.py",
@@ -1981,27 +2042,32 @@ def _published_fastplace_dep() -> str:
 
 
 # One rewrite, shared by `new --auth` and `make:auth` (write_auth_surface):
-# the passkey surface needs the webauthn extra, so the scaffolded dependency
-# points at fastplace[webauthn] instead of the plain package. The spec after
+# the auth scaffold needs the webauthn extra (passkeys) and the queue extra
+# (the mail job listener), so the scaffolded dependency points at
+# fastplace[queue,webauthn] instead of the plain package. The spec after
 # the name (version, marker, URL, or just a comma) is preserved verbatim;
 # the spec must start with a real specifier character so a package merely
 # NAMED like fastplace ("fastplace-something") never matches.
 _FASTPLACE_DEP_PATTERN = re.compile(r'(?m)^(\s*)"fastplace(\[[^\]]*\])?([=<>!~@,;\s][^"]*)?"')
 
 
-def _rewrite_fastplace_dep_for_webauthn(root: Path) -> bool:
-    """Point the project's ``fastplace`` dependency at the ``webauthn`` extra.
+def _rewrite_fastplace_dep_for_auth_extras(root: Path) -> bool:
+    """Point the project's ``fastplace`` dependency at the auth extras.
 
-    Handles both producer shapes (``"fastplace",`` from `fastplace new` and
-    ``"fastplace>=x.y.z",``) and is idempotent: an already-rewritten line
-    rewrites to itself, so the second call is a no-op returning False. A
-    pyproject without a fastplace dependency line is left untouched.
+    The scaffold ships passkeys (the ``webauthn`` extra) AND the queue-backed
+    mail listener in app/jobs/mail.py (the ``queue`` extra), so the dependency
+    becomes ``fastplace[queue,webauthn]``. Handles both producer shapes
+    (``"fastplace",`` from `fastplace new` and ``"fastplace>=x.y.z",``) and is
+    idempotent: an already-rewritten line rewrites to itself, so the second
+    call is a no-op returning False (an older ``fastplace[webauthn]``-only
+    line upgrades to the pair). A pyproject without a fastplace dependency
+    line is left untouched.
     """
     path = root / "pyproject.toml"
     if not path.is_file():
         return False
     content = path.read_text()
-    rewritten = _FASTPLACE_DEP_PATTERN.sub(r'\1"fastplace[webauthn]\3"', content, count=1)
+    rewritten = _FASTPLACE_DEP_PATTERN.sub(r'\1"fastplace[queue,webauthn]\3"', content, count=1)
     if rewritten == content:
         return False
     path.write_text(rewritten)

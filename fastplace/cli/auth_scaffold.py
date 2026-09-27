@@ -8,7 +8,7 @@ import typer
 
 from fastplace.cli.generators import (
     _project_root,
-    _rewrite_fastplace_dep_for_webauthn,
+    _rewrite_fastplace_dep_for_auth_extras,
     _write,
     console,
     generators_app,
@@ -83,6 +83,31 @@ class UserRepository:
         )
         await user.save()
         return user
+'''
+_USER_SERVICE_TEMPLATE = '''"""Account-level user queries — the accounts module's public service seam.
+
+Controllers and other modules consume THIS class, never the repository
+below it (the service layer is the only public edge of a bounded module).
+"""
+
+from __future__ import annotations
+
+from app.modules.accounts.repositories.user_repository import UserRepository
+
+
+class UserService:
+    """The one door to user lookups from outside the module."""
+
+    users = UserRepository()
+
+    async def email_in_use(self, email: str, *, excluding_id: object = None) -> bool:
+        """True when ANOTHER account already holds the email.
+
+        The caller's own row is never a conflict (profile-update semantics);
+        the excluding_id keeps the check honest across it.
+        """
+        existing = await self.users.find_by_email(email)
+        return existing is not None and str(existing.id) != str(excluding_id)
 '''
 _AUTH_SERVICE_TEMPLATE = '''"""Credential login/logout — the service layer over the session guard."""
 
@@ -426,6 +451,12 @@ class TwoFactorService:
         user.two_factor_confirmed_at = None
         await user.save()
 
+    async def is_enabled(self, request: Any) -> bool:
+        """Whether the signed-in user has a CONFIRMED setup (pending secrets
+        never count — the QR was shown but no code was ever verified)."""
+        self._require_enabled()
+        return getattr(request.user, "two_factor_confirmed_at", None) is not None
+
     async def regenerate_recovery_codes(self, request: Any) -> list[str]:
         self._require_enabled()
         user = request.user
@@ -766,7 +797,7 @@ from __future__ import annotations
 import json
 
 from app.modules.accounts.services.two_factor_service import TwoFactorService
-from fastplace.http import Controller, Json, Request
+from fastplace.http import Controller, Json, Redirect, Request
 
 
 class TwoFactorApiController(Controller):
@@ -795,6 +826,19 @@ class TwoFactorApiController(Controller):
     async def disable(self, request: Request):
         await self.two_factor_service.disable(request)
         return Json({"ok": True})
+
+    async def status(self, request: Request):
+        """Recovery target after the password-confirmation wall: the frozen
+        frontend GETs this URL mid-enable-journey. Browser visitors (the
+        bridge fetch or a plain navigation) are walked back to the security
+        page — the fetch layer follows the 303 and swaps in the page payload,
+        so re-clicking Enable now runs against a confirmed session. A JSON
+        API client gets the boolean instead."""
+        enabled = await self.two_factor_service.is_enabled(request)
+        accept = request.header("Accept") or ""
+        if request.is_bridge or "application/json" not in accept:
+            return Redirect("/settings/security", status_code=303)
+        return Json({"enabled": enabled})
 
     async def regenerate_recovery_codes(self, request: Request):
         return Json(await self.two_factor_service.regenerate_recovery_codes(request))
@@ -920,6 +964,16 @@ router.delete(
     TwoFactorApiController,
     "disable",
     name="auth.two_factor.disable",
+    middleware=_TWO_FACTOR_MIDDLEWARE,
+)
+# The status GET shares the URL: after the password-confirmation wall parks
+# an enable POST, the frontend recovers by GETting this — a 404 here kills
+# the whole enable journey.
+router.get(
+    "/user/two-factor-authentication",
+    TwoFactorApiController,
+    "status",
+    name="auth.two_factor.status",
     middleware=_TWO_FACTOR_MIDDLEWARE,
 )
 router.post(
@@ -1120,8 +1174,8 @@ from sqlalchemy.exc import IntegrityError
 from app.http.requests.delete_profile_request import DeleteProfileRequest
 from app.http.requests.password_update_request import PasswordUpdateRequest
 from app.http.requests.profile_request import ProfileRequest
-from app.modules.accounts.repositories.user_repository import UserRepository
 from app.modules.accounts.services.password_policy import min_password_length
+from app.modules.accounts.services.user_service import UserService
 from app.modules.accounts.services.verification_service import VerificationService
 from fastplace.auth.guards import SESSION_STORE_SCOPE, guard
 from fastplace.auth.hashing import Hash
@@ -1130,7 +1184,9 @@ from fastplace.http import Controller, Redirect, Request, flash
 
 
 class SettingsApiController(Controller):
-    users = UserRepository()
+    # The service seam, not the repository: controllers stay outside the
+    # module boundary that lint:modules enforces.
+    users = UserService()
     verification_service = VerificationService()
 
     async def index(self, request: Request):
@@ -1143,8 +1199,7 @@ class SettingsApiController(Controller):
         email = str(data["email"]).strip().lower()
 
         # Unique-ignore-self: only ANOTHER account's email is a conflict.
-        existing = await self.users.find_by_email(email)
-        if existing is not None and str(existing.id) != str(user.id):
+        if await self.users.email_in_use(email, excluding_id=user.id):
             raise ValidationError(errors={"email": ["The email has already been taken."]})
 
         if email != str(user.email).strip().lower():
@@ -1500,7 +1555,8 @@ def user_factory():
     return _make
 '''
 
-_TESTS_FEATURE_AUTH_TEMPLATE = '''"""Starter auth feature suite — register, login, verify, and the settings flash.
+_TESTS_FEATURE_AUTH_TEMPLATE = '''"""Starter auth feature suite — register, login, verify, the settings flash,
+and the two-factor enable journey.
 
 Delete or extend freely: every flow here runs against the real application
 over a throwaway sqlite database (see tests/conftest.py).
@@ -1598,6 +1654,63 @@ async def test_profile_update_flashes_the_toast(client):
     )
     flash = page.json()["props"].get("flash", {})
     assert flash.get("toast", {}).get("message") == "Profile updated."
+
+
+async def test_two_factor_enable_journey(client):
+    """The full settings/security 2FA loop over HTTP: the management surface
+    parks on the password-confirmation wall, the status GET recovers onto
+    the security page (no 404), and a pyotp-confirmed enable ends with live
+    recovery codes. pyotp is a core framework dependency — no extra install."""
+    import pyotp
+
+    await _register(client)
+    await client.get(_verification_path())
+
+    # Unconfirmed password: the first enable POST parks on the wall.
+    parked = await client.post("/user/two-factor-authentication")
+    assert parked.status_code == 302
+    assert "/user/confirm-password" in parked.headers["location"]
+
+    confirmed = await client.post(
+        "/user/confirm-password",
+        json={"password": REGISTER_PAYLOAD["password"]},
+    )
+    assert confirmed.status_code == 303
+
+    # The recovery GET the frozen frontend issues mid-journey: a browser-ish
+    # visitor is walked back to the security page, never a 404.
+    status = await client.get("/user/two-factor-authentication")
+    assert status.status_code == 303
+    assert status.headers["location"].endswith("/settings/security")
+
+    # A JSON API client gets the boolean instead of the walk-back.
+    api_status = await client.get(
+        "/user/two-factor-authentication", headers={"Accept": "application/json"}
+    )
+    assert api_status.status_code == 200
+    assert api_status.json() == {"enabled": False}
+
+    enabled = await client.post("/user/two-factor-authentication")
+    assert enabled.status_code == 200
+
+    secret = (await client.get("/user/two-factor-secret-key")).json()["secretKey"]
+    qr = await client.get("/user/two-factor-qr-code")
+    assert qr.status_code == 200
+    assert "svg" in qr.json()
+
+    code = pyotp.TOTP(secret).now()
+    ok = await client.post(
+        "/user/confirmed-two-factor-authentication", json={"code": code}
+    )
+    assert ok.status_code == 200, ok.text
+
+    # Confirmed now: the status flips and the recovery codes are live.
+    flipped = await client.get(
+        "/user/two-factor-authentication", headers={"Accept": "application/json"}
+    )
+    assert flipped.json() == {"enabled": True}
+    codes = (await client.get("/user/two-factor-recovery-codes")).json()
+    assert isinstance(codes, list) and len(codes) > 0
 '''
 
 # The single source of truth for the auth scaffold's file surface — shared
@@ -1621,6 +1734,7 @@ AUTH_FILES: list[tuple[str, str]] = [
         _REGISTRATION_SERVICE_TEMPLATE,
     ),
     ("app/modules/accounts/services/two_factor_service.py", _TWO_FACTOR_SERVICE_TEMPLATE),
+    ("app/modules/accounts/services/user_service.py", _USER_SERVICE_TEMPLATE),
     ("app/modules/accounts/services/verification_service.py", _VERIFICATION_SERVICE_TEMPLATE),
     ("app/http/requests/login_request.py", _LOGIN_REQUEST_TEMPLATE),
     ("app/http/requests/register_request.py", _REGISTER_REQUEST_TEMPLATE),
@@ -1701,6 +1815,12 @@ dev = [
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
 ]
+# Production database option — SQLite is the zero-config default; switch with
+# `pip install -e ".[mysql]"` and point DB_CONNECTION at mysql.
+mysql = [
+    "asyncmy>=0.2.9",
+    "cryptography>=42",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -1770,7 +1890,7 @@ def _augment_readme(root: Path) -> None:
         "Passkeys are framework-routed too (register/list/delete under "
         "`/user/passkeys`, passwordless sign-in at `/passkeys/login`) "
         "whenever AUTH_PASSKEYS is enabled and your dependency is "
-        "'fastplace[webauthn]'.\n\n"
+        "'fastplace[queue,webauthn]'.\n\n"
         "Run the emitted test suite (`pytest`) to see every flow exercised."
     )
     content = content[:start] + replacement + ("" if next_heading == -1 else rest[next_heading:])
@@ -1809,13 +1929,17 @@ def write_auth_surface(root: Path) -> None:
     _augment_env_files(root)
     _augment_readme(root)
     _augment_index_html(root)
-    # The passkey surface rides the webauthn extra — flip the dependency and
-    # say so. A pyproject without a fastplace dep line skips silently
-    # (nothing to rewrite). The ready panel below already carries the one
-    # install command, so this notice stays informational only. The brackets
-    # in the dep name are escaped so Rich doesn't parse them as markup.
-    if _rewrite_fastplace_dep_for_webauthn(root):
-        console.print("[green]Passkeys enabled[/] — dependency set to fastplace\\[webauthn]")
+    # The passkey surface rides the webauthn extra and the mail listener on
+    # the queue extra — flip the dependency to carry both and say so. A
+    # pyproject without a fastplace dep line skips silently (nothing to
+    # rewrite). The ready panel below already carries the one install
+    # command, so this notice stays informational only. The brackets in the
+    # dep name are escaped so Rich doesn't parse them as markup.
+    if _rewrite_fastplace_dep_for_auth_extras(root):
+        console.print(
+            "[green]Passkeys + mail queue enabled[/] — dependency set to "
+            "fastplace\\[queue,webauthn]"
+        )
 
 
 @generators_app.command("make:auth")
