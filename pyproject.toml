@@ -53,6 +53,7 @@ mail = ["aiosmtplib>=3.0"]
 ai = ["litellm>=1.50", "instructor>=1.6"]
 pwdlib = ["pwdlib[argon2]>=0.2"]
 queue = ["saq>=0.18", "redis>=5.0"]
+webauthn = ["webauthn>=2.6"]
 all = [
     "asyncpg>=0.29", "pgvector>=0.3",
     "asyncmy>=0.2.9", "cryptography>=42",
@@ -60,6 +61,7 @@ all = [
     "aiosmtplib>=3.0",
     "litellm>=1.50", "instructor>=1.6",
     "saq>=0.18", "redis>=5.0",
+    "webauthn>=2.6",
 ]
 dev = [
     "httpx>=0.27",
@@ -72,6 +74,7 @@ dev = [
     "build>=1.2",
     "twine>=6.1",
     "email-validator>=2.0",
+    "webauthn>=2.6",
 ]
 
 [project.scripts]

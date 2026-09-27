@@ -45,3 +45,19 @@ TWO_FACTOR_ENABLED = True
 # Zero-extra-arg abilities only — no model instance exists at props time.
 # Env override is comma-separated: AUTH_SHARED_ABILITIES=view-posts,view-profile
 AUTH_SHARED_ABILITIES: list[str] = []
+
+# Passkeys (WebAuthn) — the framework routes /user/passkeys* and
+# /passkeys/* when enabled (spec: framework-owned, zero app code).
+# Needs the 'webauthn' extra: pip install 'fastplace[webauthn]'.
+# Behind a proxy APP_URL must be the public origin (TRUSTED_HOSTS convention).
+AUTH_PASSKEYS = {
+    "enabled": True,  # env: APP_PASSKEYS_ENABLED
+    "rp_name": None,  # default: APP_NAME
+    "rp_id": None,  # default: APP_URL host
+    "origins": None,  # default: [APP_URL]
+    "timeout_ms": 60000,  # env: APP_PASSKEYS_TIMEOUT_MS
+    "user_verification": "preferred",  # confirm ALWAYS requires UV
+    "attestation": "none",  # enterprise attestation lands later
+    "challenge_ttl": 300,  # env: APP_PASSKEYS_CHALLENGE_TTL
+    "login_max_attempts": 5,  # env: APP_PASSKEYS_LOGIN_MAX_ATTEMPTS
+}

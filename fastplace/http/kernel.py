@@ -185,6 +185,11 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
 
     web = _load_router_module(root, "routes.web")
     auth = _load_router_module(root, "routes.auth")
+    # Framework passkey surface merges into the auth router when
+    # AUTH_PASSKEYS is enabled — apps write zero route code for it.
+    from fastplace.auth.passkeys_routes import mount_passkey_routes
+
+    auth = mount_passkey_routes(auth)
     api = _load_router_module(root, "routes.api")
     ai = _load_router_module(root, "routes.ai")
     web, api = _merge_module_routers(root, web, api)
