@@ -53,6 +53,18 @@ _FRAMEWORK_TABLES = frozenset({"fastplace_migrations", "alembic_version"})
 def _include_object(obj, name, type_, reflected, compare_to):
     if type_ == "table" and name in _FRAMEWORK_TABLES:
         return False
+    # Reflected ANN indexes (pgvector HNSW/IVF) with no metadata counterpart
+    # must not be dropped: Alembic cannot order/compare their opclass and
+    # build options, so autogenerate reads them as unknown and would emit a
+    # destructive drop on every diff. Indexes the metadata DOES declare diff
+    # normally (compare_to is not None).
+    if type_ == "index" and reflected and compare_to is None:
+        try:
+            using = obj.dialect_options["postgresql"].get("using")
+        except Exception:
+            using = None
+        if using in ("hnsw", "ivfflat"):
+            return False
     return True
 
 
