@@ -272,6 +272,38 @@ def test_render_item_imports_third_party_user_defined_types():
     assert "import pgvector.sqlalchemy" in ctx.imports
 
 
+def test_tracking_table_guard_emits_no_ddl_when_table_exists():
+    """Steady-state migrate runs must issue no tracking DDL at all.
+
+    ``CREATE TABLE IF NOT EXISTS`` answers with MariaDB NOTE 1050 whenever
+    the table already exists, and asyncmy mirrors the note to stderr — so
+    every migrate after the first printed noise. The inspector-guarded
+    ensure must create the table once and then stay completely silent.
+    """
+    import sqlalchemy
+    from sqlalchemy import event
+
+    from fastplace.orm.migrations.manager import _ensure_tracking_table
+
+    engine = sqlalchemy.create_engine("sqlite://")
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    with engine.begin() as conn:
+        _ensure_tracking_table(conn)
+    assert any("fastplace_migrations" in s for s in statements)  # created once
+
+    statements.clear()
+    with engine.begin() as conn:
+        _ensure_tracking_table(conn)
+    # Steady state: reflection probes are fine; DDL is not (each CREATE TABLE
+    # IF NOT EXISTS would answer with a MariaDB NOTE on a real server).
+    assert [s for s in statements if not s.startswith("PRAGMA")] == []
+
+
 def test_migrate_bookkeeping_never_builds_a_sync_engine(project, monkeypatch):
     """Batch tracking rides the async engine — migrate must not require the
     sync drivers (psycopg2/pymysql) that the framework never ships."""

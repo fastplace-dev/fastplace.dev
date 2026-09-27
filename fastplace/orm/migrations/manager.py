@@ -18,6 +18,30 @@ from typing import Any
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
+_TRACKING_TABLE_DDL = (
+    "CREATE TABLE fastplace_migrations ("
+    "revision VARCHAR(255) PRIMARY KEY, "
+    "batch INTEGER NOT NULL, "
+    "applied_at VARCHAR(64) NOT NULL)"
+)
+
+
+def _ensure_tracking_table(conn) -> None:
+    """Create the batch-tracking table only when missing.
+
+    ``CREATE TABLE IF NOT EXISTS`` looks equivalent, but MariaDB answers it
+    with NOTE 1050 whenever the table already exists and asyncmy mirrors the
+    note to stderr — every migrate after the first printed
+    ``Table 'fastplace_migrations' already exists``. The inspector guard
+    issues no DDL at all on the steady-state path, keeping repeated
+    migrations silent on every backend.
+    """
+    from sqlalchemy import inspect, text
+
+    if not inspect(conn).has_table("fastplace_migrations"):
+        conn.execute(text(_TRACKING_TABLE_DDL))
+
+
 class MigrationsManager:
     """Programmatic Alembic access: scaffold, make, upgrade, downgrade, status."""
 
@@ -249,14 +273,7 @@ class MigrationsManager:
         engine = create_async_engine(self._database_url())
         try:
             async with engine.begin() as conn:
-                await conn.execute(
-                    text(
-                        "CREATE TABLE IF NOT EXISTS fastplace_migrations ("
-                        "revision VARCHAR(255) PRIMARY KEY, "
-                        "batch INTEGER NOT NULL, "
-                        "applied_at VARCHAR(64) NOT NULL)"
-                    )
-                )
+                await conn.run_sync(_ensure_tracking_table)
                 rows = await conn.execute(text("SELECT revision FROM fastplace_migrations"))
                 tracked = {row[0] for row in rows}
                 stale = tracked - applied
