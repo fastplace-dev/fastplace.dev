@@ -300,9 +300,10 @@ def test_new_refuses_overlong_names(tmp_path, monkeypatch):
 
 def test_new_dependency_carries_version_floor_when_installed(tmp_path, monkeypatch):
     """From a published install (no framework checkout on disk) the scaffolded
-    app must pin a floor — ``fastplace>=<version>`` — never a bare specifier:
-    a bare dependency silently tracks future breaking releases, and the npm
-    side already caret-pins its published fallback (``^0.1.0``)."""
+    app must pin a floor — ``fastplace[webauthn]>=<version>`` — never a bare
+    specifier: a bare dependency silently tracks future breaking releases,
+    and the npm side already caret-pins its published fallback (``^0.1.0``).
+    The extra stays pinned so the passkey surface is importable as-is."""
     from fastplace.cli import generators
 
     monkeypatch.setattr(generators, "_framework_checkout", lambda: None)
@@ -310,7 +311,7 @@ def test_new_dependency_carries_version_floor_when_installed(tmp_path, monkeypat
     assert result.exit_code == 0, result.output
 
     pyproject = (root / "blog" / "pyproject.toml").read_text()
-    assert '"fastplace>=' in pyproject, pyproject
+    assert '"fastplace[webauthn]>=' in pyproject, pyproject
     # A bare specifier or a leaked local path is the regression.
     assert '"fastplace"' not in pyproject
     assert "file://" not in pyproject
@@ -337,9 +338,9 @@ def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
     # is disabled explicitly — the app is not a distribution.
     assert "[tool.setuptools]" in pyproject
     if from_source_checkout:
-        assert f"fastplace @ file://{checkout}" in pyproject
+        assert f"fastplace[webauthn] @ file://{checkout}" in pyproject
     else:  # pragma: no cover — CI/dev always runs from the checkout
-        assert '"fastplace>=' in pyproject
+        assert '"fastplace[webauthn]>=' in pyproject
     if from_source_checkout and dist_built:
         assert '"@fastplace/react": "file:' in package_json
     else:
@@ -370,6 +371,19 @@ def test_new_with_no_auth_flag_matches_minimal_tree(tmp_path, monkeypatch):
         assert (root / "blog" / rel).is_file(), f"missing {rel}"
 
 
+def _corpus_files(corpus: Path) -> list[Path]:
+    """The files `new` is expected to copy, under the generator's own noise
+    filters (generators.py skips .DS_Store, .pyc, and __pycache__)."""
+    return [
+        p
+        for p in corpus.rglob("*")
+        if p.is_file()
+        and ".DS_Store" not in p.name
+        and p.suffix != ".pyc"
+        and "__pycache__" not in p.parts
+    ]
+
+
 def test_new_carries_the_whole_starter_corpus(tmp_path, monkeypatch):
     # R2: every new app gets the complete frontend starter, verbatim — the
     # walk must not drop design-system files, tests, or public assets.
@@ -378,11 +392,45 @@ def test_new_carries_the_whole_starter_corpus(tmp_path, monkeypatch):
     result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
     assert result.exit_code == 0
     corpus = Path(scaffold_templates_dir())
-    shipped = [p for p in corpus.rglob("*") if p.is_file() and ".DS_Store" not in p.name]
+    shipped = _corpus_files(corpus)
     assert shipped  # the corpus itself must never silently empty out
     for src in shipped:
         rel = src.relative_to(corpus)
         assert (root / "blog" / rel).is_file(), f"new did not write {rel}"
+
+
+def test_corpus_parity_walk_skips_the_same_noise_as_the_generator(tmp_path, monkeypatch):
+    """The parity walk and the generator must share one noise filter.
+
+    A stale __pycache__/.pyc artifact inside the corpus is skipped by the
+    generator (a .pyc read as text would crash the scaffold) — the walk
+    must skip it too, not demand it back into the fresh app.
+    """
+    import shutil
+
+    from fastplace.cli.generators import scaffold_templates_dir
+
+    staged = tmp_path / "corpus"
+    shutil.copytree(Path(scaffold_templates_dir()), staged)
+    (staged / "__pycache__").mkdir()
+    (staged / "__pycache__" / "stale.pyc").write_bytes(b"\x00noise")
+    (staged / "stray.pyc").write_bytes(b"\x00noise")
+
+    import fastplace.cli.generators as generators_mod
+
+    monkeypatch.setattr(generators_mod, "scaffold_templates_dir", lambda: str(staged))
+
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0
+
+    shipped = _corpus_files(staged)
+    assert shipped
+    for src in shipped:
+        rel = src.relative_to(staged)
+        assert (root / "blog" / rel).is_file(), f"new did not write {rel}"
+    # And the noise never lands in the app.
+    assert not (root / "blog" / "__pycache__").exists()
+    assert not (root / "blog" / "stray.pyc").exists()
 
 
 def test_new_package_json_carries_the_ui_stack(tmp_path, monkeypatch):

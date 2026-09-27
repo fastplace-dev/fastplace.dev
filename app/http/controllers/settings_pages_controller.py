@@ -23,17 +23,23 @@ class SettingsPagesController(Controller):
         # The security page has no client-side default for passwordRules
         # (the register page applies one), so the server supplies the
         # configured policy in the frontend dialect. The two-factor props
-        # drive the ManageTwoFactor card (R9).
+        # drive the ManageTwoFactor card (R9). The passkey props always ship
+        # so the mounted card sees a stable contract; the framework routes
+        # /user/passkeys* and /passkeys/* when AUTH_PASSKEYS is enabled.
         from fastplace.config import config
 
         user = getattr(request, "user", None)
-        return render(
-            request,
-            component="Settings/Security",
-            props={
-                "passwordRules": frontend_rules(),
-                "canManageTwoFactor": bool(config("TWO_FACTOR_ENABLED", default=True)),
-                "requiresConfirmation": True,
-                "twoFactorEnabled": getattr(user, "two_factor_confirmed_at", None) is not None,
-            },
-        )
+        passkeys_enabled = bool((config("AUTH_PASSKEYS", default={}) or {}).get("enabled", False))
+        props = {
+            "passwordRules": frontend_rules(),
+            "canManageTwoFactor": bool(config("TWO_FACTOR_ENABLED", default=True)),
+            "requiresConfirmation": True,
+            "twoFactorEnabled": getattr(user, "two_factor_confirmed_at", None) is not None,
+            "canManagePasskeys": passkeys_enabled,
+            "passkeys": [],
+        }
+        if passkeys_enabled and user is not None:
+            from fastplace.auth.passkey_guard import passkey_guard
+
+            props["passkeys"] = await passkey_guard().list_for(user)
+        return render(request, component="Settings/Security", props=props)

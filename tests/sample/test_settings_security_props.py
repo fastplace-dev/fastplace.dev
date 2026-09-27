@@ -10,22 +10,29 @@ from tests.sample.test_auth_endpoints import REGISTER_PAYLOAD
 
 @pytest.fixture(autouse=True)
 def _isolated_auth_state():
-    """Fresh rate-limit cache + remember store before the app builds.
+    """Fresh rate-limit cache + remember + passkey stores before the app builds.
 
     ThrottleMiddleware and the guard's login limiter bind the process-wide
-    cache at construction time, and the remember store caches its ensured
-    table against the database it first saw — both must be dropped before
-    the per-test app (and its per-test database) comes up, and again after
-    so nothing leaks into the next test.
+    cache at construction time, the remember store caches its ensured
+    table against the database it first saw, and the passkey store/guard
+    singletons do the same — all must be dropped before the per-test app
+    (and its per-test database) comes up, and again after so nothing leaks
+    into the next test.
     """
+    import fastplace.auth.passkey_guard as passkey_guard_module
+    from fastplace.auth import passkeys as passkeys_module
     from fastplace.auth.remember import reset_remember_store
     from fastplace.cache import reset_cache
 
     reset_cache()
     reset_remember_store()
+    passkeys_module.reset_passkey_store()
+    passkey_guard_module._passkey_guard_instance = None
     yield
     reset_cache()
     reset_remember_store()
+    passkeys_module.reset_passkey_store()
+    passkey_guard_module._passkey_guard_instance = None
 
 
 @pytest.fixture()

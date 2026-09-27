@@ -11,4 +11,9 @@ LINES = {
     "passwords.reset": "Your password has been reset.",
     "passwords.token": "This password reset token is invalid.",
     "passwords.user": "We can't find a user with that email address.",
+    "auth.passkey.verify_failed": "Unable to verify this passkey.",
+    "auth.passkey.added": "Passkey added.",
+    "auth.passkey.removed": "Passkey removed.",
+    "auth.passkey.confirmed": "Identity verified.",
+    "auth.passkey.already_registered": "That passkey is already registered.",
 }

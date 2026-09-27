@@ -53,9 +53,22 @@ function decodeCreationOptions(options: RegistrationOptions): PublicKeyCredentia
 
 /** Map a WebAuthn credential onto a JSON-safe payload for the bridge. */
 function serializeCredential(credential: SerializableCredential): Record<string, unknown> {
+  // WebAuthn response fields are IDL attributes on the prototype, not own
+  // properties — Object.entries() sees none of them, so each is read
+  // explicitly and encoded when it is binary.
   const response: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(credential.response)) {
-    response[key] =
+  const fields = [
+    "clientDataJSON",
+    "attestationObject",
+    "authenticatorData",
+    "signature",
+    "userHandle",
+    "transports",
+  ] as const;
+  for (const field of fields) {
+    const value = (credential.response as Record<string, unknown>)[field];
+    if (value === undefined || value === null) continue;
+    response[field] =
       value instanceof ArrayBuffer || ArrayBuffer.isView(value)
         ? toBase64Url(value as ArrayBuffer | Uint8Array)
         : value;

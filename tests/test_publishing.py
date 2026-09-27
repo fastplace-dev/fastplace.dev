@@ -264,6 +264,8 @@ def test_docs_site_documents_the_real_api():
         'assistant_agent().stream_response(data["message"]',
         # embed() takes one string and returns its vector
         "await embed(item.body)",
+        # the passkey guard accessor the docs must name verbatim
+        "passkey_guard()",
     }
     for needle in must_appear:
         assert needle in blob, needle

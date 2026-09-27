@@ -1340,16 +1340,22 @@ class SettingsPagesController(Controller):
         from fastplace.config import config
 
         user = getattr(request, "user", None)
-        return render(
-            request,
-            component="Settings/Security",
-            props={
-                "passwordRules": frontend_rules(),
-                "canManageTwoFactor": bool(config("TWO_FACTOR_ENABLED", default=True)),
-                "requiresConfirmation": True,
-                "twoFactorEnabled": getattr(user, "two_factor_confirmed_at", None) is not None,
-            },
+        passkeys_enabled = bool(
+            (config("AUTH_PASSKEYS", default={}) or {}).get("enabled", False)
         )
+        props = {
+            "passwordRules": frontend_rules(),
+            "canManageTwoFactor": bool(config("TWO_FACTOR_ENABLED", default=True)),
+            "requiresConfirmation": True,
+            "twoFactorEnabled": getattr(user, "two_factor_confirmed_at", None) is not None,
+            "canManagePasskeys": passkeys_enabled,
+            "passkeys": [],
+        }
+        if passkeys_enabled and user is not None:
+            from fastplace.auth.passkey_guard import passkey_guard
+
+            props["passkeys"] = await passkey_guard().list_for(user)
+        return render(request, component="Settings/Security", props=props)
 '''
 
 _SETTINGS_APPEARANCE_CONTROLLER_TEMPLATE = '''"""Settings appearance controller — the appearance settings bridge page."""
@@ -1567,6 +1573,22 @@ TWO_FACTOR_ENABLED = True
 # Zero-extra-arg abilities only — no model instance exists at props time.
 # Env override is comma-separated: AUTH_SHARED_ABILITIES=view-posts,view-profile
 AUTH_SHARED_ABILITIES: list[str] = []
+
+# Passkeys (WebAuthn) — the framework routes /user/passkeys* and
+# /passkeys/* when enabled (spec: framework-owned, zero app code).
+# Needs the 'webauthn' extra: pip install 'fastplace[webauthn]'.
+# Behind a proxy APP_URL must be the public origin (TRUSTED_HOSTS convention).
+AUTH_PASSKEYS = {
+    "enabled": True,  # env: APP_PASSKEYS_ENABLED
+    "rp_name": None,  # default: APP_NAME
+    "rp_id": None,  # default: APP_URL host
+    "origins": None,  # default: [APP_URL]
+    "timeout_ms": 60000,  # env: APP_PASSKEYS_TIMEOUT_MS
+    "user_verification": "preferred",  # confirm ALWAYS requires UV
+    "attestation": "none",  # enterprise attestation lands later
+    "challenge_ttl": 300,  # env: APP_PASSKEYS_CHALLENGE_TTL
+    "login_max_attempts": 5,  # env: APP_PASSKEYS_LOGIN_MAX_ATTEMPTS
+}
 '''
 
 _CONFIG_DATABASE_TEMPLATE = '''"""Database configuration defaults (env vars always win)."""
@@ -1910,7 +1932,14 @@ def _write_scaffold_templates(target: Path) -> None:
     """
     corpus = Path(scaffold_templates_dir())
     for src in sorted(corpus.rglob("*")):
-        if not src.is_file() or src.name == ".DS_Store":
+        # .DS_Store and __pycache__/.pyc artifacts are filesystem noise, not
+        # corpus — a .pyc read as text would crash the whole scaffold.
+        if (
+            not src.is_file()
+            or src.name == ".DS_Store"
+            or src.suffix == ".pyc"
+            or "__pycache__" in src.parts
+        ):
             continue
         rel = src.relative_to(corpus)
         dest = target / rel
@@ -1949,6 +1978,34 @@ def _published_fastplace_dep() -> str:
         return f"fastplace>={version('fastplace')}"
     except PackageNotFoundError:  # pragma: no cover — bare source-tree runs
         return "fastplace>=0.1.0"
+
+
+# One rewrite, shared by `new --auth` and `make:auth` (write_auth_surface):
+# the passkey surface needs the webauthn extra, so the scaffolded dependency
+# points at fastplace[webauthn] instead of the plain package. The spec after
+# the name (version, marker, URL, or just a comma) is preserved verbatim;
+# the spec must start with a real specifier character so a package merely
+# NAMED like fastplace ("fastplace-something") never matches.
+_FASTPLACE_DEP_PATTERN = re.compile(r'(?m)^(\s*)"fastplace(\[[^\]]*\])?([=<>!~@,;\s][^"]*)?"')
+
+
+def _rewrite_fastplace_dep_for_webauthn(root: Path) -> bool:
+    """Point the project's ``fastplace`` dependency at the ``webauthn`` extra.
+
+    Handles both producer shapes (``"fastplace",`` from `fastplace new` and
+    ``"fastplace>=x.y.z",``) and is idempotent: an already-rewritten line
+    rewrites to itself, so the second call is a no-op returning False. A
+    pyproject without a fastplace dependency line is left untouched.
+    """
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return False
+    content = path.read_text()
+    rewritten = _FASTPLACE_DEP_PATTERN.sub(r'\1"fastplace[webauthn]\3"', content, count=1)
+    if rewritten == content:
+        return False
+    path.write_text(rewritten)
+    return True
 
 
 # The installer wordmark — FASTPLACE set in solid blocks. The letterforms come

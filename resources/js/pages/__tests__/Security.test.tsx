@@ -60,7 +60,8 @@ function renderPage(props: Record<string, unknown> = {}) {
   };
   return render(
     <FastplaceProvider initialPage={initialPage}>
-      <SecurityPage {...baseProps} {...props} />
+      {/* Props arrive via the provider's initialPage, not component arguments. */}
+      <SecurityPage />
     </FastplaceProvider>,
   );
 }

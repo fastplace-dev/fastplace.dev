@@ -150,7 +150,7 @@ describe("PasskeyVerify", () => {
           authenticatorData: "Bw",
           clientDataJSON: "BAU",
           signature: "CQ",
-          userHandle: null,
+          // null/absent fields are omitted by the serializer.
         },
       },
     });

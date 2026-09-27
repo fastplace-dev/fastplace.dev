@@ -6,7 +6,13 @@ from pathlib import Path
 
 import typer
 
-from fastplace.cli.generators import _project_root, _write, console, generators_app
+from fastplace.cli.generators import (
+    _project_root,
+    _rewrite_fastplace_dep_for_webauthn,
+    _write,
+    console,
+    generators_app,
+)
 
 # Each constant below embeds the exact current contents of its source file
 # (see the plan's table) — the scaffold and the reference implementation
@@ -1442,10 +1448,14 @@ async def app(monkeypatch, tmp_path):
     from routes.web import router as web_router
 
     await db.create_all()
+    # Framework passkey surface (AUTH_PASSKEYS) rides the auth router,
+    # exactly as create_app mounts it — a disabled flag is a no-op.
+    from fastplace.auth.passkeys_routes import mount_passkey_routes
+
     middleware = _middleware_from_config(PROJECT_ROOT)
     return get_app(
         routes=web_router,
-        auth_routes=auth_router,
+        auth_routes=mount_passkey_routes(auth_router),
         api_routes=api_router,
         ai_routes=ai_router,
         middleware=middleware,
@@ -1757,8 +1767,10 @@ def _augment_readme(root: Path) -> None:
         "required, throttled\n"
         "- DELETE `/settings/profile` — account deletion, password "
         "confirmation required\n\n"
-        "Still parked: passkeys (`/user/passkeys*`) — wire those in your own "
-        "controllers when you need them.\n\n"
+        "Passkeys are framework-routed too (register/list/delete under "
+        "`/user/passkeys`, passwordless sign-in at `/passkeys/login`) "
+        "whenever AUTH_PASSKEYS is enabled and your dependency is "
+        "'fastplace[webauthn]'.\n\n"
         "Run the emitted test suite (`pytest`) to see every flow exercised."
     )
     content = content[:start] + replacement + ("" if next_heading == -1 else rest[next_heading:])
@@ -1797,6 +1809,13 @@ def write_auth_surface(root: Path) -> None:
     _augment_env_files(root)
     _augment_readme(root)
     _augment_index_html(root)
+    # The passkey surface rides the webauthn extra — flip the dependency and
+    # say so. A pyproject without a fastplace dep line skips silently
+    # (nothing to rewrite). The ready panel below already carries the one
+    # install command, so this notice stays informational only. The brackets
+    # in the dep name are escaped so Rich doesn't parse them as markup.
+    if _rewrite_fastplace_dep_for_webauthn(root):
+        console.print("[green]Passkeys enabled[/] — dependency set to fastplace\\[webauthn]")
 
 
 @generators_app.command("make:auth")

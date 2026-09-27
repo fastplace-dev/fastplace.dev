@@ -20,7 +20,7 @@ export default defineConfig({
   reporter: [["list"]],
   globalSetup: "./e2e/global-setup.mjs",
   use: {
-    baseURL: `http://127.0.0.1:${PORT}`,
+    baseURL: `http://localhost:${PORT}`,
     trace: "off",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
@@ -41,13 +41,13 @@ export default defineConfig({
     // so mkdir it for fresh clones/worktrees.
     command:
       `APP_ENV=production APP_KEY=e2e-test-secret-key-0123456789abcdef ` +
-      `APP_URL=http://127.0.0.1:${PORT} ` +
+      `APP_URL=http://localhost:${PORT} ` +
       `CACHE_ALLOW_MEMORY_IN_PRODUCTION=1 ` +  // single uvicorn worker — safe here
       `DATABASE_URL=sqlite+aiosqlite:///storage/e2e.sqlite3 ` +
       `sh -c 'mkdir -p storage && ` +
       `rm -f storage/e2e.sqlite3 storage/e2e.sqlite3-wal storage/e2e.sqlite3-shm && ` +
       `${FASTPLACE} migrate && exec ${PY} -m uvicorn asgi:app --host 127.0.0.1 --port ${PORT}'`,
-    url: `http://127.0.0.1:${PORT}/api/v1/health`,
+    url: `http://localhost:${PORT}/api/v1/health`,
     // Always boot a fresh server: the command above resets + re-migrates the
     // scratch DB before exec'ing uvicorn, and a reused server would skip
     // that reset — the tests expect the freshly migrated file, not the
