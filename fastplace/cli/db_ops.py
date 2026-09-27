@@ -505,9 +505,34 @@ def _run_dump(
         raise typer.Exit(code=1)
 
 
+def _export_documents(backups: Path, url: str) -> Path:
+    """Dump the Mongo database at ``url`` into a timestamped directory."""
+    from fastplace.console import console
+
+    dest = _backup_path(backups, "mongodb", "")
+    # mongodump has no password environment variable — the URI (and
+    # any credentials in it) must travel as argv, visible to local
+    # accounts via ps for the lifetime of the dump. Say so instead
+    # of pretending otherwise.
+    if urlsplit(url).password:
+        console.print(
+            "[dim]note: mongodump receives the connection URI in its "
+            "arguments — credentials are visible in the process list "
+            "during the dump[/]"
+        )
+    _run_dump(["mongodump", f"--uri={url}", f"--out={dest}"])
+    return dest
+
+
 @db_ops_app.command("db:export")
 def db_export() -> None:
-    """Write a timestamped backup of the default database to storage/backups/."""
+    """Write a timestamped backup of every configured database to storage/backups/.
+
+    The relational store rides DATABASE_URL as before; a configured
+    MONGODB_URL adds a mongodump of the document store in the same run —
+    an export that silently skips half the application's data is not a
+    backup.
+    """
     from rich.markup import escape
 
     from fastplace.console import console
@@ -519,6 +544,7 @@ def db_export() -> None:
 
     url = str(db.manager.config_for("default")["url"])
     family = _driver_family(url)
+    exported: list[Path] = []
 
     if family == "sqlite":
         dest = _backup_path(backups, "sqlite", "sqlite3")
@@ -535,6 +561,7 @@ def db_export() -> None:
             await engine.dispose()
 
         asyncio.run(_vacuum())
+        exported.append(dest)
     elif family == "postgresql":
         dest = _backup_path(backups, "postgresql", "sql")
         uri, password = _pg_target(url)
@@ -542,6 +569,7 @@ def db_export() -> None:
             ["pg_dump", uri, "--file", str(dest)],
             env={"PGPASSWORD": password} if password else None,
         )
+        exported.append(dest)
     elif family in ("mysql", "mariadb"):
         dest = _backup_path(backups, family, "sql")
         password = urlsplit(url).password
@@ -551,25 +579,23 @@ def db_export() -> None:
                 stdout=sink,
                 env={"MYSQL_PWD": password} if password else None,
             )
-    elif family == "mongodb":
-        dest = _backup_path(backups, "mongodb", "")
-        # mongodump has no password environment variable — the URI (and
-        # any credentials in it) must travel as argv, visible to local
-        # accounts via ps for the lifetime of the dump. Say so instead
-        # of pretending otherwise.
-        if urlsplit(url).password:
-            console.print(
-                "[dim]note: mongodump receives the connection URI in its "
-                "arguments — credentials are visible in the process list "
-                "during the dump[/]"
-            )
-        _run_dump(["mongodump", f"--uri={url}", f"--out={dest}"])
-    else:
+        exported.append(dest)
+    elif family != "mongodb":
         console.print(f"[red]no export strategy for driver '{escape(family)}'[/]")
         raise typer.Exit(code=1)
 
-    size = dest.stat().st_size if dest.is_file() else _dir_size(dest)
-    console.print(f"[green]exported[/] — {escape(str(dest))} ({size} bytes)")
+    # The document store is configured independently of DATABASE_URL —
+    # export it whenever MONGODB_URL says one exists. A DATABASE_URL that
+    # is itself a Mongo URL (single-store project) covers the legacy case.
+    mongo_url = str(config("MONGODB_URL", default="") or "")
+    if mongo_url:
+        exported.append(_export_documents(backups, mongo_url))
+    elif family == "mongodb":
+        exported.append(_export_documents(backups, url))
+
+    for dest in exported:
+        size = dest.stat().st_size if dest.is_file() else _dir_size(dest)
+        console.print(f"[green]exported[/] — {escape(str(dest))} ({size} bytes)")
 
 
 #: (driver module, fastplace extra) per connection family. sqlite ships with

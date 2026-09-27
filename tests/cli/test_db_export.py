@@ -177,3 +177,52 @@ def test_mysqldump_password_never_in_argv(seeded, monkeypatch):
     assert not any(part.startswith("--password") for part in argv)
     env = calls[0][1].get("env") or {}
     assert env.get("MYSQL_PWD") == "hush"
+
+
+# mongo-G2 — the document store is a first-class citizen: a configured
+# MONGODB_URL rides every export, beside the relational dump.
+def test_mongodb_url_also_gets_dumped_beside_the_relational_export(seeded, monkeypatch):
+    monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017/appdb")
+
+    calls = []
+
+    class _FakeResult:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return _FakeResult()
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    dump_argv = next((a for a in calls if a[0] == "mongodump"), None)
+    assert dump_argv is not None, "mongodump must run when MONGODB_URL is set"
+    assert "--uri=mongodb://localhost:27017/appdb" in dump_argv
+    # Both stores exported in one invocation — the sqlite backup still landed.
+    assert sorted((seeded / "storage" / "backups").glob("sqlite-*.sqlite3")), (
+        "the relational export must keep running beside the mongo dump"
+    )
+
+
+def test_mongodump_uri_password_prints_the_process_list_note(seeded, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pw@localhost:5432/app")
+    monkeypatch.setenv("MONGODB_URL", "mongodb://svc:hush@localhost:27017/appdb")
+
+    class _FakeResult:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        return _FakeResult()
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    assert "process list" in _out(result)
+
+
+def test_no_mongodb_url_leaves_the_relational_export_alone(seeded, monkeypatch):
+    """Without MONGODB_URL nothing reaches for mongodump (sqlite VACUUM path)."""
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    assert "mongodump" not in _out(result)
