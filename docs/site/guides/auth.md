@@ -96,6 +96,94 @@ Install the `pwdlib` extra (`pip install "fastplace[pwdlib]"`) for ArgUI
 -grade argon2 — the hasher upgrades automatically when the extra is
 present.
 
+## Passkeys
+
+Passkeys (WebAuthn) ship three ceremonies, all framework-owned: manage
+(register, list, delete), usernameless login with discoverable credentials,
+and a passkey alternative to password confirmation. Install the extra
+first — without it the endpoints answer 501 with the install message:
+
+```bash
+pip install "fastplace[webauthn]"
+```
+
+Enable them in `config/auth.py` — the framework mounts the routes itself;
+your app writes zero route code:
+
+```python
+# config/auth.py
+AUTH_PASSKEYS = {
+    "enabled": True,  # env: APP_PASSKEYS_ENABLED
+    "rp_name": None,  # default: APP_NAME
+    "rp_id": None,  # default: APP_URL host
+    "origins": None,  # default: [APP_URL]
+    "timeout_ms": 60000,  # env: APP_PASSKEYS_TIMEOUT_MS
+    "user_verification": "preferred",  # confirm ALWAYS requires UV
+    "attestation": "none",  # enterprise attestation lands later
+    "challenge_ttl": 300,  # env: APP_PASSKEYS_CHALLENGE_TTL
+    "login_max_attempts": 5,  # env: APP_PASSKEYS_LOGIN_MAX_ATTEMPTS
+}
+```
+
+`rp_id`/`origins` derive from `APP_URL`; behind a proxy `APP_URL` must be
+the public origin (the `TRUSTED_HOSTS` convention).
+
+The auto-mounted routes:
+
+| Route | Middleware | Behavior |
+|---|---|---|
+| `GET /user/passkeys/options` | auth, verified | creation options for the current user |
+| `POST /user/passkeys` | auth, verified | `{name, credential}` → register |
+| `DELETE /user/passkeys/{id}` | auth, verified | delete own credential |
+| `GET /passkeys/login/options` | guest | assertion options, empty allowList (discoverable credentials) |
+| `POST /passkeys/login` | guest | `{credential}` → session login → `{redirect: ...}` payload |
+| `GET /passkeys/confirm/options` | auth | assertion options scoped to the user's credentials |
+| `POST /passkeys/confirm` | auth | `{credential}` → `password_confirmed_at` stamp |
+
+Everything routes through `passkey_guard()` — the accessor mirrors
+`guard()` — so a page controller or API surface can call the same
+ceremonies the routes call:
+
+```python
+from fastplace.auth.passkey_guard import passkey_guard
+
+guard = passkey_guard()
+
+options = await guard.registration_options(request, user)  # creation options JSON
+row_id = await guard.register(request, user, "Chrome on Mac", credential)
+keys = await guard.list_for(user)  # id/name/authenticator/*_at_diff props
+guard.delete(request, user, row_id)  # owner-filtered, bool
+
+options = await guard.login_options(request)  # guest — discoverable credentials
+user = await guard.login(request, credential)  # user, or None when 2FA parked
+
+options = await guard.confirm_options(request, user)
+ok = await guard.confirm(request, user, credential)  # stamps password_confirmed_at
+```
+
+Every method validates the ceremony against the stored session challenge;
+`login()` resolves the user through your configured provider and finishes
+with the session guard, so a 2FA-enabled user still faces the TOTP
+challenge — the passkey replaces the password factor, never the second
+factor. `confirm()` always demands user verification (biometric or PIN)
+regardless of the configured `user_verification`.
+
+Security notes:
+
+- **Challenges** are session-bound, single-use, TTL-bounded (`challenge_ttl`)
+  and namespaced by ceremony — a login challenge cannot verify a confirm or
+  a registration.
+- **Replay rejection**: when the stored `sign_count` is greater than zero
+  and an assertion reports a counter at or below it, the assertion is
+  rejected as a possible clone (counterless authenticator pairs skip).
+- **One generic failure** — every verification failure (unknown credential,
+  expired challenge, bad signature, replay) raises the same message,
+  `"Unable to verify this passkey."`, so responses never leak why.
+- **Owner scoping** — delete, confirm, and registration-option scopes are
+  always filtered by the current user's identifier.
+- Events (`passkey.registered`, `passkey.deleted`, `passkey.login`,
+  `passkey.confirm`) dispatch through the normal event pipeline for audit.
+
 ## Multi-tenant apps
 
 Company-scoped apps combine the session guard with

@@ -47,6 +47,11 @@ decode`), `OrmUserProvider`, `Hash` (`make/check`); middleware
 `ResolveUserMiddleware`, `CsrfMiddleware`. Config: `AUTH_DEFAULT_GUARD`,
 `AUTH_GUARDS`, `AUTH_PROVIDERS`.
 
+Passkeys (the `webauthn` extra): `passkey_guard()` — a `PasskeyGuard` with
+`registration_options/register/list_for/delete`, `login_options/login`,
+and `confirm_options/confirm` — plus the auto-mounted `/user/passkeys*`
+and `/passkeys/*` routes. Config: `AUTH_PASSKEYS`.
+
 ## fastplace.ai
 
 | Symbol | Kind | Purpose |
