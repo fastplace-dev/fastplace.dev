@@ -177,9 +177,7 @@ def queue_work(
                     "the restart did not complete; see fastplace.queue logs"
                 )
                 raise typer.Exit(code=1)
-            console.print(
-                "[yellow]! restart requested — worker exited cleanly for its replacement"
-            )
+            console.print("[yellow]! restart requested — worker exited cleanly for its replacement")
 
         asyncio.run(_run_saq_worker())
         return
@@ -523,7 +521,7 @@ def queue_list() -> None:
     from rich.table import Table
 
     from fastplace.console import console
-    from fastplace.queue import import_jobs, jobs
+    from fastplace.queue import effective_job_options, import_jobs, jobs
 
     load_env()
     root = _project_root()
@@ -544,14 +542,23 @@ def queue_list() -> None:
     # no_wrap keeps a one-line docstring on one line — a folded description
     # would split the sentence across cells (the signature may fold instead).
     table.add_column("description", style="dim", no_wrap=True)
+    # The effective envelope (retries×timeout a dispatch would carry) —
+    # surface the resolved numbers so nobody decodes @Job/env/defaults by
+    # hand to learn what a job's retry budget actually is.
+    table.add_column("envelope", justify="right", no_wrap=True)
     for name in sorted(registry):
         entry = registry[name]
         doc = (inspect.getdoc(entry.fn) or "").strip().splitlines()
+        opts = effective_job_options(entry)
+        envelope = f"{opts['retries']}×{opts['timeout']:g}s"
+        if opts["backoff"]:
+            envelope += f" +{opts['backoff']:g}s"
         table.add_row(
             escape(name),
             escape(entry.fn.__module__),
             escape(str(inspect.signature(entry.fn))),
             escape(doc[0]) if doc else "[dim]—[/]",
+            escape(envelope),
         )
     console.print(table)
 
@@ -730,6 +737,11 @@ def queue_dispatch(
     name: str = typer.Argument(..., help="Registered job name."),
     kwargs_json: str = typer.Option("{}", "--kwargs", help="JSON object of handler kwargs."),
     delay: float = typer.Option(0.0, "--delay", help="Seconds to wait before the job runs."),
+    retries: int = typer.Option(None, "--retries", min=1, help="Total attempts for this dispatch."),
+    timeout: float = typer.Option(
+        None, "--timeout", help="Per-attempt timeout seconds for this dispatch."
+    ),
+    queue_name: str = typer.Option(None, "--queue", help="Named saq queue to enqueue on."),
 ) -> None:
     """Enqueue one registered job without running it now."""
     import asyncio
@@ -760,28 +772,47 @@ def queue_dispatch(
     # The factory import is the test seam: patching fastplace.queue.queue
     # swaps the store this command dispatches to, whatever the env says.
     store: Any = queue_factory()
+    # Driver detection inspects the store, not the env (mirrors
+    # queue:jobs): the memory driver carries its in-process pending
+    # deque, a saq store pages the broker instead.
+    if hasattr(store, "pending"):
+        # q1-G5 honesty: nothing ever comes back to run a job this command
+        # queues on the memory driver — the pending deque dies with this
+        # process the moment the command exits. Refuse before anything
+        # lands on the queue instead of printing "Dispatched" over a job
+        # that silently never runs.
+        console.print(
+            "[red]the memory driver cannot accept CLI dispatches[/] — a job queued in this "
+            "process dies with it; set QUEUE_DRIVER=saq (redis) so a queue:work process runs it"
+        )
+        raise typer.Exit(code=1)
 
-    async def _run() -> None:
-        # Driver detection inspects the store, not the env (mirrors
-        # queue:jobs): the memory driver carries its in-process pending
-        # deque, a saq store pages the broker instead.
-        is_memory = hasattr(store, "pending")
-        if delay > 0:
-            if is_memory:
-                # Nothing ever comes back to run a queued job on this
-                # driver — an "in 5s" enqueue would silently never fire,
-                # so refuse before anything lands on the queue.
-                console.print(
-                    "[red]the memory driver cannot schedule delayed jobs[/] — use the saq driver"
-                )
-                raise typer.Exit(code=1)
-            await store.dispatch_delayed(name, kwargs=parsed, delay=delay)
-            return
-        await store.dispatch(name, **parsed)
+    async def _run() -> Any:
+        # The builder carries the envelope options (queue().job(name, ...)):
+        # handler kwargs ride dispatch() and must never collide with option
+        # names, so the two namespaces stay separate end to end.
+        return await store.job(
+            name,
+            retries=retries,
+            timeout=timeout,
+            delay=delay if delay > 0 else None,
+            queue=queue_name,
+        ).dispatch(**parsed)
 
-    asyncio.run(_run())
-    suffix = "" if delay <= 0 else f" (in {delay}s)"
-    console.print(f"[green]Dispatched '{escape(name)}'[/]{suffix}")
+    handle = asyncio.run(_run())
+    suffix = "" if delay <= 0 else f" (in {delay:g}s)"
+    if handle is None:
+        # Only a unique= dispatch can land here — the driver suppressed an
+        # identical unresolved job. The CLI never sets unique=, so this is
+        # future-proofing the honest output if it ever does.
+        console.print(
+            f"[yellow]suppressed '{escape(name)}'[/] — an identical job is already queued"
+        )
+        return
+    console.print(
+        f"[green]Dispatched '{escape(name)}'[/]{suffix} "
+        f"(job {escape(str(getattr(handle, 'key', '?')))})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -944,6 +975,28 @@ def _check_schedule(root: Path) -> Check:
     return Check("schedule", "pass", f"{len(tasks)} {plural}")
 
 
+def _check_defaults() -> Check:
+    """The envelope every undecorated dispatch would carry (informational).
+
+    Surfacing the resolved QUEUE_TRIES/QUEUE_TIMEOUT/QUEUE_BACKOFF/QUEUE_TTL
+    floor here — right next to the driver/depth checks — means a team reads
+    its effective retry budget without decoding config layers by hand. A
+    misconfigured value surfaces as its own FAIL through dispatch-time
+    validation; this row only reports.
+    """
+    from fastplace.cli._doctor import Check
+    from fastplace.queue import effective_job_options
+
+    opts = effective_job_options()
+    detail = (
+        f"retries={opts['retries']} timeout={opts['timeout']:g}s "
+        f"backoff={opts['backoff']:g}s ttl={opts['ttl']}s"
+    )
+    return Check(
+        "defaults", "pass", detail, "QUEUE_TRIES / QUEUE_TIMEOUT / QUEUE_BACKOFF / QUEUE_TTL"
+    )
+
+
 @queue_app.command("queue:health")
 def queue_health() -> None:
     """Queue stack diagnosis: driver, redis, depth, restart, failures, schedule."""
@@ -968,6 +1021,7 @@ def queue_health() -> None:
             _check_depth,
             _check_restart_sentinel,
             _check_failed_jobs,
+            _check_defaults,
             _schedule_check,
         ],
     )

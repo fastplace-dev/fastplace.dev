@@ -56,6 +56,11 @@ async def resize_image(path: str, size: int = 64) -> None:
 @Job()
 async def send_invoice(order_id: int) -> None:
     ...
+
+
+@Job(name="purge_temp", retries=2, timeout=45)
+async def _purge_temp_files() -> None:
+    ...
 '''
 
 
@@ -87,6 +92,26 @@ def test_names_the_active_driver(project, monkeypatch):
     result = runner.invoke(cli_app, ["queue:list"])
     assert result.exit_code == 0, result.output
     assert "memory" in _out(result)
+
+
+def test_lists_each_jobs_effective_envelope(project, monkeypatch):
+    """q1-G3 surfacing: the envelope column shows what a dispatch of each
+    job would carry — @Job params over the framework defaults, and env
+    overrides visible without decoding three layers by hand."""
+    for key in ("QUEUE_TRIES", "QUEUE_TIMEOUT"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = runner.invoke(cli_app, ["queue:list"])
+    assert result.exit_code == 0, result.output
+    out = _out(result)
+    assert "3×60s" in out  # framework defaults (retries × timeout)
+    assert "2×45s" in out  # @Job(retries=2, timeout=45) wins for purge_temp
+
+    monkeypatch.setenv("QUEUE_TRIES", "5")
+    result = runner.invoke(cli_app, ["queue:list"])
+    assert result.exit_code == 0, result.output
+    assert "5×60s" in _out(result)  # env raises the floor for undecorated jobs
+    assert "2×45s" in _out(result)  # @Job params still win
 
 
 def test_outside_project_exits_one(tmp_path, monkeypatch):

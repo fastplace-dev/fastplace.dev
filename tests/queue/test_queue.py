@@ -363,15 +363,16 @@ def test_saq_queue_builds_redis_queue_lazily():
 
 async def test_saq_dispatch_wraps_kwargs_to_avoid_field_hijack():
     # saq's enqueue splats kwargs and hijacks any name matching its Job
-    # dataclass fields (timeout, ttl, kwargs…) into job properties — the
-    # payload must arrive as one explicit kwargs dict instead.
+    # dataclass fields (timeout, ttl, kwargs…) into job properties — so the
+    # driver enqueues one explicit Job whose kwargs dict is the payload and
+    # whose reliability fields it set deliberately (test_dispatch_options).
     class FakeSaqQueue:
         def __init__(self):
             self.enqueued = []
 
-        async def enqueue(self, name, **kwargs):
-            self.enqueued.append((name, kwargs))
-            return None
+        async def enqueue(self, job):
+            self.enqueued.append(job)
+            return job
 
     fake = FakeSaqQueue()
     driver = SaqQueue(queue=fake)
@@ -380,8 +381,12 @@ async def test_saq_dispatch_wraps_kwargs_to_avoid_field_hijack():
     async def notify(user_id: int, timeout: str = ""):
         return None
 
-    await driver.dispatch("notify", user_id=9, timeout="safe")
-    assert fake.enqueued == [("notify", {"kwargs": {"user_id": 9, "timeout": "safe"}})]
+    handle = await driver.dispatch("notify", user_id=9, timeout="safe")
+    (job,) = fake.enqueued
+    assert job.function == "notify"
+    assert job.kwargs == {"user_id": 9, "timeout": "safe"}  # intact — no hijack
+    assert job.timeout != "safe"  # the kwarg never leaked into the property
+    assert handle is job  # dispatch hands back the enqueued Job (q1-G10)
 
 
 def test_saq_worker_assembly_registers_jobs_by_name():
@@ -594,9 +599,7 @@ def _patch_saq_worker(monkeypatch, worker: _FakeSaqWorker) -> None:
     import fastplace.queue as queue_module
 
     monkeypatch.setenv("QUEUE_DRIVER", "saq")
-    monkeypatch.setattr(
-        queue_module.SaqQueue, "build_worker", lambda self, **kwargs: worker
-    )
+    monkeypatch.setattr(queue_module.SaqQueue, "build_worker", lambda self, **kwargs: worker)
 
 
 def test_queue_work_saq_exit_is_clean_when_sentinel_was_consumed(tmp_path, monkeypatch):

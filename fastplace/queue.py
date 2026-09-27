@@ -47,10 +47,18 @@ JobFn = Callable[..., Awaitable[Any]]
 
 @dataclass(frozen=True)
 class _JobEntry:
-    """One registered handler under its dispatch name."""
+    """One registered handler under its dispatch name.
+
+    ``retries``/``timeout``/``backoff`` are the handler's reliability
+    envelope preferences (``@Job`` params) — ``None`` means "no opinion",
+    letting the env defaults or a per-dispatch builder override decide.
+    """
 
     name: str
     fn: JobFn
+    retries: int | None = None
+    timeout: float | None = None
+    backoff: float | None = None
 
 
 #: name → handler registry, populated by @Job at import time.
@@ -147,10 +155,27 @@ class Job:
     ``@Job()`` names the handler after the function; ``@Job(name="...")``
     pins a stable dotted name (use this when the function may be renamed or
     nested — dispatch names must stay constant across processes).
+
+    The optional reliability params pin this handler's retry envelope —
+    ``retries`` (total attempts, >= 1), ``timeout`` (per-attempt seconds),
+    ``backoff`` (exponential base delay in seconds between attempts). They
+    sit between the ``QUEUE_*`` env defaults and a per-dispatch builder
+    override: builder > ``@Job`` > env > framework default.
     """
 
-    def __init__(self, name: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str | None = None,
+        *,
+        retries: int | None = None,
+        timeout: float | None = None,
+        backoff: float | None = None,
+    ) -> None:
+        _validate_envelope_params(retries=retries, timeout=timeout, backoff=backoff)
         self.name = name
+        self.retries = retries
+        self.timeout = timeout
+        self.backoff = backoff
 
     def __call__(self, fn: JobFn) -> JobFn:
         if not inspect.iscoroutinefunction(fn):
@@ -159,6 +184,9 @@ class Job:
         # across processes, and __qualname__ would leak <locals> for handlers
         # defined inside factories. Pass name= to disambiguate collisions.
         name = self.name or fn.__name__
+        entry = _JobEntry(
+            name=name, fn=fn, retries=self.retries, timeout=self.timeout, backoff=self.backoff
+        )
         if name in registry:
             existing = registry[name].fn
             if _is_stale_registration(existing) and _same_dotted_path(existing, fn):
@@ -167,14 +195,14 @@ class Job:
                 # may re-import app.jobs within one boot), so this is the
                 # same handler re-registered by a fresh module object —
                 # replace the dead entry rather than raise.
-                registry[name] = _JobEntry(name=name, fn=fn)
+                registry[name] = entry
                 return fn
             raise ValueError(
                 f"@Job name collision: '{name}' is already registered by "
                 f"{getattr(existing, '__module__', '?')}.{getattr(existing, '__qualname__', '?')}; "
                 f"{fn.__module__}.{fn.__qualname__} must pass @Job(name=...) to disambiguate"
             )
-        registry[name] = _JobEntry(name=name, fn=fn)
+        registry[name] = entry
         return fn
 
 
@@ -215,6 +243,18 @@ class _Pending:
 
     name: str
     kwargs: dict[str, Any]
+    key: str = ""
+    options: dict[str, Any] | None = None
+    scheduled_at: float = 0.0  # epoch seconds; 0 = due immediately
+
+
+@dataclass
+class _MemoryJobHandle:
+    """The in-process handle a memory dispatch returns (q1-G10)."""
+
+    key: str
+    name: str
+    status: str = "queued"  # queued → completed | failed | discarded
 
 
 @dataclass
@@ -228,7 +268,7 @@ class _Failure:
 class QueueDriver(Protocol):
     """The dispatch surface every driver implements."""
 
-    async def dispatch(self, name: str, **kwargs: Any) -> None: ...
+    async def dispatch(self, name: str, **kwargs: Any) -> Any: ...
 
     async def clear(self) -> int:
         """Drop every pending job without running it; return how many."""
@@ -238,6 +278,19 @@ class QueueDriver(Protocol):
         """Waiting jobs — the backlog depth ``queue:monitor`` measures."""
         ...
 
+    def job(self, name: str, **options: Any) -> PendingDispatch:
+        """Start a dispatch with reliability options (the builder entry)."""
+        ...
+
+    async def job_status(self, key: str) -> str | None:
+        """Status of a dispatched job handle's key, None when unknown."""
+        ...
+
+    async def _dispatch_pending(self, pending: PendingDispatch, kwargs: dict[str, Any]) -> Any:
+        """Complete a builder dispatch — every driver implements this so
+        :class:`PendingDispatch` can hand off type-safely (internal)."""
+        ...
+
 
 class MemoryQueue:
     """In-process driver: dispatch validates + queues, run_pending drains."""
@@ -245,14 +298,79 @@ class MemoryQueue:
     def __init__(self) -> None:
         self.pending: deque[_Pending] = deque()
         self.failures: list[_Failure] = []
+        self.dispatched: dict[str, _MemoryJobHandle] = {}
 
-    async def dispatch(self, name: str, **kwargs: Any) -> None:
+    async def dispatch(self, name: str, **kwargs: Any) -> _MemoryJobHandle | None:
         if name not in registry:
             raise ValueError(f"unknown job '{name}' — is it registered with @Job?")
-        self.pending.append(_Pending(name=name, kwargs=kwargs))
+        return await self._enqueue_memory(name, kwargs, _resolve_envelope(registry[name], {}))
+
+    def job(self, name: str, **options: Any) -> PendingDispatch:
+        """Builder entry — see :class:`PendingDispatch` (rejects ``queue=``)."""
+        return PendingDispatch(self, name, **options)
+
+    async def _dispatch_pending(
+        self, pending: PendingDispatch, kwargs: dict[str, Any]
+    ) -> _MemoryJobHandle | None:
+        if pending.name not in registry:
+            raise ValueError(f"unknown job '{pending.name}' — is it registered with @Job?")
+        if pending.queue_name is not None:
+            raise ValueError(
+                "the memory driver has a single in-process queue — "
+                "queue routing needs the saq driver"
+            )
+        overrides = {
+            "retries": pending.retries,
+            "timeout": pending.timeout,
+            "backoff": pending.backoff,
+            "ttl": pending.ttl,  # accepted for API symmetry; nothing to retain
+        }
+        envelope = _resolve_envelope(registry[pending.name], overrides)
+        return await self._enqueue_memory(
+            pending.name,
+            kwargs,
+            envelope,
+            delay=pending.delay or 0.0,
+            unique=pending.unique,
+        )
+
+    async def _enqueue_memory(
+        self,
+        name: str,
+        kwargs: dict[str, Any],
+        envelope: dict[str, Any],
+        delay: float = 0.0,
+        unique: bool = False,
+    ) -> _MemoryJobHandle | None:
+        import uuid
+
+        key = _deterministic_job_key(name, kwargs) if unique else uuid.uuid4().hex
+        if unique:
+            existing = self.dispatched.get(key)
+            if existing is not None and existing.status == "queued":
+                return None  # identical unresolved job already queued
+        handle = _MemoryJobHandle(key=key, name=name)
+        self.dispatched[key] = handle
+        self.pending.append(
+            _Pending(
+                name=name,
+                kwargs=kwargs,
+                key=key,
+                options=envelope,
+                scheduled_at=(time.time() + delay) if delay else 0.0,
+            )
+        )
+        return handle
 
     async def run_pending(self, honor_sentinel: bool = True) -> int:
         """Execute the queued jobs; a failing handler is recorded, not raised.
+
+        Each job runs under its dispatch envelope: ``timeout`` bounds every
+        attempt, ``retries`` sets the total attempt budget, ``backoff`` waits
+        ``base * 2^(N-1)`` seconds after the Nth failed attempt — the same
+        envelope a saq worker applies, so dev drains behave like production.
+        A job whose ``scheduled_at`` is still in the future is deferred back
+        to the front of the deque (a delayed dispatch survives until due).
 
         Only the batch present at entry is drained: a job whose side effect
         enqueues more work (a domain event → another job) chains to the *next*
@@ -276,32 +394,73 @@ class MemoryQueue:
         batch = list(self.pending)
         self.pending.clear()
         executed = 0
+        deferred: list[_Pending] = []
         for index, item in enumerate(batch):
+            if item.scheduled_at and item.scheduled_at > time.time():
+                deferred.append(item)
+                continue
             if honor_sentinel and await restart_requested_at() is not None:
-                # extendleft(reversed(...)) keeps the block's dispatch order.
-                self.pending.extendleft(reversed(batch[index:]))
+                # extendleft(reversed(...)) keeps the block's dispatch order;
+                # deferred items come first — they were earlier in the batch.
+                remaining = deferred + batch[index:]
+                self.pending.extendleft(reversed(remaining))
                 return executed
+            await self._run_one(item)
+            executed += 1
+        if deferred:
+            self.pending.extendleft(reversed(deferred))
+        return executed
+
+    async def _run_one(self, item: _Pending) -> None:
+        """One job under its envelope — attempts, timeout, backoff, ledger."""
+        envelope = item.options or _resolve_envelope(registry.get(item.name), {})
+        handle = self.dispatched.get(item.key) if item.key else None
+        attempts = 0
+        while True:
+            attempts += 1
             try:
-                await registry[item.name].fn(**item.kwargs)
+                await asyncio.wait_for(
+                    registry[item.name].fn(**item.kwargs), timeout=envelope["timeout"]
+                )
+                if handle is not None:
+                    handle.status = "completed"
+                return
             except Exception as exc:  # noqa: BLE001 — isolation is the contract
+                if attempts < envelope["retries"]:
+                    delay = _backoff_delay(envelope["backoff"], attempts)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    continue
                 self.failures.append(_Failure(name=item.name, error=exc))
                 await record_failure(item.name, item.kwargs, format_error(exc))
-            executed += 1
-        return executed
+                if handle is not None:
+                    handle.status = "failed"
+                return
 
     async def clear(self) -> int:
         """Discard the pending jobs without executing any; return the count.
 
         The failure ledger is left alone — it describes runs that already
-        happened (see ``queue:failed``), not runs that never will.
+        happened (see ``queue:failed``), not runs that never will. A cleared
+        job's handle flips to ``discarded`` so a ``unique=`` identity it
+        held is freed for the next dispatch.
         """
         cleared = len(self.pending)
+        for item in self.pending:
+            handle = self.dispatched.get(item.key) if item.key else None
+            if handle is not None and handle.status == "queued":
+                handle.status = "discarded"
         self.pending.clear()
         return cleared
 
     async def queue_depth(self) -> int:
         """Waiting jobs — the deque length ``queue:monitor`` measures."""
         return len(self.pending)
+
+    async def job_status(self, key: str) -> str | None:
+        """The in-process handle's status, None when no such dispatch."""
+        handle = self.dispatched.get(key)
+        return handle.status if handle is not None else None
 
 
 async def _record_saq_failure(ctx: dict[str, Any]) -> None:
@@ -364,6 +523,169 @@ async def _check_restart_sentinel(ctx: dict[str, Any]) -> None:
         worker.event.set()
 
 
+# ---------------------------------------------------------------------------
+# the reliability envelope — retries/timeout/backoff/ttl on every dispatch
+# ---------------------------------------------------------------------------
+
+
+def _validate_envelope_params(
+    retries: int | None = None,
+    timeout: float | None = None,
+    backoff: float | None = None,
+    ttl: int | None = None,
+    delay: float | None = None,
+) -> None:
+    """Refuse nonsense envelope values at the boundary where they enter.
+
+    ``retries`` is total attempts (>= 1), ``timeout`` per-attempt seconds
+    (> 0), ``backoff`` the exponential base delay in seconds (>= 0, 0 = off),
+    ``ttl`` result retention seconds (>= 1), ``delay`` seconds until the job
+    becomes due (>= 0).
+    """
+    if retries is not None and retries < 1:
+        raise ValueError(f"retries must be >= 1 (total attempts), got {retries}")
+    if timeout is not None and timeout <= 0:
+        raise ValueError(f"timeout must be > 0 seconds, got {timeout}")
+    if backoff is not None and backoff < 0:
+        raise ValueError(f"backoff must be >= 0 seconds, got {backoff}")
+    if ttl is not None and ttl < 1:
+        raise ValueError(f"ttl must be >= 1 second, got {ttl}")
+    if delay is not None and delay < 0:
+        raise ValueError(f"delay must be >= 0 seconds, got {delay}")
+
+
+def _envelope_defaults() -> dict[str, Any]:
+    """Framework defaults from ``QUEUE_*`` env — the envelope's floor layer.
+
+    Defaults: ``QUEUE_TRIES=3`` (a job swept up by a worker crash stays
+    retryable), ``QUEUE_TIMEOUT=60`` (replaces saq's hidden 10s dataclass
+    default), ``QUEUE_BACKOFF=0`` (off), ``QUEUE_TTL=600``. Misconfigured
+    values fail loudly at dispatch — a zero timeout would cut every job
+    instantly while looking configured.
+    """
+    tries = int(config("QUEUE_TRIES", default=3))
+    timeout = float(config("QUEUE_TIMEOUT", default=60.0))
+    backoff = float(config("QUEUE_BACKOFF", default=0.0))
+    ttl = int(config("QUEUE_TTL", default=600))
+    for key, value in (
+        ("QUEUE_TRIES", tries),
+        ("QUEUE_TIMEOUT", timeout),
+        ("QUEUE_BACKOFF", backoff),
+        ("QUEUE_TTL", ttl),
+    ):
+        if key == "QUEUE_TRIES" and value < 1:
+            raise ConfigurationError(f"{key} must be >= 1, got {value!r}")
+        if key != "QUEUE_TRIES" and value < 0:
+            raise ConfigurationError(f"{key} must be >= 0, got {value!r}")
+        if key == "QUEUE_TIMEOUT" and value == 0:
+            raise ConfigurationError(f"{key} must be > 0, got {value!r}")
+    return {"retries": tries, "timeout": timeout, "backoff": backoff, "ttl": ttl}
+
+
+def _resolve_envelope(entry: _JobEntry | None, overrides: dict[str, Any]) -> dict[str, Any]:
+    """Merge the envelope's layers: env defaults < @Job params < builder.
+
+    ``None`` at a layer means "no opinion" — the layer below decides.
+    """
+    resolved = _envelope_defaults()
+    if entry is not None:
+        if entry.retries is not None:
+            resolved["retries"] = entry.retries
+        if entry.timeout is not None:
+            resolved["timeout"] = entry.timeout
+        if entry.backoff is not None:
+            resolved["backoff"] = entry.backoff
+    for key, value in overrides.items():
+        if value is not None:
+            resolved[key] = value
+    return resolved
+
+
+def effective_job_options(entry: _JobEntry | None = None) -> dict[str, Any]:
+    """The envelope a dispatch of ``entry`` would carry (queue:list/health).
+
+    Public on purpose: the CLI surfaces these numbers so a team can see the
+    effective envelope without decoding three layers by hand.
+    """
+    return _resolve_envelope(entry, {})
+
+
+def _deterministic_job_key(name: str, kwargs: dict[str, Any]) -> str:
+    """Stable identity for a unique dispatch: same name + same kwargs."""
+    import hashlib
+    import json
+
+    payload = json.dumps(kwargs, sort_keys=True, default=str)
+    digest = hashlib.sha1(f"{name}|{payload}".encode()).hexdigest()[:16]
+    return f"{name}:{digest}"
+
+
+def _backoff_delay(backoff: float, failed_attempts: int) -> float:
+    """Exponential delay after the Nth failed attempt: ``base * 2^(N-1)``.
+
+    Mirrors what saq computes from ``retry_delay=base, retry_backoff=True``
+    (its ``exponential_backoff``), without the jitter — the memory driver
+    stays deterministic so drains are testable.
+    """
+    if not backoff:
+        return 0.0
+    return float(backoff) * 2 ** max(failed_attempts - 1, 0)
+
+
+class PendingDispatch:
+    """A dispatch under construction — ``queue().job(name, **options)``.
+
+    Options live here instead of on ``dispatch()`` because handler kwargs
+    ride dispatch (a handler may legitimately take ``timeout=`` as its own
+    argument) — the two namespaces must never collide::
+
+        await queue().job("welcome_email", retries=5, backoff=2).dispatch(user_id=7)
+
+    ``retries``/``timeout``/``backoff``/``ttl`` shape the reliability envelope
+    (precedence: builder > ``@Job`` > ``QUEUE_*`` env > default); ``delay``
+    holds the job until now+delay seconds; ``queue=`` routes to a named saq
+    queue (workers opt in via ``queue:work --queue``); ``unique=True`` gives
+    the dispatch a deterministic identity — an identical unresolved dispatch
+    is suppressed (both drivers), and ``dispatch()`` returns ``None`` when
+    that suppression fires. ``dispatch()`` returns a trackable handle (the
+    saq Job on redis, an in-process handle on memory). The memory driver
+    applies retries/timeout/backoff/delay/unique; ``ttl`` and ``queue`` are
+    redis-queue concepts it cannot honor, so it refuses ``queue=`` and
+    ignores ``ttl``.
+    """
+
+    def __init__(
+        self,
+        driver: QueueDriver,
+        name: str,
+        *,
+        retries: int | None = None,
+        timeout: float | None = None,
+        backoff: float | None = None,
+        ttl: int | None = None,
+        delay: float | None = None,
+        queue: str | None = None,
+        unique: bool = False,
+    ) -> None:
+        _validate_envelope_params(
+            retries=retries, timeout=timeout, backoff=backoff, ttl=ttl, delay=delay
+        )
+        self._driver = driver
+        self.name = name
+        self.retries = retries
+        self.timeout = timeout
+        self.backoff = backoff
+        self.ttl = ttl
+        self.delay = delay
+        self.queue_name = queue
+        self.unique = unique
+
+    async def dispatch(self, **kwargs: Any) -> Any:
+        """Enqueue the job; returns its handle, or ``None`` when a unique
+        dispatch found an identical unresolved job already queued."""
+        return await self._driver._dispatch_pending(self, kwargs)  # noqa: SLF001
+
+
 def _adapt_sa_handler(fn: JobFn) -> JobFn:
     """Wrap a ``@Job`` handler for saq's calling convention.
 
@@ -401,6 +723,9 @@ class SaqQueue:
         self._url = url or config("QUEUE_REDIS_URL", default="redis://localhost:6379/0")
         self._name = name or config("QUEUE_NAME", default="fastplace")
         self._queue = queue
+        # Named-queue routing targets (q1-G4): ``queue().job(..., queue="emails")``
+        # enqueues on a RedisQueue with that name; workers opt in per name.
+        self._routes: dict[str, Any] = {}
 
     @property
     def queue(self) -> Any:
@@ -411,17 +736,91 @@ class SaqQueue:
             self._queue = RedisQueue(aioredis.from_url(self._url), name=self._name)
         return self._queue
 
-    async def dispatch(self, name: str, **kwargs: Any) -> None:
+    def _queue_for(self, name: str | None) -> Any:
+        """The queue a dispatch under ``name`` belongs to (routing cache)."""
+        if name is None or name == self._name:
+            return self.queue
+        if name not in self._routes:
+            import redis.asyncio as aioredis
+            from saq.queue.redis import RedisQueue
+
+            self._routes[name] = RedisQueue(aioredis.from_url(self._url), name=name)
+        return self._routes[name]
+
+    async def dispatch(self, name: str, **kwargs: Any) -> Any:
         if name not in registry:
             raise ValueError(f"unknown job '{name}' — is it registered with @Job?")
-        # One explicit kwargs dict: saq's enqueue hijacks any kwarg matching
-        # its Job dataclass fields (timeout, ttl, kwargs…) into job
-        # properties, which would silently drop handler arguments.
-        await self.queue.enqueue(name, kwargs=kwargs)
+        return await self._enqueue_saq(name, kwargs, _resolve_envelope(registry[name], {}))
+
+    def job(self, name: str, **options: Any) -> PendingDispatch:
+        """Builder entry — see :class:`PendingDispatch`."""
+        return PendingDispatch(self, name, **options)
+
+    async def _dispatch_pending(self, pending: PendingDispatch, kwargs: dict[str, Any]) -> Any:
+        if pending.name not in registry:
+            raise ValueError(f"unknown job '{pending.name}' — is it registered with @Job?")
+        overrides = {
+            "retries": pending.retries,
+            "timeout": pending.timeout,
+            "backoff": pending.backoff,
+            "ttl": pending.ttl,
+        }
+        envelope = _resolve_envelope(registry[pending.name], overrides)
+        return await self._enqueue_saq(
+            pending.name,
+            kwargs,
+            envelope,
+            delay=pending.delay or 0.0,
+            queue_name=pending.queue_name,
+            unique=pending.unique,
+        )
+
+    async def _enqueue_saq(
+        self,
+        name: str,
+        kwargs: dict[str, Any],
+        envelope: dict[str, Any],
+        delay: float = 0.0,
+        queue_name: str | None = None,
+        unique: bool = False,
+    ) -> Any:
+        """Enqueue one explicit saq Job carrying the resolved envelope.
+
+        The Job is built explicitly (never ``enqueue(name, **kwargs)``) for
+        two reasons: saq hijacks any kwarg matching its Job dataclass fields
+        (timeout, ttl, kwargs…) into job properties, silently dropping
+        handler arguments; and the envelope's fields must be set
+        deliberately — saq's hidden dataclass defaults (timeout=10,
+        retries=1) are not this framework's defaults. ``retry_delay`` is the
+        exponential base and ``retry_backoff`` the max cap in saq's formula,
+        so ``backoff=X`` seconds becomes ``retry_delay=X, retry_backoff=True``
+        (unbounded cap — the base carries the policy). Returns whatever
+        enqueue returns: the Job, or ``None`` when a ``unique=`` key was
+        already queued (saq's duplicate suppression).
+        """
+        import uuid
+
+        from saq.job import Job  # shadows the @Job decorator by saq's design
+
+        backoff = envelope["backoff"] or 0.0
+        job = Job(
+            function=name,
+            kwargs=dict(kwargs),
+            retries=envelope["retries"],
+            # saq annotates timeout as int but honors floats at runtime
+            # (asyncio.wait_for takes one) — fractional timeouts are valid.
+            timeout=float(envelope["timeout"]),  # type: ignore[arg-type]
+            ttl=envelope["ttl"],
+            retry_delay=backoff,
+            retry_backoff=True if backoff else False,
+            scheduled=int(time.time() + delay) if delay else 0,
+            key=_deterministic_job_key(name, kwargs) if unique else uuid.uuid4().hex,
+        )
+        return await self._queue_for(queue_name).enqueue(job)
 
     async def dispatch_delayed(
         self, name: str, kwargs: dict[str, Any] | None = None, delay: float = 1.0
-    ) -> None:
+    ) -> Any:
         """Enqueue a named job for execution ``delay`` seconds from now.
 
         Installed saq (0.26.4) holds a job until its ``scheduled`` field — an
@@ -429,18 +828,22 @@ class SaqQueue:
         (the worker's schedule sweep promotes jobs with
         ``1 <= scheduled <= now``), so the due time is ``now + delay``; a
         small relative value would fall in the past and fire immediately.
-        The Job is built explicitly rather than riding ``enqueue(kwargs=…)``
-        because enqueue hijacks any kwarg matching its Job dataclass fields
-        (timeout, ttl, kwargs…) into job properties, which would silently
-        drop handler arguments. The method-local ``Job`` import shadows the
-        @Job decorator on purpose — they share the name by saq's design.
+        The job carries the standard resolved envelope; returns the enqueued
+        Job (the handle a caller can poll).
         """
-        from saq.job import Job
-
         if name not in registry:
             raise ValueError(f"unknown job '{name}' — is it registered with @Job?")
-        job = Job(function=name, kwargs=dict(kwargs or {}), scheduled=int(time.time() + delay))
-        await self.queue.enqueue(job)
+        return await self._enqueue_saq(
+            name, dict(kwargs or {}), _resolve_envelope(registry[name], {}), delay=delay
+        )
+
+    async def job_status(self, key: str) -> str | None:
+        """The saq Job's status for ``key`` (its job id), None when unknown."""
+        job = await self.queue.job(key)
+        if job is None:
+            return None
+        status = getattr(job, "status", None)
+        return str(getattr(status, "value", status))
 
     async def clear(self) -> int:
         """Delete queued and scheduled jobs; running jobs are left alone.
@@ -490,15 +893,15 @@ class SaqQueue:
         """
         from saq import Worker
 
-        functions = [
-            (entry.name, _adapt_sa_handler(entry.fn)) for entry in registry.values()
-        ]
+        functions = [(entry.name, _adapt_sa_handler(entry.fn)) for entry in registry.values()]
         after_hooks = [_record_saq_failure, _check_restart_sentinel]
         caller_after = kwargs.pop("after_process", None)
         if caller_after is not None:
             # saq accepts a single callable or a collection — normalize to
             # the collection form and prepend.
-            after_hooks[:0] = list(caller_after) if isinstance(caller_after, Collection) else [caller_after]
+            after_hooks[:0] = (
+                list(caller_after) if isinstance(caller_after, Collection) else [caller_after]
+            )
         return Worker(
             self.queue,
             functions=functions,

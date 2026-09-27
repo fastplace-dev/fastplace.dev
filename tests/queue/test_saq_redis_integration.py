@@ -19,8 +19,8 @@ from fastplace.queue import (
     Job,
     SaqQueue,
     reset_queue,
-    restart_requested_at,
     reset_registry,
+    restart_requested_at,
     set_restart_sentinel,
 )
 

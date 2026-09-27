@@ -144,6 +144,28 @@ def test_unknown_queue_driver_fails(tmp_path, monkeypatch):
     assert "kafka" in out.lower() or "unknown" in out.lower()
 
 
+def test_defaults_row_shows_the_effective_envelope(tmp_path, monkeypatch):
+    """q1-G3 surfacing: one informational row shows the envelope every
+    undecorated dispatch would carry — env overrides visible at a glance."""
+    for key in ("QUEUE_TRIES", "QUEUE_TIMEOUT", "QUEUE_BACKOFF", "QUEUE_TTL"):
+        monkeypatch.delenv(key, raising=False)
+    _make_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli_app, ["queue:health"])
+
+    out = _out(result)
+    assert result.exit_code == 0, out
+    assert "defaults" in out
+    assert "retries=3" in out  # framework defaults
+    assert "timeout=60" in out
+
+    _make_project(tmp_path, monkeypatch, env_text="QUEUE_DRIVER=memory\nQUEUE_TRIES=5\n")
+    result = runner.invoke(cli_app, ["queue:health"])
+    out = _out(result)
+    assert result.exit_code == 0, out
+    assert "retries=5" in out  # env override surfaced
+
+
 def test_schedule_file_counts_tasks(tmp_path, monkeypatch, park_project_modules):  # noqa: F811 — fixture param
     """A loadable app/schedule.py with one task passes with the task count."""
     root = _make_project(tmp_path, monkeypatch)
