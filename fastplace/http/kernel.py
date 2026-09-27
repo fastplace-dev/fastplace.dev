@@ -437,7 +437,9 @@ def _error_page_override(
     try:
         if page.is_file():
             return Html(page.read_text(encoding="utf-8"), status_code=status_code, headers=headers)
-    except OSError:  # unreadable file — fall back to the framework page
+    except (OSError, ValueError):
+        # Unreadable file or bad encoding (UnicodeDecodeError is a
+        # ValueError) — fall back to the framework page.
         return None
     return None
 
@@ -463,6 +465,19 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
         retry_after = getattr(exc, "retry_after", None)
         if retry_after is not None:
             headers["Retry-After"] = str(retry_after)
+        from fastplace.http.error_pages import http_error_page, wants_html
+
+        # Validation keeps the 422 JSON envelope on every path — it is
+        # form data for the bridge/API and the no-JS redirect-back flow,
+        # not an error page. Other domain errors (403, 429, …) share the
+        # browser contract: app override first, framework page after.
+        if wants_html(request) and not isinstance(exc, ValidationError):
+            override = _error_page_override(root, exc.status_code, headers)
+            if override is not None:
+                return override
+            return http_error_page(
+                request, exc.status_code, exc.message, debug=debug, headers=headers
+            )
         return Json(payload, status_code=exc.status_code, headers=headers)
 
     @app.exception_handler(RequestValidationError)
@@ -502,7 +517,12 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
 
         # Browser navigations get a styled page (rich in debug, generic in
         # production); API clients and the SPA bridge keep the JSON contract.
+        # The app's own 500.html override wins in both modes — a branded
+        # error page is not debug output.
         if wants_html(request):
+            override = _error_page_override(root, 500, None)
+            if override is not None:
+                return override
             if debug:
                 return debug_error_page(request, exc)
             return production_error_page(request)
@@ -528,21 +548,34 @@ class CachedStaticFiles(StaticFiles):
     (manifest.json, robots.txt, un-hashed files) can change between
     deploys and gets a short revalidation window. Only successful file
     responses pass through here; 404s raise before a header is set.
+
+    ``immutable_prefix`` scopes the year-long policy: the build mount
+    hashes its ``assets/`` output, but the public-root mount serves Vite's
+    ``publicDir`` files un-hashed, so it passes ``None`` and everything
+    there revalidates after 5 minutes.
     """
 
     IMMUTABLE = "public, max-age=31536000, immutable"
     SHORT = "public, max-age=300"
 
+    def __init__(self, *args: Any, immutable_prefix: str | None = "assets", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # StaticFiles realpaths the directory when serving; without the
+        # matching resolve here, a symlinked project root makes every
+        # relative path fail the prefix check (all SHORT, no IMMUTABLE).
+        if self.directory is not None:
+            self.directory = Path(self.directory).resolve()
+        self.immutable_prefix = immutable_prefix
+
     def file_response(self, *args: Any, **kwargs: Any) -> Response:
         response = super().file_response(*args, **kwargs)
         full_path = args[0] if args else kwargs.get("full_path", "")
         relative = str(full_path).removeprefix(str(self.directory) + os.sep)
-        policy = (
-            self.IMMUTABLE
-            if relative.startswith(f"assets{os.sep}") or relative == "assets"
-            else self.SHORT
+        prefix = self.immutable_prefix
+        immutable = prefix is not None and (
+            relative.startswith(f"{prefix}{os.sep}") or relative == prefix
         )
-        response.headers["Cache-Control"] = policy
+        response.headers["Cache-Control"] = self.IMMUTABLE if immutable else self.SHORT
         return response
 
 
@@ -565,7 +598,9 @@ def _install_static_mounts(app: FastAPI, root: Path) -> None:
     if public_dir.is_dir():
         app.mount(
             "/",
-            CachedStaticFiles(directory=str(public_dir), check_dir=False),
+            # Public-root files (favicon, robots.txt, Vite publicDir copies)
+            # are un-hashed: never immutable, always revalidate quickly.
+            CachedStaticFiles(directory=str(public_dir), check_dir=False, immutable_prefix=None),
             name="public",
         )
 

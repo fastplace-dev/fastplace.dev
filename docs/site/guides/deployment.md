@@ -92,6 +92,16 @@ Serve compresses compressible responses over 1 KB with gzip for clients
 that accept it (streaming/SSE and binary types are excluded — the stream
 contract and the CPU budget both matter). There is nothing to configure.
 
+One residual risk to know about: gzip on responses that **reflect user
+input alongside secrets** enables BREACH-style compression-oracle attacks.
+The framework does not rate-limit or suppress reflected params because
+honest detection is unreliable; the standard mitigations are yours to
+apply where a page reflects request data (query strings, error messages)
+and also renders sensitive values (CSRF tokens, session identifiers,
+addresses) — avoid reflecting arbitrary user input on such pages, or
+randomize any secret rendered next to it. Pages without reflected input
+carry no such risk.
+
 Vite's content-hashed files under `/build/assets/` are served
 `Cache-Control: public, max-age=31536000, immutable`; everything else
 under `public/` revalidates after 5 minutes. Because filenames change on

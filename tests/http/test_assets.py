@@ -194,3 +194,57 @@ def test_public_root_files_get_short_cache(tmp_path):
     # Missing files carry no cache policy at all.
     assert missing.status_code == 404
     assert "cache-control" not in missing.headers
+
+
+def test_public_root_assets_dir_is_not_immutable(tmp_path):
+    """Only the build mount hashes its assets/.
+
+    Vite's publicDir copies files into the public root verbatim — a file
+    named ``assets/foo.js`` there can change between deploys, so it must
+    keep the short revalidation window, never the year-long policy.
+    """
+    from fastapi import FastAPI
+
+    from fastplace.http.kernel import _install_static_mounts
+
+    app = FastAPI()
+    copied = tmp_path / "public" / "assets" / "legacy.js"
+    copied.parent.mkdir(parents=True)
+    copied.write_text("// un-hashed publicDir copy\n")
+    _install_static_mounts(app, tmp_path)
+
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as client:
+        resp = client.get("/assets/legacy.js")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=300"
+
+
+def test_symlinked_project_root_still_gets_immutable_assets(tmp_path):
+    """resolve() keeps the prefix check working through a symlink.
+
+    StaticFiles realpaths the directory when serving; without a matching
+    resolve in CachedStaticFiles a symlinked checkout silently lost the
+    immutable policy on every hashed asset.
+    """
+    import os
+
+    from fastapi import FastAPI
+
+    from fastplace.http.kernel import CachedStaticFiles
+
+    real = tmp_path / "real-project" / "public" / "build"
+    (real / "assets").mkdir(parents=True)
+    (real / "assets" / "main-Ab12Cd.js").write_text("console.log('v1');")
+    link = tmp_path / "linked-project"
+    os.symlink(tmp_path / "real-project", link)
+
+    from starlette.testclient import TestClient
+
+    app = FastAPI()
+    app.mount("/build", CachedStaticFiles(directory=str(link / "public" / "build")))
+    with TestClient(app) as client:
+        resp = client.get("/build/assets/main-Ab12Cd.js")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"

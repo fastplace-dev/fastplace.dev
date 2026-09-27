@@ -71,38 +71,48 @@ def _spawn(command: list[str], *, cwd: Path | str, env: dict[str, str]) -> subpr
     )
 
 
+def _signal_group(pid: int, sig: int) -> None:
+    """Signal a process group; a no-op where the platform has no killpg."""
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:  # pragma: no cover — Windows
+        return
+    try:
+        killpg(pid, sig)  # pid == pgid thanks to _spawn
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def _terminate_tree(child: subprocess.Popen, *, grace: float = 5) -> None:
     """SIGTERM the child's whole process group, then SIGKILL stragglers."""
     import signal as _signal
 
     pid = getattr(child, "pid", None)
-    if isinstance(pid, int) and pid > 0:
-        try:
-            os.killpg(pid, _signal.SIGTERM)  # pid == pgid thanks to _spawn
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+    group = pid if isinstance(pid, int) and pid > 0 else None
+    if group is not None:
+        _signal_group(group, _signal.SIGTERM)
     try:
         child.terminate()
     except (ProcessLookupError, OSError):
         pass
     try:
         child.wait(timeout=grace)
-        return
     except subprocess.TimeoutExpired:
-        pass
-    if isinstance(pid, int) and pid > 0:
+        if group is not None:
+            _signal_group(group, _signal.SIGKILL)
         try:
-            os.killpg(pid, _signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+            child.kill()
+        except (ProcessLookupError, OSError):
             pass
-    try:
-        child.kill()
-    except (ProcessLookupError, OSError):
-        pass
-    try:
-        child.wait(timeout=grace)
-    except subprocess.TimeoutExpired:  # pragma: no cover — unkillable child
-        pass
+        try:
+            child.wait(timeout=grace)
+        except subprocess.TimeoutExpired:  # pragma: no cover — unkillable child
+            pass
+        return
+    # The leader exited on TERM, but descendants that ignored it keep the
+    # group alive holding ports — mop up unconditionally. ProcessLookupError
+    # (group already gone) is swallowed by _signal_group.
+    if group is not None:
+        _signal_group(group, _signal.SIGKILL)
 
 
 def _stop_children(children: list[subprocess.Popen]) -> None:
@@ -145,6 +155,16 @@ def _restore_signal_handlers(saved: tuple) -> None:
 # ---------------------------------------------------------------------------
 
 
+_ACK_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _env_ack(name: str) -> bool:
+    """Read an acknowledge-this-risk flag. Only explicit truthy values ack;
+    ``0``/``false``/``off`` (and unset) keep the guard enforced — a user
+    writing ``=0`` expects the safeguard, not a bypass."""
+    return os.environ.get(name, "").strip().lower() in _ACK_TRUTHY
+
+
 def _serve_preflight(workers: int) -> None:
     """Fail fast on configurations that boot but break under serve."""
     from fastplace.config import config
@@ -156,7 +176,7 @@ def _serve_preflight(workers: int) -> None:
     if (
         workers > 1
         and resolve_session_driver() == "memory"
-        and not os.environ.get("SESSION_ALLOW_MEMORY_MULTIWORKER")
+        and not _env_ack("SESSION_ALLOW_MEMORY_MULTIWORKER")
     ):
         raise ConfigurationError(
             f"serve refuses memory sessions with {workers} workers — each worker "
@@ -170,7 +190,7 @@ def _serve_preflight(workers: int) -> None:
     if (
         env == "production"
         and cache_driver == "memory"
-        and not os.environ.get("CACHE_ALLOW_MEMORY_IN_PRODUCTION")
+        and not _env_ack("CACHE_ALLOW_MEMORY_IN_PRODUCTION")
     ):
         # Same refusal the kernel raises at boot — surfaced here so a fresh
         # scaffold gets a clean CLI error instead of a worker crash loop.
@@ -223,39 +243,42 @@ def run_dev(
     env = {**os.environ, "VITE_DEV_URL": vite_url}
     env.pop("FASTPLACE_RUNTIME", None)
 
-    # dev_shell re-exports the project app but keeps answering (with a
-    # self-refreshing 503) while a broken import would otherwise hang the
-    # reloader's socket — see fastplace/http/dev_shell.py.
-    backend = _uvicorn_command(
-        "fastplace.http.dev_shell:app", "--reload", "--host", host, "--port", str(port)
-    )
-    children.append(_spawn(backend, cwd=_project_root(), env=env))
-
-    # Instant boundary feedback on save (blueprint §4): a third child
-    # re-runs `lint:modules` semantics on every app/**.py edit.
-    if not skip_lint:
-        fastplace = _fastplace_bin()
-        if fastplace:
-            console.print("  lint     → module boundaries re-checked on save")
-            children.append(_spawn([fastplace, "lint:watch"], cwd=_project_root(), env=env))
-        else:
-            console.print("[warning]fastplace CLI not found — skipping lint watcher.[/]")
-
-    if not skip_vite and (Path.cwd() / "package.json").exists():
-        npm = shutil.which("npm")
-        if npm:
-            children.append(
-                _spawn(
-                    [npm, "run", "dev"],
-                    cwd=_project_root(),
-                    env={**env, "PORT": vite_port},
-                )
-            )
-        else:
-            console.print("[warning]npm not found — skipping Vite dev server.[/]")
-
+    # Handlers go in BEFORE the first spawn: a TERM landing between spawn
+    # and install would kill the wrapper without the cleanup finally-block,
+    # orphaning every child tree.
     saved_signals = _install_signal_handlers()
     try:
+        # dev_shell re-exports the project app but keeps answering (with a
+        # self-refreshing 503) while a broken import would otherwise hang the
+        # reloader's socket — see fastplace/http/dev_shell.py.
+        backend = _uvicorn_command(
+            "fastplace.http.dev_shell:app", "--reload", "--host", host, "--port", str(port)
+        )
+        children.append(_spawn(backend, cwd=_project_root(), env=env))
+
+        # Instant boundary feedback on save (blueprint §4): a third child
+        # re-runs `lint:modules` semantics on every app/**.py edit.
+        if not skip_lint:
+            fastplace = _fastplace_bin()
+            if fastplace:
+                console.print("  lint     → module boundaries re-checked on save")
+                children.append(_spawn([fastplace, "lint:watch"], cwd=_project_root(), env=env))
+            else:
+                console.print("[warning]fastplace CLI not found — skipping lint watcher.[/]")
+
+        if not skip_vite and (Path.cwd() / "package.json").exists():
+            npm = shutil.which("npm")
+            if npm:
+                children.append(
+                    _spawn(
+                        [npm, "run", "dev"],
+                        cwd=_project_root(),
+                        env={**env, "PORT": vite_port},
+                    )
+                )
+            else:
+                console.print("[warning]npm not found — skipping Vite dev server.[/]")
+
         children[0].wait()
     except KeyboardInterrupt:
         pass
@@ -319,16 +342,25 @@ def serve(
     # The serve runtime marker: asset resolution keys on this, not APP_ENV,
     # so a local-env serve never emits dead localhost:5173 dev tags.
     env = {**os.environ, "FASTPLACE_RUNTIME": "serve"}
-    child = _spawn(command, cwd=_project_root(), env=env)
+
+    # Handlers go in BEFORE the spawn — same orphaning window as run dev.
     saved_signals = _install_signal_handlers()
+    child = _spawn(command, cwd=_project_root(), env=env)
+    exit_code = 0
     try:
         child.wait()
+        exit_code = child.returncode or 0
     except KeyboardInterrupt:
         _quiet_exit()
     finally:
         if child.poll() is None:
             _terminate_tree(child)
         _restore_signal_handlers(saved_signals)
+    # A supervised stop should read as success; any other child exit —
+    # crash, bind failure, bad config — propagates to the caller (systemd,
+    # deploy script) instead of always looking like 0.
+    if exit_code:
+        raise typer.Exit(code=exit_code)
 
 
 def _quiet_exit() -> None:

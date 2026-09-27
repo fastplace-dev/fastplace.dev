@@ -18,8 +18,7 @@ Behavior:
 from __future__ import annotations
 
 import gzip
-import io
-from typing import Any
+from typing import Any, cast
 
 # Media types worth compressing. Anything binary (png, woff2, mp4, …) is
 # excluded on purpose: already-compressed payloads grow slightly and burn
@@ -41,6 +40,28 @@ _COMPRESSIBLE_TYPES = {
 _NO_BODY_STATUSES = frozenset({204, 304})
 
 _DECIDING, _PASSTHROUGH, _COMPRESSING = "deciding", "passthrough", "compressing"
+
+
+class _GzipSink:
+    """Write target for ``GzipFile`` that forgets what it hands over.
+
+    ``drain()`` returns and clears the buffered batch, so per-flush cost is
+    proportional to the new bytes only. A plain ``BytesIO`` here forces
+    ``getvalue()`` (full-payload copy) every flush — quadratic time and
+    unbounded retention for long streams.
+    """
+
+    def __init__(self) -> None:
+        self._chunks: list[bytes] = []
+
+    def write(self, data: bytes) -> int:
+        self._chunks.append(bytes(data))
+        return len(data)
+
+    def drain(self) -> bytes:
+        out = b"".join(self._chunks)
+        self._chunks.clear()
+        return out
 
 
 class CompressionMiddleware:
@@ -86,8 +107,7 @@ class _CompressingResponder:
         self._candidate = False
         self._buffer = bytearray()
         self._gzip: gzip.GzipFile | None = None
-        self._gzip_buf: io.BytesIO | None = None
-        self._gzip_sent = 0
+        self._gzip_sink: _GzipSink | None = None
 
     async def __call__(self, message: dict[str, Any]) -> None:
         if message["type"] == "http.response.start":
@@ -152,13 +172,29 @@ class _CompressingResponder:
 
     async def _begin_compression(self) -> None:
         assert self._start is not None
+        # Merge, never clobber: the app may have set `Vary: X-Fastplace-Request`
+        # (bridge responses do) — dropping that token would let a shared cache
+        # serve the JSON payload to a browser navigation.
+        vary_tokens: list[str] = []
+        for key, value in self._start.get("headers") or []:
+            if key.lower() == b"vary":
+                vary_tokens.extend(
+                    token.strip() for token in value.decode("latin-1").split(",") if token.strip()
+                )
+        vary_tokens.append("Accept-Encoding")
+        seen: set[str] = set()
+        merged: list[str] = []
+        for token in vary_tokens:
+            if token.lower() not in seen:
+                seen.add(token.lower())
+                merged.append(token)
         headers = [
             (key, value)
             for key, value in self._start.get("headers") or []
             if key.lower() not in (b"content-length", b"content-encoding", b"vary")
         ]
         headers.append((b"content-encoding", b"gzip"))
-        headers.append((b"vary", b"Accept-Encoding"))
+        headers.append((b"vary", ", ".join(merged).encode("latin-1")))
         self._start["headers"] = headers
         self._mode = _COMPRESSING
         await self._send(self._start)
@@ -167,20 +203,21 @@ class _CompressingResponder:
         chunk = self._gzip_write(data)
         if not more and self._gzip is not None:
             self._gzip.close()
-            chunk += self._gzip_buf.getvalue()[self._gzip_sent :]  # type: ignore[union-attr]
+            assert self._gzip_sink is not None
+            chunk += self._gzip_sink.drain()
         await self._send({"type": "http.response.body", "body": chunk, "more_body": more})
 
     def _gzip_write(self, data: bytes) -> bytes:
         if self._gzip is None:
-            self._gzip_buf = io.BytesIO()
+            self._gzip_sink = _GzipSink()
+            # Duck-typed write target — typeshed demands IO[bytes], the
+            # gzip module only ever calls .write() on it.
+            fileobj = cast(Any, self._gzip_sink)
             self._gzip = gzip.GzipFile(
                 mode="wb",
                 compresslevel=self._compresslevel,
-                fileobj=self._gzip_buf,
+                fileobj=fileobj,
             )
         self._gzip.write(data)
-        assert self._gzip_buf is not None
-        out = self._gzip_buf.getvalue()
-        fresh = out[self._gzip_sent :]
-        self._gzip_sent = len(out)
-        return fresh
+        assert self._gzip_sink is not None
+        return self._gzip_sink.drain()

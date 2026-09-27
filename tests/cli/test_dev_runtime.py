@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -35,8 +36,10 @@ class _FakeProc:
         self.env = env
         self.pid = None  # fake: no real process group to signal
         self.terminated = False
+        self.returncode = 0
 
     def wait(self, timeout=None):  # noqa: ARG002 — signature parity
+        self.returncode = 0
         return 0
 
     def poll(self):
@@ -68,6 +71,7 @@ def spawned(monkeypatch, tmp_path):
     (root / "config").mkdir(parents=True)
     (root / "config" / "app.py").write_text("APP_NAME = 'W3'\n")
     (root / ".env").write_text("")
+    original_cwd = Path.cwd()
     monkeypatch.chdir(root)
 
     # Fake interpreter + fastplace console script (spawned-fixture idiom
@@ -88,7 +92,9 @@ def spawned(monkeypatch, tmp_path):
     yield box
     os.environ.clear()
     os.environ.update(saved_env)
-    reset_config()
+    # Rebind config to the real checkout, not the (soon-vanishing) tmp
+    # project — monkeypatch.chdir is undone only after this teardown.
+    reset_config(original_cwd)
     monkeypatch.setattr(sys, "executable", original_executable)
 
 
@@ -147,6 +153,15 @@ def test_serve_allows_memory_sessions_with_ack_env(spawned):
     assert any("uvicorn" in cmd for cmd in spawned.commands)
 
 
+def test_serve_ack_flag_zero_still_refuses(spawned):
+    # `=0` must mean "keep the guard", not the old any-nonempty bypass.
+    _write_env(spawned, "APP_ENV=local\nSESSION_ALLOW_MEMORY_MULTIWORKER=0\n")
+    result = runner.invoke(cli_app, ["serve", "--skip-build", "--workers", "2"])
+    assert result.exit_code == 1
+    assert "SESSION_DRIVER" in result.output
+    assert not any("uvicorn" in cmd for cmd in spawned.commands)
+
+
 def test_serve_memory_session_single_worker_allowed(spawned):
     _write_env(spawned, "APP_ENV=local\n")
     result = runner.invoke(cli_app, ["serve", "--skip-build", "--workers", "1"])
@@ -181,6 +196,17 @@ def test_serve_allows_memory_cache_in_production_with_ack(spawned):
     result = runner.invoke(cli_app, ["serve", "--skip-build", "--workers", "1"])
     assert result.exit_code == 0, result.output
     assert any("uvicorn" in cmd for cmd in spawned.commands)
+
+
+def test_serve_cache_ack_flag_zero_still_refuses(spawned):
+    _write_env(
+        spawned,
+        "APP_ENV=production\nAPP_KEY=" + "k" * 48 + "\nCACHE_ALLOW_MEMORY_IN_PRODUCTION=off\n",
+    )
+    result = runner.invoke(cli_app, ["serve", "--skip-build", "--workers", "1"])
+    assert result.exit_code == 1
+    assert "CACHE_DRIVER" in result.output
+    assert not any("uvicorn" in cmd for cmd in spawned.commands)
 
 
 def test_serve_allows_database_cache_in_production(spawned):
@@ -261,6 +287,32 @@ def test_serve_proxy_headers_on_by_default(spawned):
     # uvicorn's own default is proxy-headers on; the CLI stays out of the way.
     assert "--no-proxy-headers" not in serve_cmd
     assert "--forwarded-allow-ips" not in serve_cmd
+
+
+def test_serve_propagates_child_exit_code(spawned, monkeypatch):
+    # A crashed uvicorn must fail the serve command itself — systemd and
+    # deploy scripts key on the wrapper's exit code, not the child's.
+    _write_env(spawned, "APP_ENV=local\nSESSION_DRIVER=database\n")
+    monkeypatch.setattr(
+        "fastplace.cli.dev._spawn",
+        lambda *a, **k: SimpleNamespace(
+            pid=None, returncode=3, wait=lambda timeout=None: 3, poll=lambda: 0
+        ),
+    )
+    result = runner.invoke(cli_app, ["serve", "--skip-build", "--workers", "1"])
+    assert result.exit_code == 3
+
+
+def test_serve_clean_child_exit_is_success(spawned, monkeypatch):
+    _write_env(spawned, "APP_ENV=local\nSESSION_DRIVER=database\n")
+    monkeypatch.setattr(
+        "fastplace.cli.dev._spawn",
+        lambda *a, **k: SimpleNamespace(
+            pid=None, returncode=0, wait=lambda timeout=None: 0, poll=lambda: 0
+        ),
+    )
+    result = runner.invoke(cli_app, ["serve", "--skip-build", "--workers", "1"])
+    assert result.exit_code == 0, result.output
 
 
 # --- child-tree supervision (supp-2-G1 / serve-G3) ---------------------------

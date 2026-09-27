@@ -25,8 +25,18 @@ def routes() -> Router:
 
         raise HTTPException(status_code=418, detail="teapot", headers={"Retry-After": "7"})
 
+    async def forbidden(request):  # noqa: ANN001
+        from fastplace.errors import AuthorizationError
+
+        raise AuthorizationError("not allowed")
+
+    async def boom(request):  # noqa: ANN001
+        raise RuntimeError("kaboom")
+
     r.get("/ping", ping)
     r.get("/teapot", teapot)
+    r.get("/forbidden", forbidden)
+    r.get("/boom", boom)
     return r
 
 
@@ -117,3 +127,56 @@ async def test_app_override_page_wins(routes, tmp_path, monkeypatch):
         resp = await c.get("/definitely-not-here", headers={"Accept": "text/html"})
     assert resp.status_code == 404
     assert "gone fishing" in resp.text
+
+
+async def test_fastplace_error_html_gets_styled_page(client):
+    """Domain errors share the browser contract — HTML page, not JSON blob."""
+    html_resp = await client.get("/forbidden", headers={"Accept": "text/html"})
+    assert html_resp.status_code == 403
+    assert html_resp.headers["content-type"].startswith("text/html")
+    assert "not allowed" in html_resp.text
+    assert "403" in html_resp.text.split("</title>")[0]
+
+    json_resp = await client.get("/forbidden", headers={"Accept": "application/json"})
+    assert json_resp.status_code == 403
+    assert json_resp.json() == {"message": "not allowed"}
+
+
+async def test_fastplace_error_override_page_wins(routes, tmp_path, monkeypatch):
+    (tmp_path / "public" / "errors").mkdir(parents=True)
+    (tmp_path / "public" / "errors" / "403.html").write_text(
+        "<!doctype html><html lang='en'><title>denied override</title></html>"
+    )
+    monkeypatch.chdir(tmp_path)
+    lifecycle.reset()
+    app = get_app(routes=routes, config={"APP_DEBUG": False}, project_root=tmp_path)
+    import httpx
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/forbidden", headers={"Accept": "text/html"})
+    assert resp.status_code == 403
+    assert "denied override" in resp.text
+
+
+async def test_unhandled_exception_500_override_wins_even_in_debug(routes, tmp_path, monkeypatch):
+    """public/errors/500.html outranks both debug and production pages.
+
+    A branded 500 page is app content, not debug output — developers who
+    shipped one expect it in every mode.
+    """
+    (tmp_path / "public" / "errors").mkdir(parents=True)
+    (tmp_path / "public" / "errors" / "500.html").write_text(
+        "<!doctype html><html lang='en'><title>our bad (override)</title></html>"
+    )
+    monkeypatch.chdir(tmp_path)
+    lifecycle.reset()
+    app = get_app(routes=routes, config={"APP_DEBUG": True}, project_root=tmp_path)
+    import httpx
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/boom", headers={"Accept": "text/html"})
+    assert resp.status_code == 500
+    assert "our bad (override)" in resp.text
+    assert "RuntimeError" not in resp.text

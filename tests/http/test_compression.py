@@ -146,10 +146,45 @@ def test_streamed_large_body_compression_stays_complete():
     with _client_with(routes) as client:
         resp = client.get("/stream", headers={"Accept-Encoding": "gzip"})
     expected = (BIG + "\n") * 10
-    if resp.headers.get("content-encoding") == "gzip":
-        assert resp.text == expected
-    else:  # threshold buffering may pass short streams through — still correct
-        assert resp.text == expected
+    # The whole body crosses the threshold on chunk 1 — compression must
+    # commit, not quietly fall back to identity.
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert resp.text == expected
+
+
+def test_compression_merges_app_set_vary_tokens():
+    # render() marks bridge responses `Vary: X-Fastplace-Request`; the
+    # middleware must add Accept-Encoding alongside, never clobber it —
+    # dropping it would let a shared cache serve a bridge JSON payload to
+    # a browser navigation.
+    routes = Router()
+
+    async def page(request):  # noqa: ANN001
+        return Html(BIG, headers={"Vary": "X-Fastplace-Request"})
+
+    routes.get("/page", page)
+    with _client_with(routes) as client:
+        resp = client.get("/page", headers={"Accept-Encoding": "gzip"})
+    assert resp.headers.get("content-encoding") == "gzip"
+    vary = resp.headers.get("vary", "")
+    tokens = {token.strip().lower() for token in vary.split(",")}
+    assert "accept-encoding" in tokens
+    assert "x-fastplace-request" in tokens
+
+
+def test_gzip_sink_drains_bounded():
+    # The compressor's write target must hand back and forget each batch —
+    # a getvalue()-per-chunk design re-copies the whole payload every flush
+    # (quadratic) and retains it all (unbounded).
+    from fastplace.http.compression import _GzipSink
+
+    sink = _GzipSink()
+    sink.write(b"abc")
+    sink.write(b"de")
+    assert sink.drain() == b"abcde"
+    sink.write(b"fg")
+    assert sink.drain() == b"fg"
+    assert sink.drain() == b""
 
 
 def test_middleware_works_standalone():
