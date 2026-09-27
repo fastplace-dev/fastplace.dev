@@ -684,6 +684,57 @@ def _append_ann_index(cls: type, column_name: str, field: Any, url: str) -> None
     )
 
 
+def _apply_mysql_table_defaults(cls: type, url: str) -> None:
+    """Pin InnoDB + utf8mb4 on MySQL tables (charset survives server defaults).
+
+    A database created with a latin1 (or other non-utf8mb4) server default
+    would hand every framework table that charset, silently truncating
+    non-ASCII text. The framework declares sane DDL defaults instead; the
+    model's own ``__table_args__`` entries always win, and DATABASE_CHARSET
+    / DATABASE_COLLATION re-pin globally.
+    """
+    if not url.startswith(("mysql", "mariadb")):
+        return
+    from fastplace.config import config
+
+    charset = str(config("DATABASE_CHARSET", default="utf8mb4"))
+    collation = config("DATABASE_COLLATION", default=None)
+    if collation is None:
+        # unicode_ci is the portable pick — MariaDB does not know MySQL 8's
+        # utf8mb4_0900_ai_ci, so the framework default must work on both.
+        collation = f"{charset}_unicode_ci"
+    defaults = {
+        "mysql_engine": "InnoDB",
+        "mysql_charset": charset,
+        # mysql_collate (not mysql_collation): SQLAlchemy renders the latter
+        # as the ``COLLATION=`` table option, which MariaDB 13 rejects —
+        # ``mysql_collate`` renders the portable ``COLLATE`` spelling that
+        # MySQL and MariaDB both accept.
+        "mysql_collate": str(collation),
+    }
+
+    existing = getattr(cls, "__table_args__", None)
+
+    def _merged(table_args: Any) -> Any:
+        # A user-supplied collation (either spelling) must not end up beside
+        # the framework default — the server would receive two collations.
+        user_dict = table_args[-1] if isinstance(table_args[-1], dict) else {}
+        if "mysql_collation" in user_dict or "mysql_collate" in user_dict:
+            fill = {k: v for k, v in defaults.items() if not k.startswith("mysql_coll")}
+        else:
+            fill = defaults
+        return {**fill, **user_dict}
+
+    if existing is None:
+        cls.__table_args__ = dict(defaults)  # type: ignore[attr-defined]
+    elif isinstance(existing, tuple) and existing and isinstance(existing[-1], dict):
+        cls.__table_args__ = (*existing[:-1], _merged(existing))  # type: ignore[attr-defined]
+    elif isinstance(existing, tuple):
+        cls.__table_args__ = (*existing, dict(defaults))  # type: ignore[attr-defined]
+    else:
+        cls.__table_args__ = _merged((existing,))  # type: ignore[attr-defined]
+
+
 def _transform_declarative_fields(cls: type) -> None:
     """Rewrite Fastplace-style annotations into SQLAlchemy Mapped columns."""
     import sys
@@ -876,6 +927,7 @@ def _transform_declarative_fields(cls: type) -> None:
 
     cls.__annotations__ = resolved_annotations
     cls.__tablename__ = tablename  # type: ignore[attr-defined]
+    _apply_mysql_table_defaults(cls, url)
 
 
 def _replace_superseded_declaration(cls: type) -> None:
