@@ -151,3 +151,30 @@ def test_mysql_vector_column_keeps_table_defaults_without_index(monkeypatch):
 
     assert list(Chunk.__table__.indexes) == []
     assert Chunk.__table__.dialect_kwargs["mysql_charset"] == "utf8mb4"
+
+
+def test_user_charset_without_collation_drops_the_default_collation(monkeypatch):
+    """A lone charset override must not pair with the default's collation.
+
+    ``mysql_charset=latin1`` beside the framework's ``mysql_collate=
+    utf8mb4_unicode_ci`` is a pair the server rejects (COLLATION is not
+    valid for CHARACTER SET) — the default collation belongs to the
+    default charset only. With no user collation, the server picks the
+    overriding charset's own default.
+    """
+    from fastplace.orm import Field, Model
+
+    _mysql_url(monkeypatch)
+
+    class Doc(Model):
+        __tablename__ = "w2_charset_lone_charset"
+        __table_args__ = {"mysql_charset": "latin1"}
+
+        title: str = Field(default="")
+
+    kwargs = Doc.__table__.dialect_kwargs
+    assert kwargs["mysql_charset"] == "latin1"
+    assert "mysql_collate" not in kwargs
+    assert "mysql_collation" not in kwargs
+    # The untouched knobs still fill.
+    assert kwargs["mysql_engine"] == "InnoDB"

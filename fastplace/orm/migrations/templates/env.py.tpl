@@ -130,10 +130,16 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    connect_args: dict = {}
+    if database_url.startswith(("mysql", "mariadb")):
+        # Same pin as the runtime engine: a latin1-default server would
+        # mangle non-ASCII data inside hand-written data migrations.
+        connect_args["charset"] = str(config("DATABASE_CHARSET", default="utf8mb4"))
     connectable = async_engine_from_config(
         alembic_config.get_section(alembic_config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     async with connectable.connect() as connection:

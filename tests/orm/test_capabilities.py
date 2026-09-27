@@ -11,16 +11,19 @@ from fastplace.orm.capabilities import CAPABILITY_GROUPS
 
 
 def test_mongodb_claims_only_wired_capabilities():
-    """The Mongo document adapter serves JSON documents and transactions —
-    but the framework emits no ``$vectorSearch`` (Atlas-only, never
-    self-hosted) and no ``$text`` query, so those must stay False."""
+    """The Mongo document adapter serves JSON documents — and that is all.
+
+    No session/transaction API and no read-preference wiring exist on the
+    Document surface, so those stay False alongside the queries the
+    framework never emits (``$vectorSearch`` is Atlas-only, ``$text``
+    unused). A True here would pass the supports() gate into code that
+    has no Mongo path at all.
+    """
     mongo = CAPABILITY_GROUPS["mongodb"]
     assert mongo["json"] is True
     assert mongo["json_path"] is True
-    assert mongo["transactions"] is True
-    assert mongo["read_replicas"] is True
-    # Claimed-but-unwired capabilities would pass the supports() gate and
-    # then fail inside code that has no Mongo path at all.
+    assert mongo["transactions"] is False
+    assert mongo["read_replicas"] is False
     assert mongo["vector"] is False
     assert mongo["similarity_search"] is False
     assert mongo["full_text"] is False

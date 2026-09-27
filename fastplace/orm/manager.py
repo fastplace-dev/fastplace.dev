@@ -221,6 +221,9 @@ class DatabaseManager:
             # the classic case) — verify liveness on checkout so a pooled
             # socket is never handed out dead.
             kwargs["pool_pre_ping"] = True
+            for key in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle"):
+                if key in cfg:
+                    kwargs[key] = int(cfg[key])
         if url.startswith(("mysql", "mariadb")):
             # Pin the connection charset — a server defaulting to latin1
             # would silently mangle anything outside ASCII (emoji, Bengali)
@@ -230,9 +233,6 @@ class DatabaseManager:
             kwargs.setdefault("connect_args", {})["charset"] = str(
                 config("DATABASE_CHARSET", default="utf8mb4")
             )
-            for key in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle"):
-                if key in cfg:
-                    kwargs[key] = int(cfg[key])
 
         engine = create_async_engine(url, **kwargs)
         from fastplace.orm.instrumentation import install_instrumentation

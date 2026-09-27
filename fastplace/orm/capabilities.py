@@ -61,7 +61,10 @@ CAPABILITY_GROUPS: dict[str, dict[str, bool]] = {
         "row_level_security": False,  # never claim PostgreSQL-style RLS
     },
     "mongodb": {
-        "transactions": True,
+        # The document adapter exposes no session/transaction surface and
+        # no read-preference wiring — claiming either would pass the
+        # supports() gate into code that has no Mongo path at all.
+        "transactions": False,
         "foreign_keys": False,
         "joins": False,
         "window_functions": False,
@@ -77,7 +80,7 @@ CAPABILITY_GROUPS: dict[str, dict[str, bool]] = {
         "vector": False,
         "similarity_search": False,
         "advisory_locks": False,
-        "read_replicas": True,
+        "read_replicas": False,
         "row_level_security": False,
     },
 }

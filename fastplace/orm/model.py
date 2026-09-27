@@ -672,10 +672,14 @@ def _append_ann_index(cls: type, column_name: str, field: Any, url: str) -> None
         if algorithm == "hnsw"
         else {"lists": field.lists}
     )
+    # This runs inside the column pass, BEFORE the auto-derived tablename is
+    # assigned (that happens after both passes) — read the name the same way
+    # the assignment will compute it, never cls.__tablename__.
+    table = cls.__dict__.get("__tablename__") or _plural(_snake(cls.__name__))
     _append_table_arg(
         cls,
         Index(
-            f"ix_{cls.__tablename__}_{column_name}",  # type: ignore[attr-defined]
+            f"ix_{table}_{column_name}",
             column_name,
             postgresql_using=algorithm,
             postgresql_ops={column_name: _VECTOR_OPS[field.distance]},
@@ -719,10 +723,15 @@ def _apply_mysql_table_defaults(cls: type, url: str) -> None:
         # A user-supplied collation (either spelling) must not end up beside
         # the framework default — the server would receive two collations.
         user_dict = table_args[-1] if isinstance(table_args[-1], dict) else {}
+        fill = dict(defaults)
         if "mysql_collation" in user_dict or "mysql_collate" in user_dict:
-            fill = {k: v for k, v in defaults.items() if not k.startswith("mysql_coll")}
-        else:
-            fill = defaults
+            fill = {k: v for k, v in fill.items() if not k.startswith("mysql_coll")}
+        elif str(user_dict.get("mysql_charset", charset)) != charset:
+            # A lone charset override must not inherit the default charset's
+            # collation either — utf8mb4_unicode_ci beside CHARSET=latin1 is
+            # a pair the server rejects. Let the server pick that charset's
+            # own collation.
+            fill.pop("mysql_collate")
         return {**fill, **user_dict}
 
     if existing is None:

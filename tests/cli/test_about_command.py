@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 # Autouse fixture: clean db/model/module state per test (see _isolation.py).
@@ -11,6 +13,12 @@ from typer.testing import CliRunner
 from fastplace.cli import app as cli_app
 
 runner = CliRunner()
+
+# Captured at import time, before any test in this module can run: the
+# canary below must detect NEW environ writes, not flag values the
+# operator's shell already exported into the pytest process (and not
+# miss a leak that happens to overwrite a value with itself).
+_BASELINE = {name: os.environ.get(name) for name in ("DATABASE_URL", "DATABASE_DRIVER", "APP_NAME")}
 
 
 @pytest.fixture()
@@ -55,8 +63,11 @@ def test_about_env_file_values_do_not_leak_into_later_tests(project):
 
 
 def test_no_database_url_leaks_between_cli_tests():
-    """Runs after the leaker above: the process environ must be clean."""
-    import os
+    """Runs after the leaker above: the process environ must be unchanged.
 
-    assert os.environ.get("DATABASE_URL") is None
-    assert os.environ.get("DATABASE_DRIVER") is None
+    Compares against the import-time baseline rather than None — a shell
+    that exported DATABASE_URL into pytest would otherwise make this
+    canary fail for the wrong reason (or pass while masking nothing).
+    """
+    for name, baseline in _BASELINE.items():
+        assert os.environ.get(name) == baseline, f"{name} leaked between CLI tests"

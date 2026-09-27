@@ -102,3 +102,32 @@ def test_sqlite_memory_keeps_single_connection_pool(monkeypatch):
     engine = manager.engine("default")
     assert engine.pool.size() == 1
     assert engine.pool._max_overflow == 0  # type: ignore[attr-defined]
+
+
+def test_postgresql_engine_honors_pool_tuning():
+    """Pool sizing applies to every server backend, not MySQL alone.
+
+    The charset commit nested the pool-key loop inside the mysql-only
+    branch — a PostgreSQL deployment then silently fell back to
+    SQLAlchemy defaults (5+10) whatever DATABASE_POOL_SIZE said.
+    """
+    pytest.importorskip("asyncpg", reason="postgresql driver lives in an optional extra")
+    from fastplace.orm.manager import DatabaseManager
+
+    manager = DatabaseManager(
+        {
+            "default": {
+                "driver": "postgresql",
+                "url": "postgresql+asyncpg://u:p@localhost/app",
+                "pool_size": 7,
+                "max_overflow": 4,
+                "pool_timeout": 11,
+                "pool_recycle": 600,
+            }
+        }
+    )
+    engine = manager.engine("default")
+    assert engine.pool.size() == 7
+    assert engine.pool._max_overflow == 4  # type: ignore[attr-defined]
+    assert engine.pool._timeout == 11  # type: ignore[attr-defined]
+    assert engine.pool._recycle == 600  # type: ignore[attr-defined]

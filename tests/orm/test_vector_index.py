@@ -180,3 +180,23 @@ async def test_vector_search_capability_gate_still_first_for_valid_metric(monkey
 
     with pytest.raises(SearchCapabilityMissing):
         await Chunk.vector_search([0.1, 0.2, 0.3], metric="l2")
+
+
+def test_vector_index_with_auto_derived_tablename(monkeypatch):
+    """The framework default (no explicit ``__tablename__``) must not crash.
+
+    The ANN index is appended while columns are still being declared —
+    before the auto-derived tablename is assigned — so deriving the name
+    must not read ``cls.__tablename__`` (AttributeError at import time on
+    every model that omits it, the documented default style).
+    """
+    from fastplace.orm import Model, VectorField
+
+    _pg_url(monkeypatch)
+
+    class AutoChunk(Model):
+        embedding: list[float] = VectorField(dimensions=3, index=True)
+
+    assert AutoChunk.__tablename__ == "auto_chunks"
+    index = _indexes(AutoChunk.__table__)["ix_auto_chunks_embedding"]
+    assert _pg_options(index)["using"] == "hnsw"

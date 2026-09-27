@@ -217,3 +217,27 @@ def test_no_mongodb_url_leaves_the_relational_export_alone(seeded, monkeypatch):
     result = runner.invoke(cli_app, ["db:export"])
     assert result.exit_code == 0, result.output
     assert "mongodump" not in _out(result)
+
+
+def test_relational_report_survives_a_mongodump_failure(seeded, monkeypatch):
+    """A failed Mongo dump must not swallow the relational export report.
+
+    The relational backup exists on disk before the document-store leg
+    runs; the operator must see its path even when that second leg dies.
+    """
+    monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017/appdb")
+
+    def fake_run(argv, **kwargs):
+        class _Result:
+            def __init__(self, code):
+                self.returncode = code
+                self.stderr = b"connection refused"
+
+        return _Result(1) if argv[0] == "mongodump" else _Result(0)
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    out = _out(result)
+    assert result.exit_code == 1  # the failed dump is still an error
+    assert "sqlite-" in out  # ...but the relational report printed first
+    assert "exported" in out

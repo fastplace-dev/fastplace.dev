@@ -544,7 +544,13 @@ def db_export() -> None:
 
     url = str(db.manager.config_for("default")["url"])
     family = _driver_family(url)
-    exported: list[Path] = []
+
+    def _record(dest: Path) -> None:
+        # Report each artifact the moment it lands: a later leg dying
+        # (mongodump failing after the relational dump succeeded) must
+        # not swallow the report of what IS safely on disk.
+        size = dest.stat().st_size if dest.is_file() else _dir_size(dest)
+        console.print(f"[green]exported[/] — {escape(str(dest))} ({size} bytes)")
 
     if family == "sqlite":
         dest = _backup_path(backups, "sqlite", "sqlite3")
@@ -561,7 +567,7 @@ def db_export() -> None:
             await engine.dispose()
 
         asyncio.run(_vacuum())
-        exported.append(dest)
+        _record(dest)
     elif family == "postgresql":
         dest = _backup_path(backups, "postgresql", "sql")
         uri, password = _pg_target(url)
@@ -569,7 +575,7 @@ def db_export() -> None:
             ["pg_dump", uri, "--file", str(dest)],
             env={"PGPASSWORD": password} if password else None,
         )
-        exported.append(dest)
+        _record(dest)
     elif family in ("mysql", "mariadb"):
         dest = _backup_path(backups, family, "sql")
         password = urlsplit(url).password
@@ -579,7 +585,7 @@ def db_export() -> None:
                 stdout=sink,
                 env={"MYSQL_PWD": password} if password else None,
             )
-        exported.append(dest)
+        _record(dest)
     elif family != "mongodb":
         console.print(f"[red]no export strategy for driver '{escape(family)}'[/]")
         raise typer.Exit(code=1)
@@ -589,13 +595,9 @@ def db_export() -> None:
     # is itself a Mongo URL (single-store project) covers the legacy case.
     mongo_url = str(config("MONGODB_URL", default="") or "")
     if mongo_url:
-        exported.append(_export_documents(backups, mongo_url))
+        _record(_export_documents(backups, mongo_url))
     elif family == "mongodb":
-        exported.append(_export_documents(backups, url))
-
-    for dest in exported:
-        size = dest.stat().st_size if dest.is_file() else _dir_size(dest)
-        console.print(f"[green]exported[/] — {escape(str(dest))} ({size} bytes)")
+        _record(_export_documents(backups, url))
 
 
 #: (driver module, fastplace extra) per connection family. sqlite ships with

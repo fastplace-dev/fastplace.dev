@@ -573,6 +573,27 @@ def test_env_template_binds_async_drivers(project):
     assert "normalize_database_url" in env_py
 
 
+def test_env_template_pins_mysql_charset_on_the_migration_engine(project):
+    """Data migrations ride the same charset pin as the runtime engine.
+
+    A hand-written data migration on a latin1-default server would mangle
+    every non-ASCII value it touches — the pin must reach Alembic's engine
+    too, not just the runtime DatabaseManager.
+    """
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    env_py = (project / "database" / "migrations" / "env.py").read_text()
+    assert "DATABASE_CHARSET" in env_py
+    assert "connect_args" in env_py
+
+
+def test_env_template_loads_the_project_env_file(project):
+    """A bare ``alembic upgrade`` (no fastplace CLI) still resolves .env —
+    the belt-and-braces load the env-wiring commit relies on."""
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    env_py = (project / "database" / "migrations" / "env.py").read_text()
+    assert "load_env" in env_py
+
+
 def test_config_version_locations_is_absolute(project, monkeypatch):
     """version_locations must resolve regardless of process CWD.
 
