@@ -43,8 +43,10 @@ export default function ResetPassword() {
                 defaultValue={email}
                 className="mt-1 block w-full"
                 readOnly
+                aria-describedby={errors.email ? "email-error" : undefined}
+                aria-invalid={errors.email ? true : undefined}
               />
-              <InputError message={errors.email?.[0]} className="mt-2" />
+              <InputError id="email-error" message={errors.email?.[0]} className="mt-2" />
             </div>
 
             <div className="grid gap-2">
@@ -57,8 +59,10 @@ export default function ResetPassword() {
                 autoFocus
                 placeholder="Password"
                 passwordrules={rules}
+                aria-describedby={errors.password ? "password-error" : undefined}
+                aria-invalid={errors.password ? true : undefined}
               />
-              <InputError message={errors.password?.[0]} />
+              <InputError id="password-error" message={errors.password?.[0]} />
             </div>
 
             <div className="grid gap-2">
@@ -70,8 +74,15 @@ export default function ResetPassword() {
                 className="mt-1 block w-full"
                 placeholder="Confirm password"
                 passwordrules={rules}
+                aria-describedby={
+                  errors.password_confirmation ? "password_confirmation-error" : undefined
+                }
+                aria-invalid={errors.password_confirmation ? true : undefined}
               />
-              <InputError message={errors.password_confirmation?.[0]} />
+              <InputError
+                id="password_confirmation-error"
+                message={errors.password_confirmation?.[0]}
+              />
             </div>
 
             <Button

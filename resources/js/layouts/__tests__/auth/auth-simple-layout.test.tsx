@@ -35,7 +35,9 @@ describe("AuthSimpleLayout", () => {
   it("renders the logo icon inside a link to the home page", () => {
     const { container } = renderLayout({ title: "Sign in" });
 
-    const link = screen.getByRole("link");
+    // The logo link's accessible name comes from its sr-only title span —
+    // pin it by name so the skip link (also a link) doesn't collide.
+    const link = screen.getByRole("link", { name: "Sign in" });
     expect(link).toHaveAttribute("href", "/");
     expect(link.querySelector("svg")).not.toBeNull();
     expect(link.querySelector("span.sr-only")).toHaveTextContent("Sign in");
@@ -48,5 +50,21 @@ describe("AuthSimpleLayout", () => {
     const form = container.querySelector("form");
     expect(form).not.toBeNull();
     expect(form).toHaveTextContent("form-body");
+  });
+
+  it("wraps the card in a main landmark targeted by a skip link (a11y1-G2)", () => {
+    const { container } = renderLayout({ title: "Sign in", children: <form>form-body</form> });
+
+    const main = container.querySelector("main");
+    const form = container.querySelector("form");
+    expect(main).not.toBeNull();
+    expect(main).toHaveAttribute("id", "main-content");
+    expect(main).toContainElement(form as HTMLElement);
+
+    const skip = screen.getByRole("link", { name: "Skip to content" });
+    expect(skip).toHaveAttribute("href", "#main-content");
+    expect(
+      skip.compareDocumentPosition(main as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
