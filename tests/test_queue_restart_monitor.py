@@ -5,7 +5,7 @@ The sentinel is a timestamped value on the ``cache()`` store under
 string). The memory drain polls it BEFORE each job and stops, handing un-run
 jobs back for the replacement worker; consuming the sentinel is the exiting
 worker's job, not the drain's (the CLI consumes it for the memory driver, the
-saq before_process hook for saq). ``queue_depth()`` is the waiting-jobs count
+saq after_process hook for saq). ``queue_depth()`` is the waiting-jobs count
 every monitor reads — MemoryQueue counts its deque, SaqQueue the installed
 saq's ``count("queued")`` (0.26.4 has no ``stats()``).
 """
@@ -298,16 +298,17 @@ def test_queue_driver_protocol_includes_queue_depth():
 
 
 # ---------------------------------------------------------------------------
-# the saq before_process hook — honor, clear, and stop at a job boundary
+# the saq after_process hook — honor, clear, and stop at a job boundary
 # ---------------------------------------------------------------------------
 
 
 async def test_saq_restart_hook_honors_the_sentinel():
-    """With the sentinel set: the dequeued job goes back (retry — the
-    replacement worker picks it up), the worker's stop event fires, the
-    sentinel is consumed, and the hook cancels the current job (installed
-    saq's process() treats CancelledError before the task exists as a clean
-    skip — the job is not failed, not run)."""
+    """With the sentinel set: the worker's stop event fires (the in-flight
+    job finishes, no new ones start), the sentinel is consumed, and the
+    dequeued job RUNS TO COMPLETION exactly once — no retry, no
+    CancelledError. The old cancel-and-retry shape left the job ACTIVE (a
+    pre-task CancelledError returns False from process()) for the sweeper
+    to abort ~90s later: the silent-loss path this contract forbids."""
     from fastplace.queue import _check_restart_sentinel, restart_requested_at, set_restart_sentinel
 
     retried: list[str] = []
@@ -324,12 +325,63 @@ async def test_saq_restart_hook_honors_the_sentinel():
     worker = FakeWorker()
     ctx: dict = {"job": FakeJob(), "worker": worker}
 
-    with pytest.raises(asyncio.CancelledError):
-        await _check_restart_sentinel(ctx)
+    await _check_restart_sentinel(ctx)  # returns quietly — the job then runs
 
-    assert retried == ["worker restart requested"]
+    assert retried == []  # exactly once — the boundary job is never re-queued
     assert worker.event.is_set()
     assert await restart_requested_at() is None  # consumed — no exit loop
+
+
+async def test_saq_restart_hook_survives_a_failed_sentinel_clear(monkeypatch, caplog):
+    """A cache outage while clearing must not cancel the in-flight job (the
+    loss path this wave closes) — the hook stops the worker, leaves the
+    sentinel latched, and the CLI exit path turns the latched sentinel into
+    a non-zero exit."""
+    import fastplace.cache as cache_module
+    from fastplace.queue import _check_restart_sentinel, set_restart_sentinel
+
+    class _BrokenForgetCache:
+        async def get(self, key: str):
+            return "2026-01-01T00:00:00"  # sentinel visible
+
+        async def forget(self, key: str):
+            raise RuntimeError("cache down")
+
+    await set_restart_sentinel()  # latches via the real store first
+    monkeypatch.setattr(cache_module, "cache", lambda: _BrokenForgetCache())
+
+    class FakeJob:
+        async def retry(self, error: str | None) -> None:
+            raise AssertionError("restart must never re-queue the boundary job")
+
+    worker_event = asyncio.Event()
+
+    class FakeWorker:
+        event = worker_event
+
+    with caplog.at_level("ERROR", logger="fastplace.queue"):
+        ctx = {"job": FakeJob(), "worker": FakeWorker()}
+        await _check_restart_sentinel(ctx)  # must not raise, must not cancel
+
+    assert worker_event.is_set()  # still exits — replacement path stays live
+    assert any("clear failed" in message for message in caplog.messages)
+
+
+async def test_clear_restart_sentinel_is_strict_about_a_broken_cache(monkeypatch):
+    """Consumption failure must be loud: swallowing it would let a worker
+    report a clean restart while the sentinel stays latched — and the
+    replacement worker would immediately exit again, an outage masked as
+    success. The CLI exit path relies on this raise to exit non-zero."""
+    import fastplace.cache as cache_module
+    from fastplace.queue import clear_restart_sentinel
+
+    class _BrokenCache:
+        async def forget(self, key: str) -> None:
+            raise RuntimeError("cache down")
+
+    monkeypatch.setattr(cache_module, "cache", lambda: _BrokenCache())
+    with pytest.raises(RuntimeError, match="cache down"):
+        await clear_restart_sentinel()
 
 
 async def test_saq_restart_hook_is_a_noop_without_the_sentinel():
@@ -348,9 +400,11 @@ async def test_saq_restart_hook_is_a_noop_without_the_sentinel():
 
 def test_saq_build_worker_carries_the_restart_hook():
     """The CLI's worker always polls the sentinel — the hook is installed by
-    build_worker itself, so no caller can forget it. Installed saq passes
-    async hooks through unwrapped, so identity survives the worker build."""
-    from fastplace.queue import Job, SaqQueue, _check_restart_sentinel
+    build_worker itself (as an after_process hook: the post-job placement is
+    what stops the worker without cancelling the boundary job), so no caller
+    can forget it. Installed saq passes async hooks through unwrapped, so
+    identity survives the worker build."""
+    from fastplace.queue import Job, SaqQueue, _check_restart_sentinel, _record_saq_failure
 
     @Job(name="t28_hook_probe")
     async def probe() -> None:
@@ -358,4 +412,8 @@ def test_saq_build_worker_carries_the_restart_hook():
 
     driver = SaqQueue(url="redis://localhost:6379/2", name="fastplace")
     worker = driver.build_worker()
-    assert _check_restart_sentinel in (worker.before_process or [])
+    hooks = worker.after_process or []
+    assert _check_restart_sentinel in hooks
+    # Failure recording still rides along, ordered before the restart check.
+    assert _record_saq_failure in hooks
+    assert hooks.index(_record_saq_failure) < hooks.index(_check_restart_sentinel)

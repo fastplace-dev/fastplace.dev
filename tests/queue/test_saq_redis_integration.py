@@ -9,12 +9,20 @@ machines without redis while the shape bug is proven where redis exists.
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import uuid
 
 import pytest
 
-from fastplace.queue import Job, SaqQueue, reset_queue, reset_registry
+from fastplace.queue import (
+    Job,
+    SaqQueue,
+    reset_queue,
+    restart_requested_at,
+    reset_registry,
+    set_restart_sentinel,
+)
 
 #: Shared local redis, DB index 11 only — the framework's live-probe lane.
 REDIS_URL = "redis://localhost:6379/11"
@@ -120,6 +128,38 @@ async def test_one_handler_shape_runs_unchanged_on_both_drivers():
         await worker.start()
 
         assert ran == ["1:mem", "2:saq"]
+    finally:
+        await _purge(driver)
+
+
+async def test_restart_boundary_job_runs_exactly_once():
+    """q1-G2/q2-G3: `queue:restart` with a job mid-flight must end with that
+    job COMPLETE, executed exactly once, the sentinel consumed, and the
+    replacement worker able to keep processing — no silent loss, no exit
+    loop."""
+    ran: list[int] = []
+    driver = SaqQueue(url=REDIS_URL, name=_namespace())
+
+    @Job(name="it.slow_boundary")
+    async def slow_boundary(n: int):
+        await asyncio.sleep(0.4)  # in-flight while the sentinel lands
+        ran.append(n)
+
+    try:
+        await driver.dispatch("it.slow_boundary", n=1)
+        await set_restart_sentinel()
+
+        worker = driver.build_worker(burst=True, dequeue_timeout=0.5)
+        await worker.start()
+
+        assert ran == [1]  # ran to completion exactly once — never re-queued
+        assert await restart_requested_at() is None  # consumed
+
+        # The replacement worker starts clean and processes new work.
+        await driver.dispatch("it.slow_boundary", n=2)
+        replacement = driver.build_worker(burst=True, dequeue_timeout=0.5)
+        await replacement.start()
+        assert ran == [1, 2]
     finally:
         await _purge(driver)
 

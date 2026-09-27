@@ -327,30 +327,41 @@ async def _record_saq_failure(ctx: dict[str, Any]) -> None:
 
 
 async def _check_restart_sentinel(ctx: dict[str, Any]) -> None:
-    """``before_process`` hook — honor a restart request at the job boundary.
+    """``after_process`` hook — honor a restart request at the job boundary.
 
     This is the saq worker's sentinel poll (installed by
-    :meth:`SaqQueue.build_worker`, so no caller can forget it). When a
-    restart is pending: the already-dequeued job goes back via ``retry``
-    (the replacement worker picks it up), the worker's stop event fires
-    (in-flight jobs finish, no new ones start), the sentinel is consumed so
-    the replacement doesn't exit again, and CancelledError stops the current
-    job — installed saq's ``process()`` treats a cancellation raised before
-    the job task exists as a clean skip, so the job is neither run nor
-    failed. Caveat: the hook only fires per job — an idle worker honors the
-    request when work next arrives, and with several workers sharing one
-    sentinel the first to reach a boundary consumes it for everyone.
+    :meth:`SaqQueue.build_worker`, so no caller can forget it). It runs
+    AFTER the job's task finished — that placement is the exactly-once
+    guarantee: a ``before_process`` variant had no way to stop the worker
+    without cancelling the job it fired for (saq's stop() cancels in-flight
+    tasks once the event is set, and a pre-task CancelledError from
+    before_process drops the job back to ACTIVE for the sweeper to abort
+    ~90s later — the silent restart-loss path). When a restart is pending:
+    the sentinel is consumed first (so the exit is verifiably clean), then
+    the worker's stop event fires — the finished job ran exactly once and
+    no new ones start. A failure to clear the sentinel is logged and left
+    latched; the CLI's exit path turns a surviving sentinel into a
+    non-zero exit. Caveat: the hook fires per completed job — an idle
+    worker honors the request when work next arrives, jobs dequeued into
+    other concurrency slots before the first post-job check still run
+    (they were in flight), and with several workers sharing one sentinel
+    the first to reach a boundary consumes it for everyone (restart the
+    fleet with a per-process supervisor, e.g. systemd, instead of relying
+    on one sentinel retiring every worker).
     """
     if await restart_requested_at() is None:
         return
-    job = ctx.get("job")
-    if job is not None:
-        await job.retry("worker restart requested")
+    try:
+        await clear_restart_sentinel()
+    except Exception:  # noqa: BLE001 — the completed job stays completed
+        logger.error(
+            "restart sentinel clear failed — sentinel stays latched; "
+            "the worker's exit path must report the failed restart",
+            exc_info=True,
+        )
     worker = ctx.get("worker")
     if worker is not None:
         worker.event.set()
-    await clear_restart_sentinel()
-    raise asyncio.CancelledError
 
 
 def _adapt_sa_handler(fn: JobFn) -> JobFn:
@@ -466,29 +477,32 @@ class SaqQueue:
     def build_worker(self, **kwargs: Any) -> Any:
         """Assemble a saq Worker over the registry (no network until start).
 
-        The worker always carries the restart-checking before_process hook
-        (see :func:`_check_restart_sentinel`) and the failure-recording
-        after_process hook (see :func:`_record_saq_failure`); caller kwargs
-        pass through untouched, and a caller-supplied ``before_process`` is
-        merged to run after the built-in, so the CLI's translated options
-        keep working.
+        Every handler is adapted to saq's ``fn(ctx, **kwargs)`` calling
+        convention (see :func:`_adapt_sa_handler`). The worker always
+        carries two ``after_process`` hooks: the failure recorder (see
+        :func:`_record_saq_failure`) and the restart-sentinel check (see
+        :func:`_check_restart_sentinel`) — an after-job placement is what
+        lets a restart stop the worker without cancelling the boundary job.
+        Caller kwargs pass through untouched; a caller-supplied
+        ``before_process`` is passed through unchanged, and a
+        caller-supplied ``after_process`` is merged to run before the
+        built-ins.
         """
         from saq import Worker
 
         functions = [
             (entry.name, _adapt_sa_handler(entry.fn)) for entry in registry.values()
         ]
-        hooks = [_check_restart_sentinel]
-        caller_hooks = kwargs.pop("before_process", None)
-        if caller_hooks is not None:
+        after_hooks = [_record_saq_failure, _check_restart_sentinel]
+        caller_after = kwargs.pop("after_process", None)
+        if caller_after is not None:
             # saq accepts a single callable or a collection — normalize to
-            # the collection form and append.
-            hooks.extend(caller_hooks if isinstance(caller_hooks, Collection) else [caller_hooks])
+            # the collection form and prepend.
+            after_hooks[:0] = list(caller_after) if isinstance(caller_after, Collection) else [caller_after]
         return Worker(
             self.queue,
             functions=functions,
-            before_process=hooks,
-            after_process=_record_saq_failure,
+            after_process=after_hooks,
             **kwargs,
         )
 
@@ -542,18 +556,16 @@ async def clear_restart_sentinel() -> None:
     """Consume the sentinel — the worker honoring it calls this as it exits,
     so the replacement worker does not immediately exit again.
 
-    Best-effort with a log: the caller is on its way out (exit code 0 per
-    the restart contract), and a raise here would only turn a graceful
-    exit into a traceback.
+    Strict on purpose: swallowing a failed clear would let a worker report
+    a clean restart while the sentinel stays latched (the replacement then
+    exits again — an outage masked as success). Callers that must not
+    propagate (the before_process hook, which lets the in-flight job run
+    regardless) catch and log; the CLI exit path turns a surviving sentinel
+    into a non-zero exit.
     """
     from fastplace.cache import cache
 
-    try:
-        await cache().forget(RESTART_SENTINEL_KEY)
-    except Exception:  # noqa: BLE001 — see docstring
-        logger.warning(
-            "restart sentinel clear failed — a replacement may exit again", exc_info=True
-        )
+    await cache().forget(RESTART_SENTINEL_KEY)
 
 
 # ---------------------------------------------------------------------------

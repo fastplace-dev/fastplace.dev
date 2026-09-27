@@ -165,8 +165,21 @@ def queue_work(
             # job boundary (the worker's before_process hook consumes it).
             requested = await restart_requested_at() is not None
             await worker.start()
-            if requested:
-                console.print("[yellow]! restart requested — worker exiting for a replacement")
+            if not requested:
+                return
+            # The restart contract's exit check: the hook must have consumed
+            # the sentinel (in-flight job finished, no new ones started). A
+            # surviving sentinel means the restart never fully happened —
+            # report failure instead of a clean exit.
+            if await restart_requested_at() is not None:
+                console.print(
+                    "[red]✗[/] restart requested but the sentinel is still set — "
+                    "the restart did not complete; see fastplace.queue logs"
+                )
+                raise typer.Exit(code=1)
+            console.print(
+                "[yellow]! restart requested — worker exited cleanly for its replacement"
+            )
 
         asyncio.run(_run_saq_worker())
         return
@@ -197,10 +210,15 @@ def queue_work(
         executed = await q.run_pending()
         # The drain stops at a sentinel but never consumes one; this worker
         # is exiting either way, so it consumes it here — otherwise the
-        # replacement would immediately exit again.
+        # replacement would immediately exit again. A failed clear is fatal
+        # to the command, not swallowed: the restart contract depends on it.
         requested = await restart_requested_at() is not None
         if requested:
-            await clear_restart_sentinel()
+            try:
+                await clear_restart_sentinel()
+            except Exception as exc:  # noqa: BLE001 — reported, then non-zero exit
+                console.print(f"[red]✗[/] restart sentinel clear failed: {escape(str(exc))}")
+                raise typer.Exit(code=1) from exc
         return executed, requested
 
     executed, restarted = asyncio.run(_drain())

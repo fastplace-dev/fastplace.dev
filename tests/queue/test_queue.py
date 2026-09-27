@@ -572,6 +572,72 @@ def test_queue_work_once_with_empty_queue(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# CLI queue:work — saq branch restart-exit honesty (q1-G2/q2-G3)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSaqWorker:
+    """start() returns immediately — the CLI's sentinel-verification exit
+    path is what's under test, not saq itself."""
+
+    def __init__(self, on_start=None) -> None:
+        self.started = False
+        self._on_start = on_start
+
+    async def start(self) -> None:
+        self.started = True
+        if self._on_start is not None:
+            await self._on_start()  # e.g. the hook consuming the sentinel
+
+
+def _patch_saq_worker(monkeypatch, worker: _FakeSaqWorker) -> None:
+    import fastplace.queue as queue_module
+
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+    monkeypatch.setattr(
+        queue_module.SaqQueue, "build_worker", lambda self, **kwargs: worker
+    )
+
+
+def test_queue_work_saq_exit_is_clean_when_sentinel_was_consumed(tmp_path, monkeypatch):
+    """A restart honored mid-run must end exit 0 — the hook consumed the
+    sentinel and the worker finished its in-flight job."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    asyncio.run(queue_module.set_restart_sentinel())
+    # The worker honors the restart during its run: consumes the sentinel.
+    worker = _FakeSaqWorker(on_start=queue_module.clear_restart_sentinel)
+
+    _patch_saq_worker(monkeypatch, worker)
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+
+
+def test_queue_work_saq_exits_nonzero_when_sentinel_survives(tmp_path, monkeypatch):
+    """A restart whose sentinel is STILL SET after the worker stopped means
+    the restart contract broke (nothing consumed it) — success output here
+    would mask a worker that never honors restarts. Exit 1, loudly."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    asyncio.run(queue_module.set_restart_sentinel())
+
+    _patch_saq_worker(monkeypatch, _FakeSaqWorker())
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 1
+    assert "sentinel" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
 # set_queue — installing a custom driver as the process default
 # ---------------------------------------------------------------------------
 async def test_set_queue_installs_a_custom_driver():
