@@ -104,6 +104,24 @@ async def test_missing_record_is_a_404(posts, seeded):
     assert response.status_code == 404
 
 
+async def test_out_of_range_integer_id_is_a_404_not_a_500(posts, seeded):
+    # An id beyond the int64 column domain can never match a row; binding
+    # it would overflow the driver (sqlite OverflowError / postgres
+    # NumericValueOutOfRange) and answer an unauthenticated 500.
+    async def show(request, post: posts.Post):
+        from fastplace.http.response import Json
+
+        return Json({"title": post.title})
+
+    router = Router()
+    router.get("/posts/{post}", show)
+    app = get_app(routes=router, config={"APP_ENV": "local"})
+    await seeded()
+    async with _client(app) as client:
+        response = await client.get("/posts/99999999999999999999999")
+    assert response.status_code == 404
+
+
 async def test_binding_runs_before_route_middleware_sees_the_param(posts, seeded):
     seen: list[object] = []
 

@@ -272,7 +272,16 @@ def _coerce_pk(model: Any, raw: Any) -> Any:
     pk = getattr(table, "primary_key", None)
     for column in getattr(pk, "columns", ()):
         if column.type.python_type is int:
-            return int(raw)
+            value = int(raw)
+            if not -(2**63) <= value <= 2**63 - 1:
+                # Outside the int64 column domain the id can never exist —
+                # binding it overflows the driver (sqlite OverflowError,
+                # postgres NumericValueOutOfRange) and would answer an
+                # unauthenticated 500. A 404 is the honest answer.
+                from fastplace.errors import NotFoundError
+
+                raise NotFoundError(f"{getattr(model, '__name__', model)} #{raw} not found")
+            return value
     return raw
 
 
@@ -289,6 +298,14 @@ def endpoint_adapter(
     Model-bound path params (see :func:`route_bindings`) resolve to live
     instances BEFORE the chain runs, so ``can:`` middleware and the
     controller both see the model, never the raw id.
+
+    Known trade-off of that ordering: on a route gated by ``auth``/``can``/
+    ``signed`` middleware, binding (the 404 for a missing id) answers before
+    the gate (its 401/403) — an invalid-gate request can differ missing vs
+    existing ids. The pre-chain contract is deliberate (the ability check
+    needs the model); apps that must not leak existence should treat 404 and
+    403 alike at the edge (e.g. a catch-all handler) or re-check the gate
+    inside the controller.
     """
     from fastplace.http.request import Request
     from fastplace.http.response import to_response
