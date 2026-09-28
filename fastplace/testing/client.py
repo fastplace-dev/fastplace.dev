@@ -26,12 +26,19 @@ class TestResponse(httpx.Response):
         """Rebuild a consumed ``httpx.Response`` as a ``TestResponse``.
 
         The transport has already materialized status, headers, and body, so
-        the copy is cheap and safe to assert on after the fact.
+        the copy is cheap and safe to assert on after the fact. The body is
+        passed decoded, so transport framing headers must not travel with it:
+        a kept ``Content-Encoding`` would make httpx decode plain bytes again
+        (any page over the compression threshold crashes with ``zlib.error``)
+        and a kept ``Content-Length`` would disagree with the decoded size.
         """
+        headers = httpx.Headers(response.headers)
+        headers.pop("Content-Encoding", None)
+        headers.pop("Content-Length", None)
         return cls(
             response.status_code,
             request=response.request,
-            headers=response.headers,
+            headers=headers,
             content=response.content,
             history=response.history,
             extensions=response.extensions,
