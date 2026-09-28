@@ -25,9 +25,10 @@ DEFAULT_LOCALE = "en"
 #: framework's built-in languages are cardinal-simple.
 _FORM_RULES: dict[str, int] = {"zero": 0, "one": 1, "two": 2}
 
-_locale: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "fastplace.locale", default=DEFAULT_LOCALE
-)
+# No ContextVar default: an unset locale must resolve through
+# default_locale() (the configured LOCALE), not a hardcoded literal — the
+# ContextVar default would pin 'en' even when the app is configured otherwise.
+_locale: contextvars.ContextVar[str] = contextvars.ContextVar("fastplace.locale")
 
 _lang_cache: dict[str, dict[str, Any]] = {}
 
@@ -36,7 +37,10 @@ _LANG_DIR = Path("lang")
 
 def get_locale() -> str:
     """The active locale for this request/task (``LOCALE`` default)."""
-    return _locale.get()
+    try:
+        return _locale.get()
+    except LookupError:
+        return default_locale()
 
 
 def set_locale(locale: str) -> None:
@@ -47,7 +51,7 @@ def set_locale(locale: str) -> None:
 def reset() -> None:
     """Drop cached lang files — test isolation and dev hot-reload."""
     _lang_cache.clear()
-    _locale.set(DEFAULT_LOCALE)
+    _locale.set(default_locale())
 
 
 def supported_locales() -> list[str]:

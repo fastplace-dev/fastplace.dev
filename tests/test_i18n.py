@@ -149,3 +149,24 @@ async def test_locale_middleware_resolves_query_header_then_default(lang_dir, mo
     assert by_header.json() == {"hello": "স্বাগতম"}
     assert unsupported.json() == {"hello": "Welcome aboard"}
     assert default.json() == {"hello": "Welcome aboard"}
+
+
+def test_fresh_context_answers_the_configured_locale(lang_dir, monkeypatch):
+    """A brand-new execution context (no request, no set_locale) must answer
+    the configured LOCALE — a hardcoded ContextVar default would pin 'en'
+    even when the app is configured otherwise."""
+    import contextvars
+
+    from fastplace import i18n
+
+    monkeypatch.setenv("LOCALE", "bn")
+    assert contextvars.Context().run(i18n.get_locale) == "bn"
+
+
+def test_trans_outside_a_request_uses_the_configured_locale(lang_dir, monkeypatch):
+    from fastplace import i18n
+    from fastplace.i18n import trans
+
+    monkeypatch.setenv("LOCALE", "bn")
+    i18n.reset()  # re-init after the config change — the fresh-process path
+    assert trans("messages.welcome") == "স্বাগতম"
