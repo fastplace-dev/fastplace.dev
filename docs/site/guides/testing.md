@@ -4,6 +4,12 @@ Fastplace apps inherit a testing stack that mirrors the runtime: async
 backend tests against the real ASGI app, component tests for the React
 side, and Playwright E2E over the full stack.
 
+**Writing tests for *your* app?** Start with
+[Testing your app](/guides/app-testing) — the pytest plugin, HTTP
+assertions, fakes, clock, and factories that ship with every Fastplace
+project. This page covers how the framework's own suites are organized,
+which is what you need when contributing to Fastplace itself.
+
 ## Backend — pytest
 
 ```bash
@@ -44,8 +50,8 @@ comes from explicit test config).
 python -m pytest -q
 ```
 
-A plain run is SQLite-only: 2118 tests, plus 23 env-gated tests that skip
-with self-explanatory reasons. The remaining backends are opt-in through
+A plain run is SQLite-only (about 2,600 tests and growing), plus a
+handful of env-gated tests that skip with self-explanatory reasons. The remaining backends are opt-in through
 three environment variables:
 
 - **`TEST_POSTGRES_URL`** — the PostgreSQL dialect suite plus the tenancy
