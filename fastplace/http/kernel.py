@@ -26,6 +26,7 @@ from fastplace.http.middleware import Middleware, wrap_middleware
 from fastplace.http.response import Html, Json, Response
 from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware
 from fastplace.http.websocket import websocket_adapter
+from fastplace.logging.middleware import RequestIdMiddleware
 
 API_PREFIX = "/api/v1"
 AI_PREFIX = "/ai"
@@ -156,6 +157,10 @@ def get_app(
         MaintenanceMiddleware,
         root=str(root),
     )
+    # plat-G9 request correlation, outermost: minted (or accepted) before
+    # anything downstream runs, so every log line and the response itself
+    # carry the id — including maintenance 503s and error responses.
+    app.add_middleware(RequestIdMiddleware)
     _install_error_handlers(app, debug=debug, root=root)
     return app
 
@@ -167,6 +172,12 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     root = Path(project_root) if project_root else Path.cwd()
     load_env(root / ".env")
     reset_config(root)
+    # plat-G9: the storage/logs promise (deployment guide) becomes true with
+    # zero app config — channels, rotation and retention resolve from LOG_*
+    # config here. Idempotent: an already-configured process is a no-op.
+    from fastplace.logging import configure_logging
+
+    configure_logging(root=root)
     _ensure_import_root(root)
     # app/ai/vectors registrations must exist before anything resolves
     # active_vector_store() — boot is the one place a project's stores are
@@ -509,11 +520,25 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Any, exc: Exception) -> Response:
+        # plat-G9: the response stays generic (by design), so the traceback
+        # must land in storage/logs — with the request's correlation id —
+        # or a production 500 leaves no trace anywhere. The id comes from
+        # the scope stamp: exception propagation already reset the
+        # contextvar by the time ServerErrorMiddleware calls this handler.
+        import logging
+
         from fastplace.http.error_pages import (
             debug_error_page,
             production_error_page,
             wants_html,
         )
+        from fastplace.logging.context import request_context
+
+        request_id = (getattr(request, "scope", None) or {}).get("fastplace_request_id", "")
+        with request_context(request_id):
+            logging.getLogger("fastplace.http").exception(
+                "unhandled exception during %s %s", request.method, request.url.path
+            )
 
         # Browser navigations get a styled page (rich in debug, generic in
         # production); API clients and the SPA bridge keep the JSON contract.
