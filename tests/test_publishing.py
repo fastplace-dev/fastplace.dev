@@ -202,6 +202,16 @@ def test_frontend_packages_are_publishable():
         assert "tsc" in manifest["scripts"]["build"], name
 
 
+def test_frontend_packages_build_before_publish():
+    """upg-G5: ``npm publish`` ships whatever sits in ``dist/`` — a forgotten
+    rebuild publishes the PREVIOUS release's bundle under a new version
+    number. ``prepublishOnly`` rebuilds from src at publish time, so the
+    tarball can never go stale relative to the committed source."""
+    for name in ("react", "ai-react"):
+        manifest = json.loads((ROOT / "packages" / name / "package.json").read_text())
+        assert manifest["scripts"].get("prepublishOnly") == "npm run build", name
+
+
 def test_frontend_builds_externalize_react():
     """Both library builds must treat every react entry point (and its
     scheduler dependency) as external. Exact-name externals miss subpath
