@@ -588,11 +588,13 @@ class TestPolicyModuleOption:
 class TestAlertDestructiveTokens:
     def test_template_alert_carries_option_b_destructive_tokens(self):
         """The destructive variant must survive both themes by contrast, not
-        by a foreground token that collapses onto the alert's own background
-        (W4 owns the template copy; W5 syncs the repo counterpart)."""
+        by a foreground token that collapses onto the alert's own background.
+        W5 tuned the description slot to full text-destructive — the /80
+        alpha blend lands under 4.5:1 on the light surface (a11y2-G1)."""
         alert = (CORPUS / "resources/js/components/ui/alert.tsx").read_text()
         assert "text-destructive border-destructive/50" in alert
-        assert "*:data-[slot=alert-description]:text-destructive/80" in alert
+        assert "*:data-[slot=alert-description]:text-destructive" in alert
+        assert "*:data-[slot=alert-description]:text-destructive/80" not in alert
 
 
 class TestEmittedTwoFactorJourney:
