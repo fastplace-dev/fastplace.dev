@@ -65,7 +65,7 @@ async def gated_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from app.modules.accounts.models.user import User  # noqa: F401
     from fastplace.db import db
     from fastplace.http import get_app
-    from fastplace.http.kernel import _middleware_from_config
+    from fastplace.http.kernel import middleware_from_config
     from fastplace.http.response import Json
     from fastplace.http.router import Router
     from routes.auth import router as auth_router
@@ -99,7 +99,7 @@ async def gated_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     )
 
     await db.create_all()
-    middleware = _middleware_from_config(Path(_PROJECT_ROOT))
+    middleware = middleware_from_config(Path(_PROJECT_ROOT))
     return get_app(
         routes=web,
         auth_routes=auth_router,

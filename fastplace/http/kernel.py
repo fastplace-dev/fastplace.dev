@@ -226,7 +226,7 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     ai = _load_router_module(root, "routes.ai")
     web, api = _merge_module_routers(root, web, api)
 
-    middleware = _middleware_from_config(root)
+    middleware = middleware_from_config(root)
     app = get_app(
         routes=web,
         auth_routes=auth,
@@ -368,7 +368,7 @@ def _merge_module_routers(
     return web, api
 
 
-def _middleware_from_config(root: Path) -> list[Middleware]:
+def middleware_from_config(root: Path) -> list[Middleware]:
     from fastplace.config import Config
 
     cfg = Config(root)

@@ -57,6 +57,7 @@ export default defineConfig({
           { text: "Testing your app", link: "/guides/app-testing" },
           { text: "Framework internals testing", link: "/guides/testing" },
           { text: "Deployment", link: "/guides/deployment" },
+          { text: "Upgrading", link: "/guides/upgrading" },
           { text: "Versioning", link: "/guides/versioning" },
         ],
       },

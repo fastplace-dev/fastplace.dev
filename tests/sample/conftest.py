@@ -67,7 +67,7 @@ async def sample_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from app.modules.projects.models.task import Task  # noqa: F401
     from fastplace.db import db
     from fastplace.http import get_app
-    from fastplace.http.kernel import _middleware_from_config
+    from fastplace.http.kernel import middleware_from_config
     from routes.ai import router as ai_router
     from routes.api import router as api_router
     from routes.auth import router as auth_router
@@ -76,7 +76,7 @@ async def sample_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     await db.create_all()
     # The same config-driven stack create_app installs — config/app.py
     # MIDDLEWARE (app-owned entries included), outermost first.
-    middleware = _middleware_from_config(Path(_PROJECT_ROOT))
+    middleware = middleware_from_config(Path(_PROJECT_ROOT))
     return get_app(
         routes=web_router,
         auth_routes=auth_router,

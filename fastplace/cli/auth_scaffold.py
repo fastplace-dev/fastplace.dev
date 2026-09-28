@@ -214,9 +214,9 @@ from urllib.parse import quote
 from app.modules.accounts.repositories.user_repository import UserRepository
 from app.modules.accounts.services.mail_views import reset_password_email_html
 from app.modules.accounts.services.password_policy import min_password_length
-from fastplace.auth.guards import SESSION_STORE_SCOPE, _queue_remember_cookie
+from fastplace.auth.guards import SESSION_STORE_SCOPE, queue_remember_cookie
 from fastplace.auth.hashing import Hash
-from fastplace.auth.passwords import _dummy_digest, throttle_seconds, token_store
+from fastplace.auth.passwords import dummy_digest, throttle_seconds, token_store
 from fastplace.auth.remember import remember_store
 from fastplace.auth.tokens import pat_store
 from fastplace.errors import ValidationError
@@ -249,7 +249,7 @@ class PasswordResetService:
         if user is None:
             # Equal work: the unknown-email path pays the same scrypt cost a
             # wrong password pays on login (timing parity, spec §6).
-            Hash.check(normalized, _dummy_digest())
+            Hash.check(normalized, dummy_digest())
             return self.SENT_MESSAGE
 
         raw = await token_store().issue(normalized)
@@ -315,7 +315,7 @@ class PasswordResetService:
         regenerate = getattr(session, "regenerate", None)
         if callable(regenerate):
             regenerate()
-        _queue_remember_cookie(request, None)  # revoked server-side; clear it client-side
+        queue_remember_cookie(request, None)  # revoked server-side; clear it client-side
         await dispatch(DomainEvent("PasswordReset", {"user_id": user.id, "email": user.email}))
 '''
 _REGISTRATION_SERVICE_TEMPLATE = '''"""Account registration — validation, creation, the Registered event."""
@@ -1197,9 +1197,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastplace.http.flash import FLASH_SESSION_KEY
-from fastplace.http.render import share
-from fastplace.http.request import Request
+from fastplace.http import FLASH_SESSION_KEY
+from fastplace.http import share
+from fastplace.http import Request
 
 
 def flash_props(request: Request) -> dict[str, Any] | None:
@@ -1492,7 +1492,7 @@ def purge_app_modules() -> None:
     """Drop every app/routes module so the next import re-registers fresh."""
     import sqlalchemy
 
-    from fastplace.orm.model import Model
+    from fastplace.orm import Model
 
     for name in [
         m
@@ -1525,9 +1525,9 @@ def _fresh_singletons(monkeypatch, tmp_path):
     from fastplace.auth.remember import reset_remember_store
     from fastplace.cache import reset_cache
     from fastplace.events import reset_listeners
-    from fastplace.http.render import reset_shared_props
+    from fastplace.http import reset_shared_props
     from fastplace.mail import clear_mail_outbox
-    from fastplace.orm.capabilities import driver_from_url
+    from fastplace.db import driver_from_url
     from fastplace.queue import reset_registry
 
     # Defensive session pin (paired with the fastplace pytest plugin): with
@@ -1566,7 +1566,7 @@ async def app(monkeypatch):
     """The full application over a fresh database — real routers, real middleware."""
     import os
 
-    from fastplace.orm.capabilities import driver_from_url
+    from fastplace.db import driver_from_url
 
     # _fresh_singletons already pinned the environment (an explicit
     # FASTPLACE_TEST_DATABASE_URL or the throwaway sqlite). HTTP tests must
@@ -1577,8 +1577,7 @@ async def app(monkeypatch):
 
     from app.modules.accounts.models.user import User  # noqa: F401 — registers the table
     from fastplace.db import db
-    from fastplace.http import get_app
-    from fastplace.http.kernel import _middleware_from_config
+    from fastplace.http import get_app, middleware_from_config
     from routes.ai import router as ai_router
     from routes.api import router as api_router
     from routes.auth import router as auth_router
@@ -1589,7 +1588,7 @@ async def app(monkeypatch):
     # exactly as create_app mounts it — a disabled flag is a no-op.
     from fastplace.auth.passkeys_routes import mount_passkey_routes
 
-    middleware = _middleware_from_config(PROJECT_ROOT)
+    middleware = middleware_from_config(PROJECT_ROOT)
     return get_app(
         routes=web_router,
         auth_routes=mount_passkey_routes(auth_router),

@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from fastplace.config import config, load_env  # noqa: E402
 from fastplace.orm.manager import normalize_database_url  # noqa: E402
-from fastplace.orm.model import Model  # noqa: E402
+from fastplace.orm import Model  # noqa: E402
 from fastplace.orm.registry import import_all_models  # noqa: E402
 
 alembic_config = context.config

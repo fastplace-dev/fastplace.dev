@@ -7,10 +7,16 @@ lifecycle APIs. Application code imports ``fastplace.http`` and never
 
 from fastplace.http import lifecycle  # noqa: F401  (module-level API)
 from fastplace.http.authorize import authorize
-from fastplace.http.flash import flash
-from fastplace.http.kernel import AI_PREFIX, API_PREFIX, create_app, get_app
+from fastplace.http.flash import FLASH_SESSION_KEY, flash
+from fastplace.http.kernel import (
+    AI_PREFIX,
+    API_PREFIX,
+    create_app,
+    get_app,
+    middleware_from_config,
+)
 from fastplace.http.middleware import Middleware
-from fastplace.http.render import render
+from fastplace.http.render import render, reset_shared_props, share
 from fastplace.http.request import Request
 from fastplace.http.response import (
     File,
@@ -31,6 +37,7 @@ __all__ = [
     "API_PREFIX",
     "AI_PREFIX",
     "Controller",
+    "FLASH_SESSION_KEY",
     "File",
     "Html",
     "Json",
@@ -50,6 +57,9 @@ __all__ = [
     "flash",
     "get_app",
     "lifecycle",
+    "middleware_from_config",
     "render",
+    "reset_shared_props",
+    "share",
     "to_response",
 ]

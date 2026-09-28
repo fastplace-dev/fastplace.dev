@@ -92,11 +92,11 @@ class SessionGuard:
         Unknown emails must not be timing-distinguishable from wrong
         passwords (enumeration defense, spec §6). The function-level import
         keeps the dummy digest out of guards' import graph (and lets tests
-        patch fastplace.auth.passwords._dummy_digest).
+        patch fastplace.auth.passwords.dummy_digest).
         """
-        from fastplace.auth.passwords import _dummy_digest
+        from fastplace.auth.passwords import dummy_digest
 
-        Hash.check(str(credentials.get("password") or ""), _dummy_digest())
+        Hash.check(str(credentials.get("password") or ""), dummy_digest())
 
     async def attempt(
         self, request: Any, credentials: dict[str, Any], *, remember: bool = False
@@ -202,7 +202,7 @@ class SessionGuard:
         self._authenticate_session(request, identifier)
         if remember:
             cookie = await remember_store().issue(identifier)
-            _queue_remember_cookie(request, cookie)
+            queue_remember_cookie(request, cookie)
         await dispatch(
             DomainEvent(
                 "Login",
@@ -239,7 +239,7 @@ class SessionGuard:
         cookie = self._remember_cookie(request)
         if cookie:
             await remember_store().revoke(cookie)
-            _queue_remember_cookie(request, None)
+            queue_remember_cookie(request, None)
         invalidate = getattr(request.session, "invalidate", None)
         if callable(invalidate):
             # ServerSession: destroy the backing row and expire the cookie —
@@ -273,11 +273,11 @@ class SessionGuard:
         if getattr(user, "two_factor_confirmed_at", None) is not None:
             request.session[TWO_FACTOR_CHALLENGE_KEY] = user_id
             request.session[TWO_FACTOR_REMEMBER_KEY] = True
-            _queue_remember_cookie(request, fresh_cookie)
+            queue_remember_cookie(request, fresh_cookie)
             return None
         # The fallback IS a login for fixation purposes: fresh session id.
         self._authenticate_session(request, user_id)
-        _queue_remember_cookie(request, fresh_cookie)
+        queue_remember_cookie(request, fresh_cookie)
         scope = getattr(request, "scope", None)
         if scope is not None:
             scope[VIA_REMEMBER_SCOPE] = True
@@ -313,7 +313,7 @@ class SessionGuard:
             )
         await remember_store().revoke_all_for_user(identifier)
         fresh = await remember_store().issue(identifier)
-        _queue_remember_cookie(request, fresh)
+        queue_remember_cookie(request, fresh)
         return True
 
     def _remember_cookie(self, request: Any) -> str | None:
@@ -324,7 +324,7 @@ class SessionGuard:
         return get(REMEMBER_COOKIE_NAME) if get else None
 
 
-def _queue_remember_cookie(request: Any, value: str | None) -> None:
+def queue_remember_cookie(request: Any, value: str | None) -> None:
     """Ask the auth middleware to set (value) or clear (None) the cookie.
 
     Guards never touch responses; the scope marker is flushed as a

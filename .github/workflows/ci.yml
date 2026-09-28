@@ -204,3 +204,62 @@ jobs:
 
       - name: Run E2E suite
         run: npx playwright test
+
+  release-smoke:
+    name: Release smoke (wheel boots a fresh app)
+    needs: [boundary, backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # The release gate: everything below runs against the BUILT wheel, never
+      # the checkout — the exact artifact `twine upload` would ship. A wheel the
+      # starter kit cannot boot from fails here, before PyPI, not in a user's
+      # terminal after install.
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+
+      - name: Twine check
+        run: twine check dist/*
+
+      - name: Install the built wheel into a clean venv
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --upgrade pip
+          /tmp/smoke/bin/pip install dist/fastplace-*.whl
+          # Prove fastplace resolves from the smoke venv, not the checkout —
+          # run from /tmp so the repo's own fastplace/ dir cannot shadow it.
+          cd /tmp
+          /tmp/smoke/bin/python -c 'import fastplace, pathlib; p = pathlib.Path(fastplace.__file__).resolve(); assert "/tmp/smoke" in str(p), p'
+
+      - name: Scaffold an app from the installed artifact
+        run: |
+          mkdir /tmp/appdir
+          cd /tmp/appdir
+          /tmp/smoke/bin/fastplace new demo --auth --no-install
+
+      # The scaffolded pyproject pins fastplace>=<this release>, which the
+      # wheel already installed above satisfies — so this editable install
+      # never re-resolves fastplace from PyPI. It pulls only the app's own
+      # deps (email-validator, the queue/webauthn extras, the dev suite),
+      # exactly what a real user's `fastplace new` installs for them.
+      - name: Install the scaffolded app's dependencies
+        run: |
+          cd /tmp/appdir/demo
+          /tmp/smoke/bin/pip install -e ".[dev]"
+
+      - name: Boot the scaffolded app
+        run: |
+          cd /tmp/appdir/demo
+          /tmp/smoke/bin/python -c "from asgi import app; print('ROUTES', len(app.routes))"
+
+      - name: Run the scaffolded app's emitted test suite
+        run: |
+          cd /tmp/appdir/demo
+          /tmp/smoke/bin/python -m pytest -q

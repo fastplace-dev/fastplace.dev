@@ -8,9 +8,9 @@ from urllib.parse import quote
 
 from app.modules.accounts.repositories.user_repository import UserRepository
 from app.modules.accounts.services.password_policy import min_password_length
-from fastplace.auth.guards import SESSION_STORE_SCOPE, _queue_remember_cookie
+from fastplace.auth.guards import SESSION_STORE_SCOPE, queue_remember_cookie
 from fastplace.auth.hashing import Hash
-from fastplace.auth.passwords import _dummy_digest, throttle_seconds, token_store
+from fastplace.auth.passwords import dummy_digest, throttle_seconds, token_store
 from fastplace.auth.remember import remember_store
 from fastplace.auth.tokens import pat_store
 from fastplace.errors import ValidationError
@@ -43,7 +43,7 @@ class PasswordResetService:
         if user is None:
             # Equal work: the unknown-email path pays the same scrypt cost a
             # wrong password pays on login (timing parity, spec §6).
-            Hash.check(normalized, _dummy_digest())
+            Hash.check(normalized, dummy_digest())
             return self.SENT_MESSAGE
 
         raw = await token_store().issue(normalized)
@@ -107,5 +107,5 @@ class PasswordResetService:
         regenerate = getattr(session, "regenerate", None)
         if callable(regenerate):
             regenerate()
-        _queue_remember_cookie(request, None)  # revoked server-side; clear it client-side
+        queue_remember_cookie(request, None)  # revoked server-side; clear it client-side
         await dispatch(DomainEvent("PasswordReset", {"user_id": user.id, "email": user.email}))
