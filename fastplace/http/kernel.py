@@ -359,6 +359,13 @@ def _mount_routes(
     ai_routes: Router | None,
     route_middleware: dict[str, Any] | None = None,
 ) -> None:
+    # Route/config optimization caches (audit sweep-G14) were measured and
+    # rejected: registration costs ~0.2 ms per route (dominated by FastAPI's
+    # own route-object construction, which a build-time manifest cannot
+    # skip) and config() reads are memoized (~0.5 µs). Realistic apps pay
+    # tens of ms once per worker — a persisted manifest would trade that
+    # for cache-invalidation and drift risk. Revisit only if boot profiling
+    # ever shows route registration as a real cost.
     api = APIRouter()
     if routes:
         _register_router(api, routes, route_middleware=route_middleware)
