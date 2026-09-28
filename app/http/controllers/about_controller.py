@@ -11,4 +11,6 @@ class AboutController(Controller):
 
     async def index(self, request: Request):
         props = await self.service.compose(url=request.full_path)
-        return render(request, component="About/Index", props=props)
+        return render(
+            request, component="About/Index", props=props, title="About", canonical="/about"
+        )

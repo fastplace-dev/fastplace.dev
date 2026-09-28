@@ -11,4 +11,10 @@ from fastplace.http import Controller, Request, render
 
 class SettingsAppearanceController(Controller):
     async def index(self, request: Request):
-        return render(request, component="Settings/Appearance", props={})
+        return render(
+            request,
+            component="Settings/Appearance",
+            props={},
+            title="Appearance",
+            robots="noindex",
+        )
