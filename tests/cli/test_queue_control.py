@@ -13,6 +13,7 @@ error. Neither command is in the spec's destructive set: no production guard.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 
 import pytest
@@ -187,6 +188,50 @@ def test_queue_work_saq_exit_fails_when_the_sentinel_survives(project, monkeypat
     assert result.exit_code == 1, result.output
     plain = ANSI_RE.sub("", result.output)
     assert "still set" in plain
+
+
+def test_queue_work_hides_saq_grace_noise_only_for_the_workers_lifetime(
+    project, monkeypatch, caplog
+):
+    """q2-G8: saq 0.26's stop() gathers its upkeep tasks with
+    ``timeout=shutdown_grace_period_s or 0`` — and the sweep poll sleeps on a
+    60s interval, so the "Some tasks did not finish within the shutdown grace
+    period" warning fires on EVERY exit, clean drained bursts included
+    (raising the grace instead would hang each exit waiting out that sleep —
+    and cancellation itself completes in microseconds). The CLI filters
+    exactly that one line for the worker's lifetime: a different saq log
+    passes through, and the filter is gone once the command exits."""
+    from fastplace.queue import SaqQueue
+
+    grace_line = (
+        "Some tasks did not finish within the shutdown grace period, requesting cancellation"
+    )
+    saq_logger = logging.getLogger("saq.worker")
+
+    class FakeWorker:
+        async def start(self) -> None:
+            # What a real saq stop() emits on a clean burst exit.
+            saq_logger.warning(grace_line)
+            saq_logger.warning("unrelated saq worker line")
+
+    def fake_build_worker(self, **kwargs):  # noqa: ANN001
+        return FakeWorker()
+
+    monkeypatch.setattr(SaqQueue, "build_worker", fake_build_worker)
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+
+    with caplog.at_level(logging.WARNING, logger="saq.worker"):
+        result = runner.invoke(cli_app, ["queue:work", "--once"])
+    assert result.exit_code == 0, result.output
+
+    messages = [record.message for record in caplog.records]
+    assert "unrelated saq worker line" in messages  # scoped, not muzzled
+    assert grace_line not in messages  # the structural false-positive dies
+
+    # The filter is removed with the run — later saq logging is untouched.
+    with caplog.at_level(logging.WARNING, logger="saq.worker"):
+        saq_logger.warning(grace_line)
+    assert any(record.message == grace_line for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

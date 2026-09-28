@@ -17,6 +17,42 @@ dispatch queues in-process; ``fastplace queue:work --once`` drains it, the
 whole story for non-redis dev) or ``saq`` (production, backed by redis). The
 SAQ queue and its redis connections are built lazily — importing or
 constructing the driver never touches the network.
+
+Composition patterns
+--------------------
+
+* **Batch fan-out** — ``await queue().dispatch_many([("job", {...}), ...])``
+  enqueues a whole list in one call: names are validated atomically (one
+  unknown name refuses the batch before anything queues) and handles come
+  back in input order.
+* **Unique dispatches** — ``queue().job(name, unique=True).dispatch(**kw)``
+  gives the job a deterministic identity; an identical unresolved dispatch
+  is suppressed on both drivers (``dispatch()`` returns ``None`` then).
+* **Mutual exclusion** (the "locked job" idiom) — claim an atomic cache
+  counter around the body, release it in a ``finally``; the TTL is the
+  crash safety net (a worker that dies mid-job never reaches the release)::
+
+      if await cache().increment(f"lock:nightly_sync", ttl=1800) != 1:
+          return  # another run holds the lock — skip, not queue
+      try:
+          ...  # the guarded body
+      finally:
+          await cache().forget("lock:nightly_sync")
+
+  Cross-process locking needs the redis cache driver (its ``increment`` is
+  a single atomic ``INCR``); the database driver reads the counter back in
+  a second transaction, so two concurrent writers can observe the same
+  count and both believe they hold the lock.
+* **Chaining and rate limiting** — deliberately not APIs yet (deferred
+  until real demand; a Chain builder that cannot express failure semantics
+  is worse than the explicit idiom). Interim idioms: a chain is a handler
+  whose last line dispatches the next job (normal completion IS the
+  "previous step succeeded" signal; a failed step records to the
+  failed-job ledger and never enqueues its successor), and a rate limit is
+  a cache token bucket at the top of the handler::
+
+      if await cache().increment(f"rl:fetch_prices", ttl=60) > 120:
+          return  # over budget for this window — skip or re-dispatch delayed
 """
 
 from __future__ import annotations
@@ -270,6 +306,15 @@ class QueueDriver(Protocol):
 
     async def dispatch(self, name: str, **kwargs: Any) -> Any: ...
 
+    async def dispatch_many(self, jobs: list[tuple[str, dict[str, Any]]]) -> list[Any]:
+        """Enqueue a batch of ``(name, kwargs)`` dispatches in one call.
+
+        Validation is atomic: one unknown name refuses the whole batch with
+        ``ValueError`` before anything is enqueued. Returns the handles in
+        input order (q1-G6 batching).
+        """
+        ...
+
     async def clear(self) -> int:
         """Drop every pending job without running it; return how many."""
         ...
@@ -304,6 +349,20 @@ class MemoryQueue:
         if name not in registry:
             raise ValueError(f"unknown job '{name}' — is it registered with @Job?")
         return await self._enqueue_memory(name, kwargs, _resolve_envelope(registry[name], {}))
+
+    async def dispatch_many(
+        self, jobs: list[tuple[str, dict[str, Any]]]
+    ) -> list[_MemoryJobHandle | None]:
+        """Enqueue a whole batch of plain dispatches; handles in input order.
+
+        See :meth:`QueueDriver.dispatch_many` for the contract (atomic
+        validation, preserved order).
+        """
+        _validate_batch_names([name for name, _ in jobs])
+        return [
+            await self._enqueue_memory(name, kwargs, _resolve_envelope(registry[name], {}))
+            for name, kwargs in jobs
+        ]
 
     def job(self, name: str, **options: Any) -> PendingDispatch:
         """Builder entry — see :class:`PendingDispatch` (rejects ``queue=``)."""
@@ -461,6 +520,23 @@ class MemoryQueue:
         """The in-process handle's status, None when no such dispatch."""
         handle = self.dispatched.get(key)
         return handle.status if handle is not None else None
+
+
+def _validate_batch_names(names: list[str]) -> None:
+    """Refuse a batch naming any unregistered job — before anything enqueues.
+
+    ``dispatch_many``'s contract is all-or-nothing validation: looping
+    ``dispatch()`` by hand lets item 3 of 5 fail after items 1-2 already
+    queued, leaving a half-applied batch behind. ``dict.fromkeys`` keeps the
+    unknown names in first-seen order without rescanning the list per name.
+    """
+    unknown = [name for name in dict.fromkeys(names) if name not in registry]
+    if unknown:
+        listed = ", ".join(f"'{name}'" for name in unknown)
+        raise ValueError(
+            f"unknown job(s) in batch: {listed} — is it registered with @Job? "
+            "Nothing from this batch was enqueued."
+        )
 
 
 async def _record_saq_failure(ctx: dict[str, Any]) -> None:
@@ -751,6 +827,20 @@ class SaqQueue:
         if name not in registry:
             raise ValueError(f"unknown job '{name}' — is it registered with @Job?")
         return await self._enqueue_saq(name, kwargs, _resolve_envelope(registry[name], {}))
+
+    async def dispatch_many(self, jobs: list[tuple[str, dict[str, Any]]]) -> list[Any]:
+        """Enqueue a whole batch of plain dispatches; handles in input order.
+
+        See :meth:`QueueDriver.dispatch_many` for the contract (atomic
+        validation, preserved order). Per-item envelope options are not part
+        of the batch surface: build those dispatches with
+        :meth:`job` individually — a batch is for uniform fan-out.
+        """
+        _validate_batch_names([name for name, _ in jobs])
+        return [
+            await self._enqueue_saq(name, kwargs, _resolve_envelope(registry[name], {}))
+            for name, kwargs in jobs
+        ]
 
     def job(self, name: str, **options: Any) -> PendingDispatch:
         """Builder entry — see :class:`PendingDispatch`."""

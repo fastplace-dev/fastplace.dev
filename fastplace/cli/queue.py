@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +37,29 @@ queue_app = typer.Typer(help="Background queue operations.")
 #: saq burst mode refuses to construct without a positive dequeue timeout
 #: (``Worker.__init__`` raises), so every burst worker gets this default.
 _BURST_DEQUEUE_TIMEOUT = 1.0
+
+#: The one saq 0.26 shutdown line that is noise by construction (q2-G8).
+#: ``Worker.stop()`` gathers the upkeep tasks with
+#: ``timeout=shutdown_grace_period_s or 0`` — default 0 — and the sweep poll
+#: sleeps on its full 60s interval regardless of the stop event, so this
+#: warning fires on every exit, cleanly drained bursts included. Raising the
+#: grace cannot fix it (any sane grace still sits under that 60s sleep, so
+#: the warning fires anyway after hanging the exit for the full grace);
+#: cancellation itself completes in microseconds, and a genuinely stuck task
+#: still surfaces through the distinct follow-up line ("did not finish
+#: cancellation in time"), which this filter lets through. Scoped to the
+#: worker's lifetime only — the process's other saq logging is untouched.
+_SAQ_GRACE_NOISE = (
+    "Some tasks did not finish within the shutdown grace period, requesting cancellation"
+)
+
+
+class _SuppressSaqGraceNoise(logging.Filter):
+    """Drop saq's structural shutdown false-positive for one worker run."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != _SAQ_GRACE_NOISE
+
 
 #: CLI option → the saq ``Worker`` parameter it would map to. Whether it
 #: actually maps is decided against the INSTALLED saq's ``Worker.__init__``
@@ -194,9 +218,13 @@ def queue_work(
             await _scan_aborted()  # losses from the previous worker, now
             companion = asyncio.create_task(_companion_scan())
             requested = await restart_requested_at() is not None
+            saq_logger = logging.getLogger("saq.worker")
+            grace_filter = _SuppressSaqGraceNoise()
+            saq_logger.addFilter(grace_filter)
             try:
                 await worker.start()
             finally:
+                saq_logger.removeFilter(grace_filter)
                 companion.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await companion
