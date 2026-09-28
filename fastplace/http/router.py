@@ -9,6 +9,8 @@ return anything coercible to a response.
 from __future__ import annotations
 
 import inspect
+import re
+import typing
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -208,26 +210,93 @@ def _bind(mw: Any, next_step: Any) -> Any:
     return step
 
 
-def endpoint_adapter(handler: Callable, middleware: tuple[Any, ...] = ()) -> Callable:
+_PATH_PARAM_RE = re.compile(r"\{(\w+)\}")
+
+
+def route_bindings(handler: Callable, path: str) -> tuple[tuple[str, Any], ...]:
+    """Extract model-bound path params from a controller signature.
+
+    A parameter type-annotated with an ORM ``Model`` subclass and named after
+    a ``{param}`` in the route path is resolved by the kernel (via
+    ``find_or_fail``) before the middleware chain runs. String annotations
+    (``from __future__ import annotations``) resolve against the controller's
+    module; anything unresolvable or off-path stays unbound — a route must
+    never fail to register because of its annotations.
+    """
+    path_params = set(_PATH_PARAM_RE.findall(path))
+    if not path_params:
+        return ()
+    from fastplace.orm import Model
+
+    try:
+        hints: dict[str, Any] = typing.get_type_hints(handler)
+    except Exception:
+        # Unresolvable names: bind only live (already-evaluated) annotations
+        # and skip the rest.
+        hints = {
+            name: value
+            for name, value in getattr(handler, "__annotations__", {}).items()
+            if isinstance(value, type)
+        }
+    bound: list[tuple[str, Any]] = []
+    for name, annotation in hints.items():
+        if name in ("request", "return") or name not in path_params:
+            continue
+        if isinstance(annotation, type) and issubclass(annotation, Model):
+            bound.append((name, annotation))
+    return tuple(bound)
+
+
+def _coerce_pk(model: Any, raw: Any) -> Any:
+    # Path segments arrive as strings; integer primary keys are coerced so
+    # strict backends (postgres) compare values of the right type instead of
+    # erroring on a string bind. Everything else passes through untouched.
+    if not isinstance(raw, str) or not raw.isascii() or not raw.isdigit():
+        return raw
+    table = getattr(model, "__table__", None)
+    pk = getattr(table, "primary_key", None)
+    for column in getattr(pk, "columns", ()):
+        if column.type.python_type is int:
+            return int(raw)
+    return raw
+
+
+def endpoint_adapter(
+    handler: Callable,
+    middleware: tuple[Any, ...] = (),
+    bindings: tuple[tuple[str, Any], ...] = (),
+) -> Callable:
     """Adapt a Fastplace controller into a FastAPI-compatible endpoint.
 
     FastAPI injects its request; we wrap it, optionally run the route's
     middleware chain (outermost first) around the controller call, and
     coerce the return value (Pydantic return annotations validate first).
+    Model-bound path params (see :func:`route_bindings`) resolve to live
+    instances BEFORE the chain runs, so ``can:`` middleware and the
+    controller both see the model, never the raw id.
     """
     from fastplace.http.request import Request
     from fastplace.http.response import to_response
 
     from .serialization import validated_payload
 
+    async def resolve_bindings(request: Request) -> None:
+        for name, model in bindings:
+            raw = request.path_params.get(name)
+            request.path_params[name] = await model.find_or_fail(_coerce_pk(model, raw))
+
     async def run_controller(request: Request) -> Any:
-        result = await handler(request)
+        bound_kwargs = {name: request.path_params[name] for name, _ in bindings}
+        result = await handler(request, **bound_kwargs)
         return to_response(validated_payload(handler, result))
 
     async def endpoint(starlette_request: StarletteRequest) -> Any:
         request = Request(starlette_request)
+        if bindings:
+            await resolve_bindings(request)
         if not middleware:
-            result = await handler(request)
+            bound_kwargs = {name: request.path_params[name] for name, _ in bindings}
+            result = await handler(request, **bound_kwargs)
             return to_response(validated_payload(handler, result))
         core: Any = run_controller
         for mw in reversed(middleware):

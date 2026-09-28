@@ -24,7 +24,7 @@ from fastplace.http.compression import CompressionMiddleware
 from fastplace.http.maintenance import MaintenanceMiddleware
 from fastplace.http.middleware import Middleware, wrap_middleware
 from fastplace.http.response import Html, Json, Response
-from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware
+from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware, route_bindings
 from fastplace.http.websocket import websocket_adapter
 
 API_PREFIX = "/api/v1"
@@ -374,7 +374,11 @@ def _register_router(
         chain = tuple(resolve_route_middleware(registry, alias) for alias in route.middleware)
         target.add_api_route(
             prefix + route.path,
-            endpoint_adapter(route.handler, chain),
+            endpoint_adapter(
+                route.handler,
+                chain,
+                route_bindings(route.handler, prefix + route.path),
+            ),
             methods=[route.method],
             name=route.name or getattr(route.handler, "__name__", None) or "endpoint",
         )

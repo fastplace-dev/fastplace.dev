@@ -12,9 +12,11 @@ from fastplace.http.middleware import Middleware
 class CanMiddleware(Middleware):
     """Authorize the route against a gate ability before the controller runs.
 
-    ``can:update,project`` checks ability ``update`` passing the raw STRING
-    route param ``project`` as the only extra argument (model binding is a
-    later concern — deviation #4). Denial raises ``AuthorizationError``
+    ``can:update,project`` checks ability ``update`` passing the route param
+    ``project`` as the only extra argument. The param arrives exactly as the
+    kernel bound it: with route model binding, an ORM ``Model`` instance
+    resolved via ``find_or_fail`` (see ``fastplace.http.router.route_bindings``);
+    without it, the raw path string. Denial raises ``AuthorizationError``
     through the kernel's JSON envelope; guests get 403, never a redirect.
     """
 
