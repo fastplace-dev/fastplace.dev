@@ -153,6 +153,23 @@ def test_new_env_defaults_to_sqlite_and_generates_a_key(tmp_path, monkeypatch):
     assert 'APP_ENV = "local"' in (root / "blog" / "config" / "app.py").read_text()
 
 
+def test_new_env_pins_session_and_cache_drivers(tmp_path, monkeypatch):
+    """The scaffold must boot warn-free: run dev warns on memory sessions
+    (every reload drops the store) and serve's multi-worker guard refuses
+    them outright — so the default .env pins SESSION_DRIVER=database (the
+    zero-config SQLite store) instead of leaving the implicit memory default."""
+    _, root = _invoke(tmp_path, monkeypatch, "blog")
+    env = (root / "blog" / ".env").read_text()
+    example = (root / "blog" / ".env.example").read_text()
+
+    assert "SESSION_DRIVER=database" in env
+    assert "SESSION_DRIVER=database" in example
+    # Cache has no dev-time warning; the explicit line documents the knob a
+    # production deploy must move off memory (serve refuses it there).
+    assert "CACHE_DRIVER=memory" in env
+    assert "CACHE_DRIVER=memory" in example
+
+
 def test_new_refuses_a_non_empty_directory(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 

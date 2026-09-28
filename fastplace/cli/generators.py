@@ -1704,8 +1704,15 @@ APP_URL=http://localhost:8000
 APP_KEY={app_key}
 
 # Auth sessions — server-side store; the cookie carries only the opaque ID.
+# database keeps sessions across dev reloads and multi-worker serve (the
+# table is framework-owned and created lazily); memory is dev-only.
 SESSION_COOKIE=fastplace_session
 SESSION_LIFETIME=7200
+SESSION_DRIVER=database
+
+# Per-process cache — fine for a single local process; serve refuses
+# CACHE_DRIVER=memory under APP_ENV=production (set redis there).
+CACHE_DRIVER=memory
 
 # Database — SQLite zero-config default. Production examples:
 #   DATABASE_URL=postgresql://user:pass@localhost:5432/{slug}
