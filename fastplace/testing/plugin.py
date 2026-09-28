@@ -205,6 +205,41 @@ def events_fake(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture()
+def notifications():
+    """Notification fan-out is recorded per channel leg; nothing is delivered."""
+    from fastplace.testing.notifications import FakeNotifications
+
+    fake = FakeNotifications()
+    fake.install()
+    yield fake
+    fake.restore()
+
+
+@pytest.fixture()
+def storage_fake(monkeypatch: pytest.MonkeyPatch):
+    """The process-wide ``disk()`` becomes a dict-backed FakeStorage."""
+    import fastplace.storage as storage_module
+    from fastplace.testing.storage import FakeStorage
+
+    fake = FakeStorage()
+
+    class _FakeRegistry(storage_module.Storage):
+        def disk(self, name: str | None = None) -> Any:
+            return fake
+
+    monkeypatch.setattr(storage_module, "_default_storage", _FakeRegistry(disks={}, default="fake"))
+    yield fake
+
+
+@pytest.fixture()
+def http_fake():
+    """An injectable fake HTTP client: stub with ``respond``, assert on requests."""
+    from fastplace.testing.http import FakeHttp
+
+    yield FakeHttp()
+
+
+@pytest.fixture()
 def clock():
     """Freeze and travel through time (``pip install 'fastplace[testing]'``)."""
     try:

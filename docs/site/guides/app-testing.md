@@ -139,6 +139,71 @@ async def test_signup_dispatches_event(events_fake, client):
     events_fake.assert_not_dispatched("user.deleted")
 ```
 
+### Notifications — `notifications`
+
+Swaps every registered notification channel (mail, database, and any
+`register_channel` custom ones) for a recording twin. Fan-out still runs —
+each `to_<channel>` builder is built (a missing builder fails loudly, as in
+production) — but no mail leaves and no database row is written. Custom
+channels are restored exactly as they were after the test.
+
+```python
+async def test_invoice_notifies_owner(notifications, client):
+    await client.post("/invoices", data={...})
+
+    notifications.assert_sent(InvoicePaid, channel="mail", to=user)
+    notifications.assert_sent(InvoicePaid, channel="database", match={"amount": 42})
+    notifications.assert_not_sent(ServerError)
+    notifications.assert_sent_count(2)  # one leg per channel
+```
+
+Filters: `notification` (class or name), `to=` (a notifiable — matched by
+its `notifiable_key`), `channel=`, `match=` (payload key-subset), `times=`.
+`records(...)` returns the recorded legs for deeper assertions.
+
+### Storage — `storage_fake`
+
+Replaces the process-wide `disk()` registry with a dict-backed fake
+implementing the full `Disk` protocol — no file touches the real
+filesystem, whatever disk name the code requests.
+
+```python
+async def test_avatar_uploaded(storage_fake, client):
+    await client.post("/profile/avatar", files={...})
+
+    storage_fake.assert_stored("avatars/7.png")
+    storage_fake.assert_stored("avatars/7.png", content=b"\x89PNG...")
+    storage_fake.assert_stored_count(1)
+    storage_fake.assert_missing("avatars/8.png")
+```
+
+Primitives (`put`/`get`/`copy`/`move`/`delete`/`files`/`url`/...) work
+directly too, so code under test can read back what an upload wrote.
+
+### HTTP client — `http_fake`
+
+The framework ships no outbound HTTP client, so this fake is the
+injectable stand-in for whatever client your service accepts: stub what
+the test's URLs answer, hand the fake to the code under test, assert on
+what that code asked for.
+
+```python
+async def test_import_runs(http_fake):
+    http_fake.respond("GET", "https://api.shop.test/orders/*", FakeResponse(200, json={"total": 9}))
+    http_fake.respond("POST", "https://api.shop.test/charge", FakeResponse(402, text="declined"))
+
+    result = await ImportService(client=http_fake).run()
+
+    http_fake.assert_requested("POST", "https://api.shop.test/charge", match={"amount": 9})
+    http_fake.assert_not_requested("GET", "https://api.shop.test/refunds")
+    http_fake.assert_request_count(2)
+```
+
+URLs are `fnmatch` globs (`https://api.test/users/*`); later stubs win, so
+a broad baseline can be overridden per test. A request with no matching
+stub raises — silent 404s from a missing stub are exactly what a fake
+must not produce.
+
 ## Time — `clock`
 
 `clock.freeze(moment)` stops the clock app-wide; `travel()` moves it
@@ -249,12 +314,10 @@ fixtures; an existing conftest or pyproject is never overwritten.
 
 ## What the toolkit does not cover (yet)
 
-Keep it honest: the toolkit ships no HTTP-mocking layer and no storage
-fakes. For outbound HTTP in tests use
-[respx](https://lundberg.github.io/respx/) with the `client` transport —
-it intercepts at `httpx` level, which is where your app's outbound calls
-live. For the filesystem, pytest's built-in `tmp_path` and `monkeypatch`
-remain the right tools. Canonical patterns:
+The toolkit ships no transport-level HTTP mocking. `http_fake` stands in
+for a client you inject; to intercept a *real* `httpx` client at
+transport level — where your app's own outbound calls live — use
+[respx](https://lundberg.github.io/respx/):
 
 ```python
 import respx
@@ -266,12 +329,6 @@ async def test_weather_widget(client):
     respx.get("https://api.weather.test/").mock(return_value=Response(200, json={"temp": 21}))
     response = await client.get("/dashboard")
     assert response.assert_ok().assert_see("21°")
-```
-
-```python
-def test_report_written(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPORT_DIR", str(tmp_path))
-    ...  # assert the file exists under tmp_path, never the real upload dir
 ```
 
 If a pattern turns up repeatedly, file an issue — the fakes grow with the

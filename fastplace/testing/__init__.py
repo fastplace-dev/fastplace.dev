@@ -12,10 +12,15 @@ from typing import Any
 __all__ = [
     "Clock",
     "FakeEvents",
+    "FakeHttp",
     "FakeMail",
+    "FakeNotifications",
     "FakeQueue",
+    "FakeResponse",
+    "FakeStorage",
     "ModelFactory",
     "PushedJob",
+    "SentNotification",
     "TestClient",
     "TestResponse",
 ]
@@ -29,6 +34,11 @@ _EXPORTS = {
     "FakeEvents": ("fastplace.testing.events", "FakeEvents"),
     "Clock": ("fastplace.testing.clock", "Clock"),
     "ModelFactory": ("fastplace.testing.factories", "ModelFactory"),
+    "FakeNotifications": ("fastplace.testing.notifications", "FakeNotifications"),
+    "SentNotification": ("fastplace.testing.notifications", "SentNotification"),
+    "FakeStorage": ("fastplace.testing.storage", "FakeStorage"),
+    "FakeHttp": ("fastplace.testing.http", "FakeHttp"),
+    "FakeResponse": ("fastplace.testing.http", "FakeResponse"),
 }
 
 
