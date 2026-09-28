@@ -79,6 +79,33 @@ def test_python_and_npm_versions_move_in_lockstep():
     assert ai_react["version"] == version, "@fastplace/ai-react must match pyproject"
 
 
+def test_dunder_version_matches_pyproject():
+    """``fastplace --version`` and doctor report ``fastplace.__version__``,
+    not the pyproject value — the two drifted through 0.2.0 (dunder stuck at
+    0.1.0) and shipped a CLI that understated the installed release."""
+    import tomllib
+
+    from fastplace import __version__
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]
+
+
+def test_tenancy_rides_the_framework_release_train():
+    """CI exercises fastplace-tenancy solely against the same commit's
+    fastplace, so the published combination doctrine ("tested combinations
+    only") means tenancy must release at the framework's version with its
+    dependency floor on that exact release. The package sat at 0.1.0 through
+    the 0.2.0 release; this contract keeps it on the train from here on."""
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    tenancy = tomllib.loads((ROOT / "packages" / "tenancy" / "pyproject.toml").read_text())
+    version = pyproject["project"]["version"]
+    assert tenancy["project"]["version"] == version
+    assert tenancy["project"]["dependencies"] == [f"fastplace>={version}"]
+
+
 def test_pyproject_license_uses_pep639_spdx_form():
     """The ``license = { text = ... }`` TOML table is deprecated (setuptools
     warns it stops being supported); PEP 639 wants the SPDX string plus an
@@ -99,15 +126,15 @@ def test_dev_extra_installs_email_validator():
     assert "email-validator" in dev_block
 
 
-def test_sqlalchemy_dep_carries_a_2_1_upper_bound():
-    """SQLAlchemy 2.1 changes how the morph-to-many owner-type primaryjoin
-    filter reaches eager loads (duplicate pivot rows — see
-    tests/orm/test_through_and_morph_pivot.py), so fresh installs must not
-    resolve into 2.1.x until the compat work lands. The bound ships to users
-    with the next release, which is why it lives in the published metadata
-    rather than a CI-only constraint."""
+def test_sqlalchemy_dep_is_open_above_the_2_0_floor():
+    """The morph-to-many selectin fix pins ``omit_join=False``, which holds
+    the join-based loader — and the full owner-type primaryjoin — on every
+    2.x (see tests/orm/test_through_and_morph_pivot.py). The freeze bound
+    that carried 0.2.0 through the 2.1 rename is therefore lifted: the
+    dependency stays open above the tested 2.0.36 floor."""
     text = (ROOT / "pyproject.toml").read_text()
-    assert '"sqlalchemy[asyncio]>=2.0.36,<2.1"' in text
+    assert '"sqlalchemy[asyncio]>=2.0.36"' in text
+    assert "<2.1" not in text
 
 
 def test_pyproject_declares_trove_classifiers():
