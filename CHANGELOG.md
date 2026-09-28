@@ -4,6 +4,36 @@ All notable changes to the Fastplace framework are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-28
+
+The SQLAlchemy 2.1 compatibility release. `morph_to_many` eager loads are
+pinned back to the join-based selectin path, and the dependency floor is
+open above 2.0.36 again — fresh installs may resolve SQLAlchemy 2.1.x.
+Python and npm packages stay in lockstep (`fastplace`,
+`@fastplace/react`, `@fastplace/ai-react`), and `fastplace-tenancy` joins
+the release train at the same version.
+
+### Fixed
+
+- SQLAlchemy 2.1 compatibility for `morph_to_many`: 2.1 auto-enables the
+  `omit_join` selectin optimization for many-to-many shapes whose
+  secondary FKs cover the parent pk, and that path never applies the
+  custom primaryjoin — the owner-type discriminator was silently dropped
+  and members owned by other types double-loaded. `morph_to_many` now
+  pins `omit_join=False`, keeping the join-based loader (full
+  primaryjoin) on every 2.x; behavior on 2.0 is unchanged.
+- The `<2.1` SQLAlchemy freeze bound is lifted; the dependency is open
+  above the tested 2.0.36 floor.
+- `fastplace.__version__` no longer lags the release — it was stuck at
+  0.1.0 through the 0.2.0 release, understating `fastplace --version`
+  and doctor output. A contract test now pins it to pyproject.
+
+### Added
+
+- Packaging contract tests: `fastplace.__version__` must match
+  pyproject, and `fastplace-tenancy` must ride the framework release
+  train (same version, floor on the matching `fastplace`).
+
 ## [0.2.0] - 2026-09-28
 
 The post-audit hardening release: every fix wave from the full-framework

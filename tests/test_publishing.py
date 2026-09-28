@@ -79,6 +79,18 @@ def test_python_and_npm_versions_move_in_lockstep():
     assert ai_react["version"] == version, "@fastplace/ai-react must match pyproject"
 
 
+def test_dunder_version_matches_pyproject():
+    """``fastplace --version`` and doctor report ``fastplace.__version__``,
+    not the pyproject value — the two drifted through 0.2.0 (dunder stuck at
+    0.1.0) and shipped a CLI that understated the installed release."""
+    import tomllib
+
+    from fastplace import __version__
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]
+
+
 def test_pyproject_license_uses_pep639_spdx_form():
     """The ``license = { text = ... }`` TOML table is deprecated (setuptools
     warns it stops being supported); PEP 639 wants the SPDX string plus an
