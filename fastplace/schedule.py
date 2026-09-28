@@ -294,8 +294,12 @@ class ScheduledTask:
         mid-run) finds the claim held and skips the firing. ``ttl`` is only
         the crash safety net — a worker that dies mid-task never reaches the
         release, and the mutex must not stay latched forever afterwards.
-        Cross-instance locking needs a shared cache driver (redis); an
-        unreachable cache fails OPEN (the task runs) — availability over
+        Cross-instance locking needs a shared cache driver; redis is the one
+        whose ``increment`` is atomic, so it is the driver this guard can
+        actually promise anything on (the database cache driver's increment
+        is a read-modify-write — two tickers can race past it; memory is
+        per-process and guards nothing across processes). An unreachable
+        cache fails OPEN (the task runs) — availability over
         duplicate-suppression, mirroring the queue restart sentinel.
         """
         if ttl < 1:
@@ -640,18 +644,19 @@ class Schedule:
                 continue
             if not task.is_due(moment):
                 continue
-            if task._overlap_ttl is not None and not await _claim_task_lock(
-                task.name, task._overlap_ttl
-            ):
-                continue
+            lock_token: str | None = None
+            if task._overlap_ttl is not None:
+                lock_token = await _claim_task_lock(task.name, task._overlap_ttl)
+                if lock_token is None:
+                    continue  # another firing of this task is in flight
             try:
                 value = await task.execute(runner)
                 results.append(TaskResult(task, ok=True, value=value))
             except Exception as exc:  # recorded per task — one failure never stops the rest
                 results.append(TaskResult(task, ok=False, error=exc))
             finally:
-                if task._overlap_ttl is not None:
-                    await _release_task_lock(task.name)
+                if lock_token is not None:
+                    await _release_task_lock(task.name, lock_token)
         return results
 
 
@@ -660,30 +665,63 @@ class Schedule:
 # ---------------------------------------------------------------------------
 
 
-async def _claim_task_lock(name: str, ttl: int) -> bool:
-    """Claim ``schedule:lock:<name>``; ``False`` when another firing holds it.
+async def _claim_task_lock(name: str, ttl: int) -> str | None:
+    """Claim ``schedule:lock:<name>``; ``None`` when another firing holds it.
 
     The atomic increment idiom documented on the queue restart sentinel:
-    ``increment`` returns 1 only to the first claimer; the ttl is the crash
-    safety net (a worker dying mid-task never releases). An unreachable
-    cache fails OPEN — the task runs — availability over
+    ``increment`` returns 1 only to the first claimer. The claim carries an
+    ownership token — a companion ``:owner`` key written with the same ttl —
+    so a release only ever deletes a claim it still owns: a firing that
+    outlives its ttl must not cut down the successor that re-claimed behind
+    it (the unconditional forget would cascade overlaps). The ttl remains
+    the crash safety net (a worker dying mid-task never releases). An
+    unreachable cache fails OPEN — the task runs — availability over
     duplicate-suppression, mirroring the sentinel's posture.
+    """
+    from uuid import uuid4
+
+    from fastplace.cache import cache
+
+    key = f"{_SCHEDULE_LOCK_PREFIX}{name}"
+    try:
+        store = cache()
+        if await store.increment(key, ttl=ttl) != 1:
+            return None
+        token = uuid4().hex
+        try:
+            await store.put(f"{key}:owner", token, ttl=ttl)
+        except Exception:  # noqa: BLE001 — claimed but unprovable
+            # The counter says ours, the proof never landed — undo the claim
+            # rather than latch it for the full ttl, then run unlocked.
+            try:
+                await store.forget(key)
+            except Exception:  # noqa: BLE001 — the ttl recovers a stale claim
+                pass
+            logger.warning("overlap lock owner marker failed for task %r — running unlocked", name)
+        return token
+    except Exception:  # noqa: BLE001 — a broken cache must not stop the schedule
+        logger.warning("overlap lock unreachable for task %r — running unlocked", name)
+        return uuid4().hex
+
+
+async def _release_task_lock(name: str, token: str) -> None:
+    """Drop the overlap mutex — only when the claim still bears ``token``.
+
+    The compare-before-forget is the ownership guard: a firing that outlived
+    its ttl finds the successor's token in the ``:owner`` slot and leaves the
+    live claim standing. Best-effort throughout; the ttl recovers a failed
+    drop, and an unreachable store skips the drop entirely (there may be
+    nothing left to drop).
     """
     from fastplace.cache import cache
 
+    key = f"{_SCHEDULE_LOCK_PREFIX}{name}"
     try:
-        return await cache().increment(f"{_SCHEDULE_LOCK_PREFIX}{name}", ttl=ttl) == 1
-    except Exception:  # noqa: BLE001 — a broken cache must not stop the schedule
-        logger.warning("overlap lock unreachable for task %r — running unlocked", name)
-        return True
-
-
-async def _release_task_lock(name: str) -> None:
-    """Drop the overlap mutex — best-effort; the ttl recovers a failed drop."""
-    from fastplace.cache import cache
-
-    try:
-        await cache().forget(f"{_SCHEDULE_LOCK_PREFIX}{name}")
+        store = cache()
+        if await store.get(f"{key}:owner") != token:
+            return  # expired and re-claimed behind us — not ours to delete
+        await store.forget(key)
+        await store.forget(f"{key}:owner")
     except Exception:  # noqa: BLE001 — the ttl expires the stale claim
         logger.warning("overlap lock release failed for task %r — ttl will expire it", name)
 

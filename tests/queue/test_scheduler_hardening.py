@@ -340,9 +340,113 @@ async def test_without_overlapping_and_maintenance_compose_with_the_surface(tmp_
     schedule.call(work, name="compose.all").hourly().in_timezone("UTC").without_overlapping()
 
     _write_maintenance(tmp_path)
-    await schedule.run_due(dt.datetime(2026, 9, 28, 7, 0), root=tmp_path)
+    await schedule.run_due(dt.datetime(2026, 9, 28, 7, 0, tzinfo=UTC), root=tmp_path)
     assert ran == []
 
     (tmp_path / "storage" / "framework" / "maintenance.json").unlink()
-    await schedule.run_due(dt.datetime(2026, 9, 28, 7, 0), root=tmp_path)
+    await schedule.run_due(dt.datetime(2026, 9, 28, 7, 0, tzinfo=UTC), root=tmp_path)
     assert len(ran) == 1
+
+
+# ---------------------------------------------------------------------------
+# review F1 — lock ownership: a firing must never delete a successor's claim
+# ---------------------------------------------------------------------------
+
+
+async def test_an_outlived_lock_is_not_released_by_its_original_owner():
+    """The ttl is the crash safety net, and a task CAN outlive it. When the
+    expired lock is re-claimed by a second firing, the FIRST firing's exit
+    must not delete that live claim — the unconditional forget of the first
+    cut cascaded overlaps (a third ticker would then run beside the second)."""
+    from fastplace.cache import cache
+    from fastplace.schedule import _claim_task_lock, _release_task_lock
+
+    first = await _claim_task_lock("overlap.outlived", ttl=3600)
+    assert first is not None
+    # The first firing outlives its ttl: the claim and its owner marker both
+    # expire, and a second ticker claims fresh.
+    store = cache()
+    await store.forget("schedule:lock:overlap.outlived")
+    await store.forget("schedule:lock:overlap.outlived:owner")
+    second = await _claim_task_lock("overlap.outlived", ttl=3600)
+    assert second is not None and second != first
+
+    # The FIRST firing finishes now — its release must leave the second's
+    # claim standing (owner token mismatch → no delete).
+    await _release_task_lock("overlap.outlived", first)
+    assert await store.get("schedule:lock:overlap.outlived") is not None
+    assert await store.get("schedule:lock:overlap.outlived:owner") == second
+
+    # And a third claimant is still refused while the second holds it.
+    assert await _claim_task_lock("overlap.outlived", ttl=3600) is None
+    # The rightful owner releases cleanly.
+    await _release_task_lock("overlap.outlived", second)
+    assert await store.get("schedule:lock:overlap.outlived") is None
+
+
+async def test_a_failed_cache_claim_fails_open_and_never_latches():
+    """An unreachable cache fails OPEN (the task runs) — review F1 also
+    pinned the corollary: the fail-open run must not delete anything on exit
+    and must not leave a claim latched behind it."""
+    from fastplace.schedule import _claim_task_lock, _release_task_lock
+
+    class Broken:
+        async def increment(self, key, ttl=None):
+            raise ConnectionError("cache down")
+
+        async def get(self, key):
+            raise ConnectionError("cache down")
+
+        async def put(self, key, value, ttl=None):
+            raise ConnectionError("cache down")
+
+        async def forget(self, key):
+            raise AssertionError("a fail-open run must not touch the store")
+
+    import fastplace.cache as cache_module
+
+    original = cache_module.cache
+    cache_module.cache = lambda: Broken()
+    try:
+        token = await _claim_task_lock("overlap.broken", ttl=60)
+        assert token is not None  # fail-open: the run proceeds
+        await _release_task_lock("overlap.broken", token)  # no raise, no latch
+    finally:
+        cache_module.cache = original
+
+
+async def test_a_claim_whose_owner_marker_fails_runs_unlocked_without_latching():
+    """The counter incremented but the owner marker write failed — the claim
+    is unprovable, so it is dropped (not latched for the full ttl) and the
+    firing runs unlocked."""
+    from fastplace.cache import cache
+    from fastplace.schedule import _claim_task_lock
+
+    class HalfBroken:
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def increment(self, key, ttl=None):
+            return await self._inner.increment(key, ttl=ttl)
+
+        async def get(self, key):
+            return await self._inner.get(key)
+
+        async def put(self, key, value, ttl=None):
+            raise ConnectionError("owner marker write lost")
+
+        async def forget(self, key):
+            return await self._inner.forget(key)
+
+    import fastplace.cache as cache_module
+
+    original = cache_module.cache
+    inner = cache()
+    cache_module.cache = lambda: HalfBroken(inner)
+    try:
+        token = await _claim_task_lock("overlap.halfbroken", ttl=3600)
+        assert token is not None  # the firing runs
+        # The half-claim was undone — the next ticker claims normally.
+        assert await inner.get("schedule:lock:overlap.halfbroken") is None
+    finally:
+        cache_module.cache = original

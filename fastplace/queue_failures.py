@@ -20,6 +20,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     MetaData,
+    String,
     Table,
     Text,
     delete,
@@ -53,7 +54,11 @@ _failed_jobs_table = Table(
     Column("failed_at", DateTime, nullable=False, index=True),  # naive UTC
     # Unique: two workers scanning the same ABORTED job must not both ledger
     # it — the index makes the dedupe airtight at the database level.
-    Column("job_key", Text, nullable=True, index=True, unique=True),
+    # VARCHAR(191), not TEXT: MySQL refuses an index over TEXT without a
+    # prefix length (error 1170), and 191 chars stays under the utf8mb4
+    # InnoDB index byte limit on every configuration. Job keys are uuid-scale
+    # strings — the bound is far above anything real.
+    Column("job_key", String(191), nullable=True, index=True, unique=True),
     sqlite_autoincrement=True,
 )
 
@@ -69,27 +74,46 @@ def utcnow() -> datetime:
 _JOB_KEY_INDEX = "ix__fastplace_failed_jobs_job_key"
 
 
+def _upgrade_statements(dialect_name: str, columns: dict[str, str], indexes: set[str]) -> list[str]:
+    """The DDL ``_upgrade_legacy_table`` must issue, decided purely.
+
+    Split out so the MySQL path is testable without a MySQL server: a
+    legacy ``job_key TEXT`` column there must be narrowed to VARCHAR(191)
+    before the unique index is created (MySQL errors out indexing TEXT
+    without a prefix length). SQLite and PostgreSQL index TEXT natively —
+    no conversion (SQLite cannot ALTER a column type at all). NULLs stay
+    allowed, so legacy rows survive every statement.
+    """
+    stmts: list[str] = []
+    if "job_key" not in columns:
+        stmts.append(f"ALTER TABLE {_failed_jobs_table.name} ADD COLUMN job_key VARCHAR(191)")
+    elif dialect_name == "mysql" and columns.get("job_key", "").upper() == "TEXT":
+        stmts.append(f"ALTER TABLE {_failed_jobs_table.name} MODIFY COLUMN job_key VARCHAR(191)")
+    if _JOB_KEY_INDEX not in indexes:
+        stmts.append(f"CREATE UNIQUE INDEX {_JOB_KEY_INDEX} ON {_failed_jobs_table.name} (job_key)")
+    return stmts
+
+
 def _upgrade_legacy_table(sync_conn: Any) -> None:
     """Bring a pre-``job_key`` table up to the current shape, in place.
 
     Runs inside ensure_table's transaction on every first use: when the
     column already exists (fresh create or prior upgrade) the inspector
-    finds it and nothing is issued. The ALTER is plain ANSI syntax the three
-    supported dialects share; NULLs are allowed, so legacy rows stay valid.
+    finds it and nothing is issued. The statements come from
+    :func:`_upgrade_statements` — dialect-aware, ANSI where possible.
     """
     from sqlalchemy import inspect
 
     inspector = inspect(sync_conn)
     if not inspector.has_table(_failed_jobs_table.name):
         return  # create_all just made the full-shape table — nothing legacy
-    columns = {column["name"] for column in inspector.get_columns(_failed_jobs_table.name)}
-    if "job_key" not in columns:
-        sync_conn.execute(text(f"ALTER TABLE {_failed_jobs_table.name} ADD COLUMN job_key TEXT"))
+    columns = {
+        column["name"]: str(column["type"])
+        for column in inspector.get_columns(_failed_jobs_table.name)
+    }
     indexes = {index["name"] for index in inspector.get_indexes(_failed_jobs_table.name)}
-    if _JOB_KEY_INDEX not in indexes:
-        sync_conn.execute(
-            text(f"CREATE UNIQUE INDEX {_JOB_KEY_INDEX} ON {_failed_jobs_table.name} (job_key)")
-        )
+    for statement in _upgrade_statements(sync_conn.dialect.name, columns, indexes):
+        sync_conn.execute(text(statement))
 
 
 def format_error(exc: BaseException) -> str:
@@ -99,6 +123,27 @@ def format_error(exc: BaseException) -> str:
     (``RuntimeError`` raising with no text is common in handlers).
     """
     return f"{type(exc).__name__}: {exc}"
+
+
+def _is_duplicate_ddl(exc: BaseException) -> bool:
+    """True when ``exc`` says the schema object a racing peer already made.
+
+    Two worker processes hitting their first failure record at once both run
+    ``ensure_table``; the loser's DDL fails with the dialect's flavor of
+    "the table/column/index already exists" (sqlite/PostgreSQL phrase it one
+    way, MySQL numbers it 1050/1060/1061). That failure is success — the
+    object exists, which is all the idempotent ensure promises. Every other
+    error stays an error.
+    """
+    message = f"{exc}".lower()
+    return any(
+        marker in message
+        for marker in (
+            "already exists",
+            "duplicate column name",
+            "duplicate key name",
+        )
+    )
 
 
 class FailedJobStore:
@@ -138,8 +183,16 @@ class FailedJobStore:
             )
             _upgrade_legacy_table(sync_conn)
 
-        async with self._engine().begin() as conn:
-            await conn.run_sync(create)
+        try:
+            async with self._engine().begin() as conn:
+                await conn.run_sync(create)
+        except Exception as exc:  # noqa: BLE001 — only duplicate DDL is benign
+            if not _is_duplicate_ddl(exc):
+                raise
+            # A racing peer (another worker process on its own first failure
+            # record) created the same table/column/index a heartbeat earlier
+            # — the loser of that race used to crash its first record.
+            logger.info("failed-job table already created by a racing peer: %s", exc)
         self._ensured = True
 
     async def record(

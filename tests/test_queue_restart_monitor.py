@@ -181,6 +181,37 @@ async def test_memory_drain_restores_jobs_in_order():
     assert [item.name for item in mem.pending] == ["t28_order_first", "t28_order_second"]
 
 
+async def test_memory_drain_puts_deferred_jobs_ahead_of_the_restored_block():
+    """Review F14: a batch holding a not-yet-due delayed dispatch plus due
+    jobs, stopped mid-drain by a sentinel, must hand back deferred FIRST
+    (they were earlier in the batch) and the un-run due jobs behind them in
+    dispatch order — the replacement worker re-evaluates the same sequence
+    the original drain saw."""
+    from fastplace.queue import Job, MemoryQueue, set_restart_sentinel
+
+    @Job(name="t28_deferred_probe")
+    async def deferred_probe(n: int) -> None: ...
+
+    @Job(name="t28_deferred_blocker")
+    async def blocker() -> None:
+        await set_restart_sentinel()
+
+    mem = MemoryQueue()
+    await mem.job("t28_deferred_probe", delay=300).dispatch(n=1)  # not due
+    await mem.dispatch("t28_deferred_blocker")
+    await mem.job("t28_deferred_probe").dispatch(n=2)  # due, after the blocker
+    await mem.job("t28_deferred_probe").dispatch(n=3)  # due, never reached
+
+    await mem.run_pending()
+
+    names = [item.name for item in mem.pending]
+    kwargs = [item.kwargs["n"] for item in mem.pending if item.name == "t28_deferred_probe"]
+    # The delayed dispatch leads the restored block; the un-run due jobs keep
+    # their dispatch order behind it.
+    assert names == ["t28_deferred_probe", "t28_deferred_probe", "t28_deferred_probe"]
+    assert kwargs == [1, 2, 3]
+
+
 # ---------------------------------------------------------------------------
 # honor_sentinel=False — consumers that never consume the sentinel
 # (the kernel's shutdown drain is the canonical case: the web process is

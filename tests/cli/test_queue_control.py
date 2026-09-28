@@ -167,11 +167,14 @@ def test_queue_work_saq_prints_notice_when_sentinel_pending(project, monkeypatch
     assert "exited cleanly" in plain.lower()
 
 
-def test_queue_work_saq_exit_fails_when_the_sentinel_survives(project, monkeypatch):
-    """The restart contract's verification: a worker that exits WITHOUT
-    consuming a pending sentinel never completed the restart — exit 1 with
-    the failure line, never a silent clean exit."""
-    from fastplace.queue import SaqQueue, set_restart_sentinel
+def test_queue_work_saq_exit_consumes_a_surviving_sentinel(project, monkeypatch):
+    """Review F3: an idle worker never reaches a job boundary, so the
+    after_process hook cannot consume a pending sentinel — but the process
+    exiting cleanly IS the restart completing for it. The exit path consumes
+    the sentinel (mirroring the memory driver) instead of failing: exit 0,
+    sentinel cleared, notice printed. Only a clear that FAILS stays loud
+    (the nonzero-exit contract lives beside the queue driver tests)."""
+    from fastplace.queue import SaqQueue, restart_requested_at, set_restart_sentinel
 
     class FakeWorker:
         async def start(self) -> None:
@@ -185,9 +188,10 @@ def test_queue_work_saq_exit_fails_when_the_sentinel_survives(project, monkeypat
     asyncio.run(set_restart_sentinel())
 
     result = runner.invoke(cli_app, ["queue:work"])
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 0, result.output
     plain = ANSI_RE.sub("", result.output)
-    assert "still set" in plain
+    assert "restart" in plain.lower()
+    assert asyncio.run(restart_requested_at()) is None  # consumed by the exit path
 
 
 def test_queue_work_hides_saq_grace_noise_only_for_the_workers_lifetime(
@@ -206,7 +210,10 @@ def test_queue_work_hides_saq_grace_noise_only_for_the_workers_lifetime(
     grace_line = (
         "Some tasks did not finish within the shutdown grace period, requesting cancellation"
     )
-    saq_logger = logging.getLogger("saq.worker")
+    # Installed saq's worker module logs on logging.getLogger("saq") — not a
+    # "saq.worker" child (review F9: a filter on a child logger never sees the
+    # records saq actually emits).
+    saq_logger = logging.getLogger("saq")
 
     class FakeWorker:
         async def start(self) -> None:
@@ -220,7 +227,7 @@ def test_queue_work_hides_saq_grace_noise_only_for_the_workers_lifetime(
     monkeypatch.setattr(SaqQueue, "build_worker", fake_build_worker)
     monkeypatch.setenv("QUEUE_DRIVER", "saq")
 
-    with caplog.at_level(logging.WARNING, logger="saq.worker"):
+    with caplog.at_level(logging.WARNING, logger="saq"):
         result = runner.invoke(cli_app, ["queue:work", "--once"])
     assert result.exit_code == 0, result.output
 
@@ -229,7 +236,7 @@ def test_queue_work_hides_saq_grace_noise_only_for_the_workers_lifetime(
     assert grace_line not in messages  # the structural false-positive dies
 
     # The filter is removed with the run — later saq logging is untouched.
-    with caplog.at_level(logging.WARNING, logger="saq.worker"):
+    with caplog.at_level(logging.WARNING, logger="saq"):
         saq_logger.warning(grace_line)
     assert any(record.message == grace_line for record in caplog.records)
 

@@ -53,6 +53,12 @@ _SAQ_GRACE_NOISE = (
     "Some tasks did not finish within the shutdown grace period, requesting cancellation"
 )
 
+#: Installed saq logs its worker noise on ``logging.getLogger("saq")`` — not
+#: a "saq.worker" child (verified against the installed 0.26.4 source). The
+#: filter must sit on that exact logger: logger-level filters apply only to
+#: records logged through THAT logger, never to children or parents.
+_SAQ_LOGGER_NAME = "saq"
+
 
 class _SuppressSaqGraceNoise(logging.Filter):
     """Drop saq's structural shutdown false-positive for one worker run."""
@@ -214,11 +220,11 @@ def queue_work(
 
         async def _run_saq_worker() -> None:
             # A sentinel already pending at start is honored at the first
-            # job boundary (the worker's before_process hook consumes it).
+            # job boundary (the worker's after_process hook consumes it).
             await _scan_aborted()  # losses from the previous worker, now
             companion = asyncio.create_task(_companion_scan())
             requested = await restart_requested_at() is not None
-            saq_logger = logging.getLogger("saq.worker")
+            saq_logger = logging.getLogger(_SAQ_LOGGER_NAME)
             grace_filter = _SuppressSaqGraceNoise()
             saq_logger.addFilter(grace_filter)
             try:
@@ -228,19 +234,25 @@ def queue_work(
                 companion.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await companion
-            if not requested:
-                return
-            # The restart contract's exit check: the hook must have consumed
-            # the sentinel (in-flight job finished, no new ones started). A
-            # surviving sentinel means the restart never fully happened —
-            # report failure instead of a clean exit.
+            # The restart contract's exit path, checked unconditionally — a
+            # sentinel published mid-run was invisible to the start sample,
+            # and the check must not be. The hook normally consumes it at
+            # the job boundary; a sentinel surviving a CLEAN exit means the
+            # worker never reached one (idle, or the hook missed) — this
+            # process exiting is itself the restart completing for it, so
+            # consume here, mirroring the memory driver's drain. Only a
+            # clear that fails turns the exit non-zero.
             if await restart_requested_at() is not None:
+                requested = True
+                try:
+                    await clear_restart_sentinel()
+                except Exception as exc:  # noqa: BLE001 — reported, then non-zero exit
+                    console.print(f"[red]✗[/] restart sentinel clear failed: {escape(str(exc))}")
+                    raise typer.Exit(code=1) from exc
+            if requested:
                 console.print(
-                    "[red]✗[/] restart requested but the sentinel is still set — "
-                    "the restart did not complete; see fastplace.queue logs"
+                    "[yellow]! restart requested — worker exited cleanly for its replacement"
                 )
-                raise typer.Exit(code=1)
-            console.print("[yellow]! restart requested — worker exited cleanly for its replacement")
 
         asyncio.run(_run_saq_worker())
         return
@@ -614,10 +626,18 @@ def queue_list() -> None:
     # surface the resolved numbers so nobody decodes @Job/env/defaults by
     # hand to learn what a job's retry budget actually is.
     table.add_column("envelope", justify="right", no_wrap=True)
+    from fastplace.errors import ConfigurationError
+
     for name in sorted(registry):
         entry = registry[name]
         doc = (inspect.getdoc(entry.fn) or "").strip().splitlines()
-        opts = effective_job_options(entry)
+        try:
+            opts = effective_job_options(entry)
+        except ConfigurationError as exc:
+            # A misconfigured QUEUE_* env fails dispatch loudly; listing must
+            # surface the same finding as a red line, not a traceback.
+            console.print(f"[red]✗[/] {escape(str(exc))}")
+            raise typer.Exit(code=1) from exc
         envelope = f"{opts['retries']}×{opts['timeout']:g}s"
         if opts["backoff"]:
             envelope += f" +{opts['backoff']:g}s"

@@ -601,6 +601,38 @@ def _patch_saq_worker(monkeypatch, worker: _FakeSaqWorker) -> None:
     monkeypatch.setenv("QUEUE_DRIVER", "saq")
     monkeypatch.setattr(queue_module.SaqQueue, "build_worker", lambda self, **kwargs: worker)
 
+    async def _no_scan(self):  # hermetic: the startup scan stays off redis
+        return []
+
+    monkeypatch.setattr(queue_module.SaqQueue, "record_aborted_jobs", _no_scan)
+
+
+def test_queue_work_saq_branch_never_touches_redis_for_the_aborted_scan(tmp_path, monkeypatch):
+    """Review F13: the saq-branch CLI tests must be hermetic — the startup
+    scan's ``record_aborted_jobs()`` call reached for a real redis connection
+    (caught and warned, so it passed, but a network attempt all the same —
+    and on a host with redis actually listening, a real SCAN). The section's
+    patch helper must stub the scan; nothing may reach the driver."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    attempts: list[bool] = []
+
+    async def _sentry(self):
+        attempts.append(True)
+        return []
+
+    monkeypatch.setattr(queue_module.SaqQueue, "aborted_jobs", _sentry)
+    _patch_saq_worker(monkeypatch, _FakeSaqWorker())
+
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    assert attempts == []  # the scan never reached the driver
+
 
 def test_queue_work_saq_exit_is_clean_when_sentinel_was_consumed(tmp_path, monkeypatch):
     """A restart honored mid-run must end exit 0 — the hook consumed the
@@ -619,12 +651,14 @@ def test_queue_work_saq_exit_is_clean_when_sentinel_was_consumed(tmp_path, monke
     _patch_saq_worker(monkeypatch, worker)
     result = CliRunner().invoke(root_cli, ["queue:work"])
     assert result.exit_code == 0, result.output
+    assert asyncio.run(queue_module.restart_requested_at()) is None
 
 
-def test_queue_work_saq_exits_nonzero_when_sentinel_survives(tmp_path, monkeypatch):
-    """A restart whose sentinel is STILL SET after the worker stopped means
-    the restart contract broke (nothing consumed it) — success output here
-    would mask a worker that never honors restarts. Exit 1, loudly."""
+def test_queue_work_saq_consumes_a_surviving_sentinel_on_clean_exit(tmp_path, monkeypatch):
+    """An idle worker never reaches a job boundary, so the hook cannot
+    consume the sentinel — but the process exiting cleanly IS the restart
+    completing for it. The exit path consumes (mirroring the memory driver)
+    instead of failing: exit 0, sentinel cleared, notice printed."""
     from fastplace import queue as queue_module
     from fastplace.cli import app as root_cli
 
@@ -634,6 +668,51 @@ def test_queue_work_saq_exits_nonzero_when_sentinel_survives(tmp_path, monkeypat
 
     asyncio.run(queue_module.set_restart_sentinel())
 
+    _patch_saq_worker(monkeypatch, _FakeSaqWorker())
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    assert asyncio.run(queue_module.restart_requested_at()) is None
+    assert "restart" in result.output.lower()
+
+
+def test_queue_work_saq_consumes_a_midrun_sentinel_after_clean_exit(tmp_path, monkeypatch):
+    """A restart published AFTER the worker started was invisible to the old
+    pre-start sample — the exit check was skipped entirely. The post-exit
+    check must run unconditionally: clean exit, sentinel consumed, exit 0."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    # Sentinel lands while the worker runs — nothing pre-set at start.
+    worker = _FakeSaqWorker(on_start=queue_module.set_restart_sentinel)
+
+    _patch_saq_worker(monkeypatch, worker)
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    assert asyncio.run(queue_module.restart_requested_at()) is None
+    assert "restart" in result.output.lower()
+
+
+def test_queue_work_saq_exits_nonzero_when_the_surviving_clear_fails(tmp_path, monkeypatch):
+    """Consuming the surviving sentinel is load-bearing for the restart
+    contract: a cache that refuses the clear must fail the exit loudly, not
+    leave the sentinel latched for the replacement to trip on."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    asyncio.run(queue_module.set_restart_sentinel())
+
+    async def broken_clear() -> None:
+        raise ConnectionError("cache down")
+
+    monkeypatch.setattr(queue_module, "clear_restart_sentinel", broken_clear)
     _patch_saq_worker(monkeypatch, _FakeSaqWorker())
     result = CliRunner().invoke(root_cli, ["queue:work"])
     assert result.exit_code == 1
@@ -653,3 +732,43 @@ async def test_set_queue_installs_a_custom_driver():
     set_queue(custom)
     assert queue() is custom
     # reset_queue() (the autouse fixture here) clears it back to config.
+
+
+# ---------------------------------------------------------------------------
+# review F9 — the grace-noise filter must attach to the logger saq logs on
+# ---------------------------------------------------------------------------
+
+
+def test_grace_noise_filter_covers_the_installed_saq_logger(caplog):
+    """Installed saq's worker module logs on ``logging.getLogger("saq")`` —
+    a filter attached to ``"saq.worker"`` never sees those records (logger
+    filters do not inherit DOWN from parent to child), so the structural
+    shutdown noise would keep printing. The filter must sit on the logger
+    saq actually uses, and only drop the one known-noise line."""
+    import logging
+
+    import saq.worker
+
+    from fastplace.cli.queue import (
+        _SAQ_GRACE_NOISE,
+        _SAQ_LOGGER_NAME,
+        _SuppressSaqGraceNoise,
+    )
+
+    # Verified against the installed saq: its worker module's logger is the
+    # attachment target the CLI must use.
+    assert saq.worker.logger is logging.getLogger(_SAQ_LOGGER_NAME)
+
+    target = logging.getLogger(_SAQ_LOGGER_NAME)
+    grace_filter = _SuppressSaqGraceNoise()
+    target.addFilter(grace_filter)
+    try:
+        with caplog.at_level(logging.WARNING, logger=_SAQ_LOGGER_NAME):
+            target.warning(_SAQ_GRACE_NOISE)
+            target.warning("did not finish cancellation in time")
+    finally:
+        target.removeFilter(grace_filter)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert _SAQ_GRACE_NOISE not in messages  # the structural false-positive
+    assert "did not finish cancellation in time" in messages  # real signal kept

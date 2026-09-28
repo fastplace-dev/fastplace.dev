@@ -140,6 +140,16 @@ async def test_zero_timeout_env_is_a_loud_configuration_error(saq_driver, monkey
         await saq_driver.dispatch("env.probe")
 
 
+async def test_zero_ttl_env_is_a_loud_configuration_error(saq_driver, monkeypatch):
+    """Result retention of zero seconds is a misconfiguration, not a policy —
+    it slipped past the env floor's checks and reached saq as ttl=0."""
+    monkeypatch.setenv("QUEUE_TTL", "0")
+    from fastplace.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="QUEUE_TTL"):
+        await saq_driver.dispatch("env.probe")
+
+
 # ---------------------------------------------------------------------------
 # builder — delay, uniqueness, handles, queue routing (q1-G4/q1-G10)
 # ---------------------------------------------------------------------------
@@ -412,3 +422,97 @@ def test_both_drivers_expose_the_builder_and_lookup():
     assert hasattr(MemoryQueue(), "job_status")
     assert hasattr(SaqQueue(), "job")
     assert hasattr(SaqQueue(), "job_status")
+
+
+# ---------------------------------------------------------------------------
+# review F4 — job_status must see a routed dispatch's named queue
+# ---------------------------------------------------------------------------
+
+
+class _StatusSaqQueue:
+    """Fake saq queue with per-name job maps — enqueue routes by queue name."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.jobs: dict[str, object] = {}
+
+    async def enqueue(self, job):
+        self.jobs[job.key] = job
+        return job
+
+    async def job(self, key):
+        return self.jobs.get(key)
+
+
+async def test_job_status_resolves_a_routed_dispatch_without_being_told():
+    """A ``queue="emails"`` dispatch's handle lives on the emails queue —
+    polling the default queue for it returned None forever. The driver must
+    remember where it routed each key and look there."""
+    from saq.job import Status
+
+    @Job(name="routed.mail")
+    async def mail(user_id: int = 0) -> None:
+        return None
+
+    default = _StatusSaqQueue("fastplace")
+    emails = _StatusSaqQueue("emails")
+    driver = SaqQueue(queue=default)
+    driver._routes["emails"] = emails  # the routing cache a dispatch fills
+
+    handle = await driver.job("routed.mail", queue="emails").dispatch(user_id=1)
+    assert emails.jobs[handle.key].function == "routed.mail"
+
+    saq_job = emails.jobs[handle.key]
+    saq_job.status = Status.COMPLETE
+    # No queue= hint — the driver finds the key on the queue it routed to.
+    assert await driver.job_status(handle.key) == "complete"
+
+
+async def test_job_status_with_an_explicit_queue_reads_only_that_queue():
+    from saq.job import Status
+
+    @Job(name="routed.two")
+    async def two(user_id: int = 0) -> None:
+        return None
+
+    default = _StatusSaqQueue("fastplace")
+    emails = _StatusSaqQueue("emails")
+    driver = SaqQueue(queue=default)
+    driver._routes["emails"] = emails
+
+    handle = await driver.job("routed.two", queue="emails").dispatch(user_id=2)
+    emails.jobs[handle.key].status = Status.FAILED
+    default.jobs["decoy"] = type("D", (), {"key": "decoy", "status": Status.COMPLETE})()
+
+    assert await driver.job_status(handle.key, queue="emails") == "failed"
+    # The default queue's decoy is invisible through the named view.
+    assert await driver.job_status("decoy", queue="emails") is None
+
+
+async def test_memory_job_status_accepts_the_queue_param_for_parity():
+    """Protocol parity: the memory driver takes the same signature (there is
+    exactly one in-process queue, so the param is a no-op there)."""
+    assert await MemoryQueue().job_status("any", queue="emails") is None
+
+
+async def test_memory_dispatched_handles_are_bounded():
+    """Review F10: a long-lived dev process dispatching thousands of jobs grew
+    ``dispatched`` forever — every handle kept alive by the dict long after
+    its job drained. The map must keep only a recent window: newest handles
+    stay statusable, oldest are evicted."""
+    from fastplace.queue import MemoryQueue as _MemoryQueue
+
+    cap = _MemoryQueue._DISPATCHED_CAP
+
+    @Job(name="mem.churn")
+    async def churn(n: int = 0) -> None:
+        return None
+
+    mem = _MemoryQueue()
+    handles = [await mem.dispatch("mem.churn", n=i) for i in range(cap + 10)]
+
+    assert len(mem.dispatched) == cap  # bounded, not cap+10
+    # The recent window is intact — newest handle still resolves.
+    assert await mem.job_status(handles[-1].key) == "queued"
+    # The oldest were evicted — their lookups read as unknown, not retained.
+    assert await mem.job_status(handles[0].key) is None

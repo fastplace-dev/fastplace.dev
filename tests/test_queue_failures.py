@@ -321,3 +321,110 @@ async def test_saq_hook_skips_successful_and_retryable_jobs():
     await _record_saq_failure({"job": _SaqJob()})  # success: no exception in ctx
 
     assert await failed_job_store().list() == []
+
+
+# ---------------------------------------------------------------------------
+# review F2 — job_key must be indexable on MySQL (TEXT + unique = error 1170)
+# ---------------------------------------------------------------------------
+
+
+def test_job_key_column_compiles_to_varchar_191_on_mysql():
+    """MySQL cannot put an index on a TEXT column without a prefix length
+    (error 1170) — the fresh-create shape must be VARCHAR(191), under the
+    utf8mb4 InnoDB index byte limit on every config."""
+    from sqlalchemy.dialects import mysql
+
+    from fastplace.queue_failures import _failed_jobs_table
+
+    compiled = str(_failed_jobs_table.c.job_key.type.compile(mysql.dialect()))
+    assert compiled.upper().startswith("VARCHAR")
+    assert "191" in compiled
+
+
+def test_upgrade_statements_convert_a_legacy_mysql_text_job_key():
+    """A MySQL deployment that shipped the TEXT column could never have had
+    the index (its creation fails with 1170) — the upgrade must narrow the
+    column before issuing the unique index."""
+    from fastplace.queue_failures import _upgrade_statements
+
+    stmts = _upgrade_statements("mysql", {"job_key": "TEXT"}, set())
+    assert any("MODIFY COLUMN job_key VARCHAR(191)" in s for s in stmts)
+    assert any("CREATE UNIQUE INDEX" in s for s in stmts)
+
+
+def test_upgrade_statements_leave_sqlite_and_postgres_text_columns_alone():
+    """SQLite and PostgreSQL index TEXT columns natively — converting there
+    would be churn (and SQLite cannot ALTER a column type at all)."""
+    from fastplace.queue_failures import _upgrade_statements
+
+    for dialect in ("sqlite", "postgresql"):
+        stmts = _upgrade_statements(dialect, {"job_key": "TEXT"}, set())
+        assert not any("MODIFY" in s for s in stmts)
+        assert any("CREATE UNIQUE INDEX" in s for s in stmts)
+
+
+def test_upgrade_statements_add_the_column_as_varchar_on_mysql():
+    """A legacy MySQL table missing the column entirely gets VARCHAR(191)
+    from the start — never TEXT, or the index right behind it fails."""
+    from fastplace.queue_failures import _upgrade_statements
+
+    stmts = _upgrade_statements("mysql", {}, set())
+    assert any("ADD COLUMN job_key VARCHAR(191)" in s for s in stmts)
+
+
+def test_upgrade_statements_skip_when_index_already_exists():
+    from fastplace.queue_failures import _JOB_KEY_INDEX, _upgrade_statements
+
+    stmts = _upgrade_statements("mysql", {"job_key": "VARCHAR(191)"}, {_JOB_KEY_INDEX})
+    assert stmts == []
+
+
+# ---------------------------------------------------------------------------
+# review F11 — two workers racing ensure_table's first use
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_ddl_detector_matches_each_dialects_phrasing():
+    """The guard keys on the three dialect families' actual race phrasings:
+    sqlite/PG "already exists", MySQL 1060 "Duplicate column name", MySQL
+    1061 "Duplicate key name" (index). Anything else stays an error."""
+    from fastplace.queue_failures import _is_duplicate_ddl
+
+    for message in (
+        "(table _fastplace_failed_jobs already exists)",
+        "(1060, \"Duplicate column name 'job_key'\")",
+        "(1061, \"Duplicate key name 'ix__fastplace_failed_jobs_job_key'\")",
+        'relation "_fastplace_failed_jobs" already exists',
+    ):
+        assert _is_duplicate_ddl(Exception(message)), message
+    for unrelated in (
+        "connection refused",
+        "no such table: _fastplace_failed_jobs",
+        "syntax error near 'FROM'",
+        # DML, not DDL: a racing record_once insert is an IntegrityError
+        # handled by that path's own dedupe, not by the ensure guard.
+        'duplicate key value violates unique constraint "job_key"',
+    ):
+        assert not _is_duplicate_ddl(Exception(unrelated)), unrelated
+
+
+async def test_ensure_table_treats_a_racing_peers_ddl_as_done(monkeypatch):
+    """Two worker processes hitting their first failure record at once both
+    run ensure_table; the loser's CREATE TABLE lands on the peer's table and
+    used to raise, failing the record. The racing duplicate is success — the
+    table exists, which is all ensure_table promises."""
+    from sqlalchemy.exc import OperationalError
+
+    import fastplace.queue_failures as queue_failures
+    from fastplace.queue_failures import failed_job_store
+
+    def racing_create_all(*args, **kwargs):
+        raise OperationalError(
+            "DDL", {}, "(1050, 'Table fastplace._fastplace_failed_jobs already exists')"
+        )
+
+    monkeypatch.setattr(queue_failures._failed_jobs_metadata, "create_all", racing_create_all)
+
+    store = failed_job_store()
+    await store.ensure_table()  # the racing peer's table — not a crash
+    assert store._ensured

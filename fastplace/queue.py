@@ -327,8 +327,12 @@ class QueueDriver(Protocol):
         """Start a dispatch with reliability options (the builder entry)."""
         ...
 
-    async def job_status(self, key: str) -> str | None:
-        """Status of a dispatched job handle's key, None when unknown."""
+    async def job_status(self, key: str, queue: str | None = None) -> str | None:
+        """Status of a dispatched job handle's key, None when unknown.
+
+        ``queue=`` names the queue a routed dispatch landed on (drivers with
+        named queues; a no-op where there is only one).
+        """
         ...
 
     async def _dispatch_pending(self, pending: PendingDispatch, kwargs: dict[str, Any]) -> Any:
@@ -339,6 +343,12 @@ class QueueDriver(Protocol):
 
 class MemoryQueue:
     """In-process driver: dispatch validates + queues, run_pending drains."""
+
+    #: How many dispatch handles ``job_status`` keeps — a recent window, not
+    #: an unbounded ledger. A long-lived dev process churning thousands of
+    #: jobs must not pin every handle forever; status polls are about recent
+    #: dispatches (the same bound the saq driver's route memory carries).
+    _DISPATCHED_CAP: int = 1024
 
     def __init__(self) -> None:
         self.pending: deque[_Pending] = deque()
@@ -410,6 +420,10 @@ class MemoryQueue:
                 return None  # identical unresolved job already queued
         handle = _MemoryJobHandle(key=key, name=name)
         self.dispatched[key] = handle
+        if len(self.dispatched) > self._DISPATCHED_CAP:
+            # FIFO-evict past the window (dict insertion order = arrival
+            # order); an evicted key's job_status reads as unknown.
+            self.dispatched.pop(next(iter(self.dispatched)))
         self.pending.append(
             _Pending(
                 name=name,
@@ -516,8 +530,12 @@ class MemoryQueue:
         """Waiting jobs — the deque length ``queue:monitor`` measures."""
         return len(self.pending)
 
-    async def job_status(self, key: str) -> str | None:
-        """The in-process handle's status, None when no such dispatch."""
+    async def job_status(self, key: str, queue: str | None = None) -> str | None:
+        """The in-process handle's status, None when no such dispatch.
+
+        ``queue=`` is accepted for protocol parity and ignored — one
+        in-process queue holds every dispatch.
+        """
         handle = self.dispatched.get(key)
         return handle.status if handle is not None else None
 
@@ -655,6 +673,10 @@ def _envelope_defaults() -> dict[str, Any]:
             raise ConfigurationError(f"{key} must be >= 0, got {value!r}")
         if key == "QUEUE_TIMEOUT" and value == 0:
             raise ConfigurationError(f"{key} must be > 0, got {value!r}")
+        if key == "QUEUE_TTL" and value < 1:
+            # Zero retention is a misconfiguration, not a policy — saq would
+            # take ttl=0 and keep the result forever while looking configured.
+            raise ConfigurationError(f"{key} must be >= 1, got {value!r}")
     return {"retries": tries, "timeout": timeout, "backoff": backoff, "ttl": ttl}
 
 
@@ -802,6 +824,10 @@ class SaqQueue:
         # Named-queue routing targets (q1-G4): ``queue().job(..., queue="emails")``
         # enqueues on a RedisQueue with that name; workers opt in per name.
         self._routes: dict[str, Any] = {}
+        # Where each routed key landed (bounded memory): ``job_status`` needs
+        # it to poll the right queue — the handle's key is invisible on the
+        # default queue otherwise.
+        self._key_routes: dict[str, str] = {}
 
     @property
     def queue(self) -> Any:
@@ -906,6 +932,12 @@ class SaqQueue:
             scheduled=int(time.time() + delay) if delay else 0,
             key=_deterministic_job_key(name, kwargs) if unique else uuid.uuid4().hex,
         )
+        if queue_name is not None and queue_name != self._name:
+            # Remember the landing spot so job_status can poll the right
+            # queue; bounded — a status poll is about recent dispatches.
+            self._key_routes[job.key] = queue_name
+            if len(self._key_routes) > 1024:
+                self._key_routes.pop(next(iter(self._key_routes)))
         return await self._queue_for(queue_name).enqueue(job)
 
     async def dispatch_delayed(
@@ -927,13 +959,26 @@ class SaqQueue:
             name, dict(kwargs or {}), _resolve_envelope(registry[name], {}), delay=delay
         )
 
-    async def job_status(self, key: str) -> str | None:
-        """The saq Job's status for ``key`` (its job id), None when unknown."""
-        job = await self.queue.job(key)
-        if job is None:
-            return None
-        status = getattr(job, "status", None)
-        return str(getattr(status, "value", status))
+    async def job_status(self, key: str, queue: str | None = None) -> str | None:
+        """The saq Job's status for ``key`` (its job id), None when unknown.
+
+        A routed dispatch's handle lives on its named queue, invisible to a
+        default-queue poll — so ``queue=`` names it explicitly, and without
+        the hint the driver consults where it routed the key, then the
+        default queue, then every named queue this process has routed to.
+        """
+        target = queue or self._key_routes.get(key)
+        queues = (
+            [self._queue_for(target)]
+            if target is not None
+            else [self.queue, *self._routes.values()]
+        )
+        for candidate in queues:
+            job = await candidate.job(key)
+            if job is not None:
+                status = getattr(job, "status", None)
+                return str(getattr(status, "value", status))
+        return None
 
     async def clear(self) -> int:
         """Delete queued and scheduled jobs; running jobs are left alone.
@@ -1098,9 +1143,9 @@ async def clear_restart_sentinel() -> None:
     Strict on purpose: swallowing a failed clear would let a worker report
     a clean restart while the sentinel stays latched (the replacement then
     exits again — an outage masked as success). Callers that must not
-    propagate (the before_process hook, which lets the in-flight job run
-    regardless) catch and log; the CLI exit path turns a surviving sentinel
-    into a non-zero exit.
+    propagate (the after_process hook, which lets the in-flight job run
+    regardless) catch and log; the CLI exit path consumes a sentinel that
+    survived a clean exit, and only a failed clear there turns non-zero.
     """
     from fastplace.cache import cache
 

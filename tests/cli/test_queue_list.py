@@ -131,3 +131,22 @@ def test_empty_registry_is_a_dim_note(tmp_path, monkeypatch):
     result = runner.invoke(cli_app, ["queue:list"])
     assert result.exit_code == 0, result.output
     assert "no registered jobs" in _out(result)
+
+
+# ---------------------------------------------------------------------------
+# review F7 — a misconfigured envelope env must be a red line, not a traceback
+# ---------------------------------------------------------------------------
+
+
+def test_misconfigured_envelope_env_is_a_red_line_not_a_traceback(project, monkeypatch):
+    """``QUEUE_TIMEOUT=0`` makes ``effective_job_options`` raise
+    ``ConfigurationError`` mid-table — the command must exit 1 with a red
+    config-error line, never spill a traceback at the operator."""
+    monkeypatch.setenv("QUEUE_TIMEOUT", "0")
+
+    result = runner.invoke(cli_app, ["queue:list"])
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "QUEUE_TIMEOUT" in out
+    # A traceback is the failure mode this guards against — none may render.
+    assert "Traceback" not in out
