@@ -10,17 +10,12 @@ type Theme = "light" | "dark";
 
 /** Pin a theme before any app code runs, the way the Appearance page does. */
 async function withTheme(page: Page, theme: Theme) {
-  await page.addInitScript(
-    (mode) => localStorage.setItem("fastplace-appearance", mode),
-    theme,
-  );
+  await page.addInitScript((mode) => localStorage.setItem("fastplace-appearance", mode), theme);
 }
 
 /** Scan the current page and fail with the violation list if any exist. */
 async function expectAxeClean(page: Page, context: string) {
-  const results = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa"])
-    .analyze();
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   const summary = results.violations.map((v) => ({
     id: v.id,
     impact: v.impact,
@@ -60,9 +55,7 @@ test("axe: /dashboard is WCAG 2.1 AA clean (light, logged in)", async ({ page })
   await expectAxeClean(page, "/dashboard light");
 });
 
-test("skip-to-content: keyboard journey moves focus into the main landmark", async ({
-  page,
-}) => {
+test("skip-to-content: keyboard journey moves focus into the main landmark", async ({ page }) => {
   await page.goto("/login");
   await expect(page.getByRole("heading", { name: "Log in to your account" })).toBeVisible();
 
@@ -88,9 +81,7 @@ test("skip-to-content: keyboard journey moves focus into the main landmark", asy
   await expect(page.locator("#main-content")).toBeFocused();
 });
 
-test("login validation errors are announced and associated with the field", async ({
-  page,
-}) => {
+test("login validation errors are announced and associated with the field", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email address").fill("a11y@example.test");
   // exact: the password visibility toggle ("Show password") also matches a

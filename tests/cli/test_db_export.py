@@ -23,6 +23,12 @@ def _out(result) -> str:
     return ANSI_RE.sub("", result.output)
 
 
+@pytest.fixture(autouse=True)
+def _wide_output(monkeypatch):
+    """Pin the Rich console width so backup paths never wrap mid-word."""
+    monkeypatch.setenv("COLUMNS", "200")
+
+
 @pytest.fixture
 def seeded(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

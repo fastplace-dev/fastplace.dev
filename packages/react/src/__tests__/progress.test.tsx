@@ -86,9 +86,7 @@ describe("navigation progress lifecycle", () => {
     );
 
     const visitPromise = router.visit("/projects");
-    await waitFor(() =>
-      expect(screen.getByTestId("progress-state")).toHaveTextContent("started"),
-    );
+    await waitFor(() => expect(screen.getByTestId("progress-state")).toHaveTextContent("started"));
 
     pending.resolve(jsonResponse(bridgePage("/projects")));
     await visitPromise;
@@ -129,9 +127,7 @@ describe("navigation progress lifecycle", () => {
     );
 
     const visitPromise = router.visit("/projects").catch(() => undefined);
-    await waitFor(() =>
-      expect(screen.getByTestId("progress-state")).toHaveTextContent("started"),
-    );
+    await waitFor(() => expect(screen.getByTestId("progress-state")).toHaveTextContent("started"));
 
     pending.reject(new TypeError("Failed to fetch"));
     await visitPromise;
@@ -149,9 +145,7 @@ describe("navigation progress lifecycle", () => {
     );
 
     const visitPromise = router.visit("/missing", { onError: () => undefined });
-    await waitFor(() =>
-      expect(screen.getByTestId("progress-state")).toHaveTextContent("started"),
-    );
+    await waitFor(() => expect(screen.getByTestId("progress-state")).toHaveTextContent("started"));
 
     pending.resolve(jsonResponse({ message: "Not Found" }, false, 404));
     await visitPromise;
@@ -169,9 +163,7 @@ describe("navigation progress lifecycle", () => {
     );
 
     const visitPromise = router.visit("/download");
-    await waitFor(() =>
-      expect(screen.getByTestId("progress-state")).toHaveTextContent("started"),
-    );
+    await waitFor(() => expect(screen.getByTestId("progress-state")).toHaveTextContent("started"));
 
     // HTML answer — the bridge hands navigation to the browser.
     pending.resolve({

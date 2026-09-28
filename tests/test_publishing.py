@@ -99,6 +99,17 @@ def test_dev_extra_installs_email_validator():
     assert "email-validator" in dev_block
 
 
+def test_sqlalchemy_dep_carries_a_2_1_upper_bound():
+    """SQLAlchemy 2.1 changes how the morph-to-many owner-type primaryjoin
+    filter reaches eager loads (duplicate pivot rows — see
+    tests/orm/test_through_and_morph_pivot.py), so fresh installs must not
+    resolve into 2.1.x until the compat work lands. The bound ships to users
+    with the next release, which is why it lives in the published metadata
+    rather than a CI-only constraint."""
+    text = (ROOT / "pyproject.toml").read_text()
+    assert '"sqlalchemy[asyncio]>=2.0.36,<2.1"' in text
+
+
 def test_pyproject_declares_trove_classifiers():
     text = (ROOT / "pyproject.toml").read_text()
     classifiers_block = text.split("classifiers = [", 1)[1].split("]", 1)[0]

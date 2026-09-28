@@ -120,6 +120,20 @@ jobs:
           python -m pip install -e ".[dev,postgresql,mysql,mongodb,queue]"
           python -m pip install -e ./packages/tenancy
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Pin npm (lockfile is npm-11-generated)
+        run: npm install -g npm@11.19.1
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build @fastplace/react (scaffold file wiring needs dist/)
+        run: npm run build -w packages/react
+
       - name: Enable pgvector extension
         run: |
           python - <<'PY'

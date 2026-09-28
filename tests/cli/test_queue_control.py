@@ -32,6 +32,12 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
+def _wide_output(monkeypatch):
+    """Pin the Rich console width so queue names and hints never wrap mid-word."""
+    monkeypatch.setenv("COLUMNS", "200")
+
+
+@pytest.fixture(autouse=True)
 def _fresh_queue_state():
     """Registry, queue, store, listeners, and cache never leak between tests."""
     from fastplace.cache import reset_cache
@@ -325,7 +331,9 @@ def test_queue_monitor_survives_a_raising_listener(project):
 def test_queue_monitor_help_documents_the_threshold(project):
     result = runner.invoke(cli_app, ["queue:monitor", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--max" in result.output
+    # Under forced color (CI sets GITHUB_ACTIONS) typer highlights options so
+    # ANSI codes land between the hyphens — strip before matching.
+    assert "--max" in ANSI_RE.sub("", result.output)
 
 
 def test_queue_monitor_saq_rows_show_active_depth(project, monkeypatch):
