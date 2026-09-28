@@ -22,9 +22,10 @@ describe("Alert", () => {
     expect(alert.className).toContain("text-foreground");
   });
 
-  it("maps the destructive variant onto its foreground color", () => {
+  it("maps the destructive variant onto the destructive color", () => {
     render(<Alert variant="destructive">Something went wrong</Alert>);
-    expect(screen.getByRole("alert").className).toContain("text-destructive-foreground");
+    expect(screen.getByRole("alert").className).toContain("text-destructive");
+    expect(screen.getByRole("alert").className).toContain("border-destructive/50");
   });
 
   it("renders AlertTitle text visibly with its slot", () => {

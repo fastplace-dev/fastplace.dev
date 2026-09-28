@@ -1,5 +1,5 @@
 """Passkey scaffold assertions (plan Task 5) — the emitted app declares
-``fastplace[webauthn]``, carries AUTH_PASSKEYS, ships Security passkey props
+``fastplace[queue,webauthn]``, carries AUTH_PASSKEYS, ships Security passkey props
 and lang keys, and gets a self-contained passkey HTTP suite plus the ES256
 simulator it drives.
 
@@ -19,7 +19,7 @@ from fastplace.cli.generators import (
     _CONFIG_AUTH_ORM_TEMPLATE,
     _PYPROJECT_TEMPLATE,
     _SETTINGS_PAGES_CONTROLLER_TEMPLATE,
-    _rewrite_fastplace_dep_for_webauthn,
+    _rewrite_fastplace_dep_for_auth_extras,
     scaffold_templates_dir,
 )
 
@@ -72,38 +72,49 @@ def _minimal_project_files(tmp_path: Path) -> None:
 class TestWebauthnDependency:
     def test_make_auth_rewrites_the_fastplace_dep(self, scaffolded):
         pyproject = (scaffolded / "pyproject.toml").read_text()
-        assert '"fastplace[webauthn]"' in pyproject
+        assert '"fastplace[queue,webauthn]"' in pyproject
         assert '\n    "fastplace",\n' not in pyproject
 
     def test_rewrite_handles_a_versioned_dep(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text(
             '[project]\ndependencies = [\n    "fastplace>=0.1.0",\n]\n'
         )
-        assert _rewrite_fastplace_dep_for_webauthn(tmp_path) is True
+        assert _rewrite_fastplace_dep_for_auth_extras(tmp_path) is True
         content = (tmp_path / "pyproject.toml").read_text()
-        assert '"fastplace[webauthn]>=0.1.0",' in content
+        assert '"fastplace[queue,webauthn]>=0.1.0",' in content
 
     def test_rewrite_is_idempotent_on_an_already_rewritten_dep(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text(
-            '[project]\ndependencies = [\n    "fastplace[webauthn]>=0.1.0",\n]\n'
+            '[project]\ndependencies = [\n    "fastplace[queue,webauthn]>=0.1.0",\n]\n'
         )
         before = (tmp_path / "pyproject.toml").read_text()
-        assert _rewrite_fastplace_dep_for_webauthn(tmp_path) is False
+        assert _rewrite_fastplace_dep_for_auth_extras(tmp_path) is False
         assert (tmp_path / "pyproject.toml").read_text() == before
+
+    def test_rewrite_upgrades_a_legacy_webauthn_only_dep(self, tmp_path):
+        """An app scaffolded before the queue extra joined still upgrades:
+        rerunning make:auth widens fastplace[webauthn] to the pair."""
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\ndependencies = [\n    "fastplace[webauthn]>=0.1.0",\n]\n'
+        )
+        assert _rewrite_fastplace_dep_for_auth_extras(tmp_path) is True
+        content = (tmp_path / "pyproject.toml").read_text()
+        assert '"fastplace[queue,webauthn]>=0.1.0",' in content
+        assert "fastplace[webauthn]" not in content
 
     def test_rewrite_without_a_fastplace_dep_is_a_noop(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\n')
-        assert _rewrite_fastplace_dep_for_webauthn(tmp_path) is False
+        assert _rewrite_fastplace_dep_for_auth_extras(tmp_path) is False
         assert "webauthn" not in (tmp_path / "pyproject.toml").read_text()
 
     def test_rewrite_leaves_other_packages_alone(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text(
             '[project]\ndependencies = [\n    "fastplace-extra",\n    "fastplace",\n]\n'
         )
-        assert _rewrite_fastplace_dep_for_webauthn(tmp_path) is True
+        assert _rewrite_fastplace_dep_for_auth_extras(tmp_path) is True
         content = (tmp_path / "pyproject.toml").read_text()
         assert '"fastplace-extra",' in content
-        assert content.count("fastplace[webauthn]") == 1
+        assert content.count("fastplace[queue,webauthn]") == 1
 
     def test_new_auth_pyproject_template_rewrites_the_same_way(self, tmp_path):
         """The `new --auth` path writes the plain template, then the same
@@ -111,9 +122,9 @@ class TestWebauthnDependency:
         (tmp_path / "pyproject.toml").write_text(
             _PYPROJECT_TEMPLATE.format(slug="demo", fastplace_dep="fastplace>=0.1.0")
         )
-        assert _rewrite_fastplace_dep_for_webauthn(tmp_path) is True
+        assert _rewrite_fastplace_dep_for_auth_extras(tmp_path) is True
         content = (tmp_path / "pyproject.toml").read_text()
-        assert '"fastplace[webauthn]>=0.1.0",' in content
+        assert '"fastplace[queue,webauthn]>=0.1.0",' in content
 
 
 class TestEmittedConfigAndProps:
@@ -132,7 +143,7 @@ class TestEmittedConfigAndProps:
         readme = (scaffolded / "README.md").read_text()
         assert "Still parked: passkeys" not in readme
         assert "Passkeys" in readme
-        assert "fastplace[webauthn]" in readme
+        assert "fastplace[queue,webauthn]" in readme
 
     def test_lang_keys_ship_passkey_lines(self):
         lang = (CORPUS / "lang/en/messages.py").read_text()
