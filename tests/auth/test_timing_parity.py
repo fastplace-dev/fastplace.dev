@@ -28,7 +28,7 @@ def dummy_spy(monkeypatch):
         calls.append(1)
         return "spy-digest"
 
-    monkeypatch.setattr(passwords, "_dummy_digest", spy)
+    monkeypatch.setattr(passwords, "dummy_digest", spy)
     return calls
 
 

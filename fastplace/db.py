@@ -6,9 +6,11 @@ one object.
 
 from __future__ import annotations
 
-from fastplace.orm.capabilities import Capabilities
+from fastplace.orm.capabilities import Capabilities, driver_from_url
 from fastplace.orm.manager import DatabaseManager, reset_manager
 from fastplace.orm.transactions import transaction
+
+__all__ = ["Database", "db", "driver_from_url", "reset_db", "transaction"]
 
 
 class Database:

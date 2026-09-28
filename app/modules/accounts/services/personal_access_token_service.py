@@ -71,9 +71,9 @@ class PersonalAccessTokenService:
         if user is None:
             # Unknown email pays the same scrypt cost a wrong password pays
             # (timing parity, the password-reset precedent).
-            from fastplace.auth.passwords import _dummy_digest
+            from fastplace.auth.passwords import dummy_digest
 
-            Hash.check(str(credentials["password"]), _dummy_digest())
+            Hash.check(str(credentials["password"]), dummy_digest())
             raise ValidationError(errors={"email": [self.INVALID_CREDENTIALS]})
         ok = await session_guard.provider.validate_credentials(user, credentials)
         if not ok:
