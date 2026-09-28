@@ -144,6 +144,11 @@ def get_app(
     )
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
+    # Request-scoped locale: ?locale= -> Accept-Language -> LOCALE default,
+    # resolved once per request so trans() agrees across the whole response.
+    from fastplace.i18n import LocaleMiddleware
+
+    app.add_middleware(LocaleMiddleware)
     # Compression sits outside the security headers so it sees the final
     # header set; pure ASGI, streaming-safe (see fastplace/http/compression.py).
     app.add_middleware(CompressionMiddleware)
