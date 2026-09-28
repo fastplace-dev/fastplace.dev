@@ -46,25 +46,59 @@ def _host_is_trusted(hostname: str | None) -> bool:
     return hostname.lower() in entries
 
 
-def signed_url(path: str, *, ttl: int | None = None, request: Request | None = None) -> str:
-    """An absolute, APP_KEY-signed URL: ``path?signature=...&expires=...``.
+def _canonical(path: str, query: str) -> str:
+    """The MACed value for a path + raw query string.
 
-    The signature covers the route path only (never the query string — it
-    would have to cover itself); send route identifiers as path segments.
-    Routes accept these links by adding ``middleware=["signed"]`` — see
-    :class:`SignedMiddleware`.
+    The query is re-serialized (order-preserving, blank values kept) minus
+    ``signature``/``expires`` — the params the signer itself appends. An
+    empty remainder collapses to the bare path, matching ``signed_url``
+    with no ``params=``.
+    """
+    from urllib.parse import parse_qsl, urlencode
+
+    pairs = [
+        (key, value)
+        for key, value in parse_qsl(query, keep_blank_values=True)
+        if key not in ("signature", "expires")
+    ]
+    if not pairs:
+        return path
+    return f"{path}?{urlencode(pairs)}"
+
+
+def signed_url(
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    ttl: int | None = None,
+    request: Request | None = None,
+) -> str:
+    """An absolute, APP_KEY-signed URL: ``path[?params&]signature=...&expires=...``.
+
+    The signature covers the path AND any ``params`` (order-preserving,
+    minus ``signature``/``expires`` — the middleware re-derives the same
+    value from the request). Routes accept these links by adding
+    ``middleware=["signed"]`` — see :class:`SignedMiddleware`.
     """
     from fastplace.auth.signing import DEFAULT_TTL, sign
+    from urllib.parse import urlencode
 
-    signature, expires = sign(path, ttl=DEFAULT_TTL if ttl is None else ttl)
-    return f"{build_absolute_url(path, request=request)}?signature={signature}&expires={expires}"
+    encoded = urlencode(list((params or {}).items()))
+    canonical = _canonical(path, encoded)
+    signature, expires = sign(canonical, ttl=DEFAULT_TTL if ttl is None else ttl)
+    base = build_absolute_url(path, request=request)
+    if canonical == path:
+        return f"{base}?signature={signature}&expires={expires}"
+    return f"{base}?{encoded}&signature={signature}&expires={expires}"
 
 
 class SignedMiddleware(Middleware):
     """Route middleware for signed links (``middleware=["signed"]``).
 
-    Validates the ``signature``/``expires`` query params against the request
-    path (constant-time, expiry-checked — see ``fastplace.auth.signing``).
+    Validates the ``signature``/``expires`` query params against the
+    canonical ``path + query`` (constant-time, expiry-checked — see
+    ``fastplace.auth.signing``): every query param except the signature
+    pair itself is inside the MAC, so appended or tampered params 403.
     Anything tampered, stale, or unsigned raises ``AuthorizationError`` and
     answers 403 through the kernel's JSON envelope.
     """
@@ -73,9 +107,11 @@ class SignedMiddleware(Middleware):
         from fastplace.auth.signing import verify
         from fastplace.errors import AuthorizationError
 
-        path = request.full_path.partition("?")[0]
+        path, _, raw_query = request.full_path.partition("?")
         signature = request.query("signature")
         expires = request.query("expires")
-        if not signature or not expires or not verify(path, signature, expires):
+        if not signature or not expires or not verify(
+            _canonical(path, raw_query), signature, expires
+        ):
             raise AuthorizationError()
         return await call_next(request)

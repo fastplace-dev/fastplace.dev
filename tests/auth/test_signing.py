@@ -40,6 +40,13 @@ def test_non_int_expires_fails():
     assert not verify("7|a@b.test", signature, "abc")
 
 
+def test_non_ascii_signature_is_a_rejection_not_a_crash():
+    # hmac.compare_digest raises TypeError on non-ASCII strs; the tamper
+    # path must answer False (403 upstream), never an unhandled 500.
+    _, expires = sign("7|a@b.test")
+    assert not verify("7|a@b.test", "üü", str(expires))
+
+
 def test_empty_app_key_refuses_to_sign(monkeypatch):
     monkeypatch.setattr(signing, "config", lambda key, default=None: None)
     with pytest.raises(ConfigurationError):

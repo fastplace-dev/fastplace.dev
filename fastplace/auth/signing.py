@@ -41,4 +41,8 @@ def verify(value: str, signature: str, expires: str) -> bool:
     expected = hmac.new(
         _secret().encode("utf-8"), f"{value}|{expires_at}".encode(), hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    if not isinstance(signature, str):
+        return False
+    # Compare encoded bytes: compare_digest raises TypeError on non-ASCII
+    # strs, so a forged ``signature=üü`` would answer 500 instead of 403.
+    return hmac.compare_digest(expected.encode("ascii"), signature.encode("utf-8"))

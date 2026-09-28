@@ -79,3 +79,69 @@ async def test_signed_middleware_rejects_tampered_unsigned_and_expired():
     assert tampered.status_code == 403
     assert unsigned.status_code == 403
     assert stale.status_code == 403
+
+
+async def test_signed_url_with_params_round_trips_and_validates():
+    async def share(request):
+        from fastplace.http.response import Json
+
+        return Json({"token": request.query("token")})
+
+    router = Router()
+    router.get("/share/{doc}", share, middleware=["signed"])
+    app = get_app(routes=router)
+    url = signed_url("/share/q3.pdf", params={"token": "abc"})
+    async with _client(app) as client:
+        response = await client.get(url)
+    assert response.status_code == 200
+    assert response.json()["token"] == "abc"
+
+
+async def test_signed_url_with_params_rejects_a_tampered_param():
+    async def share(request):
+        from fastplace.http.response import Json
+
+        return Json({"token": request.query("token")})
+
+    router = Router()
+    router.get("/share/{doc}", share, middleware=["signed"])
+    app = get_app(routes=router)
+    good = signed_url("/share/q3.pdf", params={"token": "abc"})
+    tampered = good.replace("token=abc", "token=root")
+    async with _client(app) as client:
+        response = await client.get(tampered)
+    assert response.status_code == 403
+
+
+async def test_appended_query_params_break_the_signature():
+    async def download(request):
+        from fastplace.http.response import Json
+
+        return Json({"ok": True})
+
+    router = Router()
+    router.get("/download/{file}", download, middleware=["signed"])
+    app = get_app(routes=router)
+    # A valid link plus an attacker-appended unsigned param must not pass —
+    # handlers reading the query on a signed route see only MACed values.
+    url = signed_url("/download/report") + "&admin=1"
+    async with _client(app) as client:
+        response = await client.get(url)
+    assert response.status_code == 403
+
+
+async def test_non_ascii_signature_answers_403_not_500():
+    async def download(request):
+        from fastplace.http.response import Json
+
+        return Json({"ok": True})
+
+    router = Router()
+    router.get("/download/{file}", download, middleware=["signed"])
+    app = get_app(routes=router)
+    expires = int(time.time()) + 600
+    async with _client(app) as client:
+        response = await client.get(
+            f"/download/report?signature=%C3%BC%C3%BC&expires={expires}"
+        )
+    assert response.status_code == 403
