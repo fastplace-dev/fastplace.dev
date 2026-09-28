@@ -286,3 +286,64 @@ async def test_middleware_sets_the_cookie_to_the_store_returned_value():
         send,
     )
     assert any("echo:5" in cookie for cookie in cookies)
+
+
+async def test_write_uses_a_unique_scratch_file_per_write(tmp_path, monkeypatch):
+    """Two writers must never share a tmp file — a deterministic name lets a
+    second writer truncate the first's in-flight scratch inode (multi-worker
+    `serve` shares the directory) and the loser's replace publishes torn JSON
+    or explodes FileNotFoundError mid-response."""
+    import fastplace.http.session.file_store as file_store_module
+    from fastplace.http.session.file_store import FileSessionStore
+
+    store = FileSessionStore(root=tmp_path)
+    seen: list[str] = []
+    real_replace = file_store_module.os.replace
+
+    def spy(src, dst):
+        seen.append(str(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(file_store_module.os, "replace", spy)
+
+    safe_id = "a" * 32
+    await store.write(safe_id, {"n": 1})
+    await store.write(safe_id, {"n": 2})
+    assert len(seen) == 2
+    assert seen[0] != seen[1], "scratch file names must be unique per write"
+
+
+async def test_concurrent_writers_on_the_same_session_never_corrupt_it(tmp_path):
+    """Four threads writing the same session id concurrently: every published
+    file stays parseable JSON (last-writer-wins, never torn)."""
+    import asyncio
+    import threading
+
+    from fastplace.http.session.file_store import FileSessionStore
+
+    store = FileSessionStore(root=tmp_path)
+    safe_id = "b" * 32
+    errors: list[Exception] = []
+
+    async def hammer(writer: int) -> None:
+        for step in range(25):
+            try:
+                await store.write(safe_id, {"writer": writer, "step": step})
+                await store.read(safe_id)
+            except Exception as exc:  # noqa: BLE001 — collect, assert below
+                errors.append(exc)
+
+    def run(writer: int) -> None:
+        asyncio.run(hammer(writer))
+
+    threads = [threading.Thread(target=run, args=(index,)) for index in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    stored = await store.read(safe_id)
+    assert stored is not None
+    payload = stored.payload
+    assert set(payload) == {"writer", "step"}
