@@ -146,3 +146,45 @@ async def test_only_annotated_params_are_bound(posts, seeded):
         response = await client.get("/posts/2/draft")
     assert response.status_code == 200
     assert response.json() == {"title": "second", "kind_raw": "draft"}
+
+
+# -- annotation resolution contract -----------------------------------------
+
+
+def test_unresolvable_path_param_annotation_fails_registration_loudly():
+    # from __future__ import annotations + a TYPE_CHECKING-only model import
+    # leaves the path param a dead string: silent skip would 500 on every
+    # request with a misleading TypeError. Registration must fail instead.
+    from fastplace.errors import ConfigurationError
+    from fastplace.http.router import route_bindings
+
+    def show(request, project):
+        raise NotImplementedError
+
+    show.__annotations__ = {"project": "Project"}  # no such name in this module
+    with pytest.raises(ConfigurationError, match="project"):
+        route_bindings(show, "/projects/{project}")
+
+
+def test_unresolvable_annotations_off_the_path_still_register_silently():
+    # The loud failure is scoped to path params — a binding was intended
+    # there. Annotations the route does not bind stay non-fatal.
+    from fastplace.http.router import route_bindings
+
+    def show(request, filters, project):
+        raise NotImplementedError
+
+    show.__annotations__ = {"filters": "MissingThing"}
+    assert route_bindings(show, "/projects/{project}") == ()
+
+
+def test_live_annotations_survive_a_failing_hint_resolution(posts):
+    # The existing fallback stands: when get_type_hints dies, live
+    # (already-evaluated) annotations still bind.
+    from fastplace.http.router import route_bindings
+
+    def show(request, project):
+        raise NotImplementedError
+
+    show.__annotations__ = {"project": posts.Post, "extra": "MissingThing"}
+    assert route_bindings(show, "/projects/{project}") == (("project", posts.Post),)

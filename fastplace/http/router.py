@@ -220,24 +220,39 @@ def route_bindings(handler: Callable, path: str) -> tuple[tuple[str, Any], ...]:
     a ``{param}`` in the route path is resolved by the kernel (via
     ``find_or_fail``) before the middleware chain runs. String annotations
     (``from __future__ import annotations``) resolve against the controller's
-    module; anything unresolvable or off-path stays unbound — a route must
-    never fail to register because of its annotations.
+    module. A path param whose annotation cannot be resolved means a binding
+    was intended and would silently die — registration fails loudly (import
+    the model at runtime; TYPE_CHECKING-only imports cannot back a binding).
+    Everything else unresolvable or off-path stays unbound.
     """
     path_params = set(_PATH_PARAM_RE.findall(path))
     if not path_params:
         return ()
+    from fastplace.errors import ConfigurationError
     from fastplace.orm import Model
 
     try:
         hints: dict[str, Any] = typing.get_type_hints(handler)
     except Exception:
-        # Unresolvable names: bind only live (already-evaluated) annotations
-        # and skip the rest.
-        hints = {
-            name: value
-            for name, value in getattr(handler, "__annotations__", {}).items()
-            if isinstance(value, type)
-        }
+        # Unresolvable names: bind only live (already-evaluated) annotations.
+        annotations = getattr(handler, "__annotations__", {})
+        hints = {name: value for name, value in annotations.items() if isinstance(value, type)}
+        # But an ANNOTATED path param that stayed unresolvable is a dead
+        # binding: the handler would raise TypeError on every request with
+        # the traceback pointing at the controller signature. Fail here,
+        # at boot, naming the param and the fix.
+        blocked = sorted(
+            name
+            for name in path_params
+            if name in annotations and not isinstance(annotations[name], type)
+        )
+        if blocked:
+            unresolved = ", ".join(f"{name}: {annotations[name]!r}" for name in blocked)
+            raise ConfigurationError(
+                f"{getattr(handler, '__name__', handler)} cannot resolve route-binding "
+                f"annotation(s) {unresolved} — import the model at runtime "
+                "(TYPE_CHECKING-only imports cannot back a binding)"
+            ) from None
     bound: list[tuple[str, Any]] = []
     for name, annotation in hints.items():
         if name in ("request", "return") or name not in path_params:
