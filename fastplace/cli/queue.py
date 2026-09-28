@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +37,35 @@ queue_app = typer.Typer(help="Background queue operations.")
 #: saq burst mode refuses to construct without a positive dequeue timeout
 #: (``Worker.__init__`` raises), so every burst worker gets this default.
 _BURST_DEQUEUE_TIMEOUT = 1.0
+
+#: The one saq 0.26 shutdown line that is noise by construction (q2-G8).
+#: ``Worker.stop()`` gathers the upkeep tasks with
+#: ``timeout=shutdown_grace_period_s or 0`` — default 0 — and the sweep poll
+#: sleeps on its full 60s interval regardless of the stop event, so this
+#: warning fires on every exit, cleanly drained bursts included. Raising the
+#: grace cannot fix it (any sane grace still sits under that 60s sleep, so
+#: the warning fires anyway after hanging the exit for the full grace);
+#: cancellation itself completes in microseconds, and a genuinely stuck task
+#: still surfaces through the distinct follow-up line ("did not finish
+#: cancellation in time"), which this filter lets through. Scoped to the
+#: worker's lifetime only — the process's other saq logging is untouched.
+_SAQ_GRACE_NOISE = (
+    "Some tasks did not finish within the shutdown grace period, requesting cancellation"
+)
+
+#: Installed saq logs its worker noise on ``logging.getLogger("saq")`` — not
+#: a "saq.worker" child (verified against the installed 0.26.4 source). The
+#: filter must sit on that exact logger: logger-level filters apply only to
+#: records logged through THAT logger, never to children or parents.
+_SAQ_LOGGER_NAME = "saq"
+
+
+class _SuppressSaqGraceNoise(logging.Filter):
+    """Drop saq's structural shutdown false-positive for one worker run."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != _SAQ_GRACE_NOISE
+
 
 #: CLI option → the saq ``Worker`` parameter it would map to. Whether it
 #: actually maps is decided against the INSTALLED saq's ``Worker.__init__``
@@ -160,13 +191,68 @@ def queue_work(
             f"queue '{escape(label)}')" + (" — burst mode" if burst else "")
         )
 
+        async def _scan_aborted() -> None:
+            """Companion scan — crash-loss visibility (q2-G2).
+
+            One pass at startup surfaces what the previous worker's death
+            cost immediately; a background task repeats it every 60s (the
+            sweeper aborts a dead worker's jobs ~90s after the crash, so a
+            single startup pass would miss mid-run deaths). Best-effort: a
+            failing scan is a warning line, never a reason to stop working.
+            """
+            try:
+                lost = await driver.record_aborted_jobs()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001 — the worker outranks the scan
+                console.print(f"[yellow]! aborted-job scan failed: {escape(str(exc))}")
+                return
+            if lost:
+                console.print(
+                    f"[yellow]! recorded {len(lost)} aborted job(s) — "
+                    "a worker died mid-job (see fastplace queue:failed):"
+                )
+                for lost_name in lost:
+                    console.print(f"[yellow]  · {escape(lost_name)}")
+
+        async def _companion_scan() -> None:
+            while True:
+                await asyncio.sleep(60)
+                await _scan_aborted()
+
         async def _run_saq_worker() -> None:
             # A sentinel already pending at start is honored at the first
-            # job boundary (the worker's before_process hook consumes it).
+            # job boundary (the worker's after_process hook consumes it).
+            await _scan_aborted()  # losses from the previous worker, now
+            companion = asyncio.create_task(_companion_scan())
             requested = await restart_requested_at() is not None
-            await worker.start()
+            saq_logger = logging.getLogger(_SAQ_LOGGER_NAME)
+            grace_filter = _SuppressSaqGraceNoise()
+            saq_logger.addFilter(grace_filter)
+            try:
+                await worker.start()
+            finally:
+                saq_logger.removeFilter(grace_filter)
+                companion.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await companion
+            # The restart contract's exit path, checked unconditionally — a
+            # sentinel published mid-run was invisible to the start sample,
+            # and the check must not be. The hook normally consumes it at
+            # the job boundary; a sentinel surviving a CLEAN exit means the
+            # worker never reached one (idle, or the hook missed) — this
+            # process exiting is itself the restart completing for it, so
+            # consume here, mirroring the memory driver's drain. Only a
+            # clear that fails turns the exit non-zero.
+            if await restart_requested_at() is not None:
+                requested = True
+                try:
+                    await clear_restart_sentinel()
+                except Exception as exc:  # noqa: BLE001 — reported, then non-zero exit
+                    console.print(f"[red]✗[/] restart sentinel clear failed: {escape(str(exc))}")
+                    raise typer.Exit(code=1) from exc
             if requested:
-                console.print("[yellow]! restart requested — worker exiting for a replacement")
+                console.print(
+                    "[yellow]! restart requested — worker exited cleanly for its replacement"
+                )
 
         asyncio.run(_run_saq_worker())
         return
@@ -197,10 +283,15 @@ def queue_work(
         executed = await q.run_pending()
         # The drain stops at a sentinel but never consumes one; this worker
         # is exiting either way, so it consumes it here — otherwise the
-        # replacement would immediately exit again.
+        # replacement would immediately exit again. A failed clear is fatal
+        # to the command, not swallowed: the restart contract depends on it.
         requested = await restart_requested_at() is not None
         if requested:
-            await clear_restart_sentinel()
+            try:
+                await clear_restart_sentinel()
+            except Exception as exc:  # noqa: BLE001 — reported, then non-zero exit
+                console.print(f"[red]✗[/] restart sentinel clear failed: {escape(str(exc))}")
+                raise typer.Exit(code=1) from exc
         return executed, requested
 
     executed, restarted = asyncio.run(_drain())
@@ -464,25 +555,30 @@ def queue_monitor(
 
     driver_name = str(config("QUEUE_DRIVER", default="memory"))
 
-    async def _depth(name: str) -> int:
+    async def _probe(name: str) -> tuple[int, int]:
+        """(depth, active) for one queue — saq reports both; memory has no
+        cross-process concept of "running now", so active is honestly 0."""
         if driver_name == "saq":
-            return await SaqQueue(name=name).queue_depth()
-        return await queue().queue_depth()
+            driver = SaqQueue(name=name)
+            return await driver.queue_depth(), await driver.active_depth()
+        mem = queue()
+        return await mem.queue_depth(), 0
 
-    async def _check() -> list[tuple[str, int]]:
-        return [(name, await _depth(name)) for name in queues]
+    async def _check() -> list[tuple[str, int, int]]:
+        return [(name, *await _probe(name)) for name in queues]
 
     depths = asyncio.run(_check())
 
     table = Table(box=None, header_style="bold")
     table.add_column("queue", style="bold")
     table.add_column("depth", justify="right")
+    table.add_column("active", justify="right")
     table.add_column("max", justify="right")
-    for name, depth in depths:
-        table.add_row(name, str(depth), str(max_depth))
+    for name, depth, active in depths:
+        table.add_row(name, str(depth), str(active), str(max_depth))
     console.print(table)
 
-    breaches = [(name, depth) for name, depth in depths if depth > max_depth]
+    breaches = [(name, depth) for name, depth, _active in depths if depth > max_depth]
     for name, depth in breaches:
         console.print(f"[red]✗[/] {name} exceeds --max ({depth} > {max_depth})")
         try:
@@ -505,7 +601,7 @@ def queue_list() -> None:
     from rich.table import Table
 
     from fastplace.console import console
-    from fastplace.queue import import_jobs, jobs
+    from fastplace.queue import effective_job_options, import_jobs, jobs
 
     load_env()
     root = _project_root()
@@ -526,14 +622,31 @@ def queue_list() -> None:
     # no_wrap keeps a one-line docstring on one line — a folded description
     # would split the sentence across cells (the signature may fold instead).
     table.add_column("description", style="dim", no_wrap=True)
+    # The effective envelope (retries×timeout a dispatch would carry) —
+    # surface the resolved numbers so nobody decodes @Job/env/defaults by
+    # hand to learn what a job's retry budget actually is.
+    table.add_column("envelope", justify="right", no_wrap=True)
+    from fastplace.errors import ConfigurationError
+
     for name in sorted(registry):
         entry = registry[name]
         doc = (inspect.getdoc(entry.fn) or "").strip().splitlines()
+        try:
+            opts = effective_job_options(entry)
+        except ConfigurationError as exc:
+            # A misconfigured QUEUE_* env fails dispatch loudly; listing must
+            # surface the same finding as a red line, not a traceback.
+            console.print(f"[red]✗[/] {escape(str(exc))}")
+            raise typer.Exit(code=1) from exc
+        envelope = f"{opts['retries']}×{opts['timeout']:g}s"
+        if opts["backoff"]:
+            envelope += f" +{opts['backoff']:g}s"
         table.add_row(
             escape(name),
             escape(entry.fn.__module__),
             escape(str(inspect.signature(entry.fn))),
             escape(doc[0]) if doc else "[dim]—[/]",
+            escape(envelope),
         )
     console.print(table)
 
@@ -712,6 +825,11 @@ def queue_dispatch(
     name: str = typer.Argument(..., help="Registered job name."),
     kwargs_json: str = typer.Option("{}", "--kwargs", help="JSON object of handler kwargs."),
     delay: float = typer.Option(0.0, "--delay", help="Seconds to wait before the job runs."),
+    retries: int = typer.Option(None, "--retries", min=1, help="Total attempts for this dispatch."),
+    timeout: float = typer.Option(
+        None, "--timeout", help="Per-attempt timeout seconds for this dispatch."
+    ),
+    queue_name: str = typer.Option(None, "--queue", help="Named saq queue to enqueue on."),
 ) -> None:
     """Enqueue one registered job without running it now."""
     import asyncio
@@ -742,28 +860,47 @@ def queue_dispatch(
     # The factory import is the test seam: patching fastplace.queue.queue
     # swaps the store this command dispatches to, whatever the env says.
     store: Any = queue_factory()
+    # Driver detection inspects the store, not the env (mirrors
+    # queue:jobs): the memory driver carries its in-process pending
+    # deque, a saq store pages the broker instead.
+    if hasattr(store, "pending"):
+        # q1-G5 honesty: nothing ever comes back to run a job this command
+        # queues on the memory driver — the pending deque dies with this
+        # process the moment the command exits. Refuse before anything
+        # lands on the queue instead of printing "Dispatched" over a job
+        # that silently never runs.
+        console.print(
+            "[red]the memory driver cannot accept CLI dispatches[/] — a job queued in this "
+            "process dies with it; set QUEUE_DRIVER=saq (redis) so a queue:work process runs it"
+        )
+        raise typer.Exit(code=1)
 
-    async def _run() -> None:
-        # Driver detection inspects the store, not the env (mirrors
-        # queue:jobs): the memory driver carries its in-process pending
-        # deque, a saq store pages the broker instead.
-        is_memory = hasattr(store, "pending")
-        if delay > 0:
-            if is_memory:
-                # Nothing ever comes back to run a queued job on this
-                # driver — an "in 5s" enqueue would silently never fire,
-                # so refuse before anything lands on the queue.
-                console.print(
-                    "[red]the memory driver cannot schedule delayed jobs[/] — use the saq driver"
-                )
-                raise typer.Exit(code=1)
-            await store.dispatch_delayed(name, kwargs=parsed, delay=delay)
-            return
-        await store.dispatch(name, **parsed)
+    async def _run() -> Any:
+        # The builder carries the envelope options (queue().job(name, ...)):
+        # handler kwargs ride dispatch() and must never collide with option
+        # names, so the two namespaces stay separate end to end.
+        return await store.job(
+            name,
+            retries=retries,
+            timeout=timeout,
+            delay=delay if delay > 0 else None,
+            queue=queue_name,
+        ).dispatch(**parsed)
 
-    asyncio.run(_run())
-    suffix = "" if delay <= 0 else f" (in {delay}s)"
-    console.print(f"[green]Dispatched '{escape(name)}'[/]{suffix}")
+    handle = asyncio.run(_run())
+    suffix = "" if delay <= 0 else f" (in {delay:g}s)"
+    if handle is None:
+        # Only a unique= dispatch can land here — the driver suppressed an
+        # identical unresolved job. The CLI never sets unique=, so this is
+        # future-proofing the honest output if it ever does.
+        console.print(
+            f"[yellow]suppressed '{escape(name)}'[/] — an identical job is already queued"
+        )
+        return
+    console.print(
+        f"[green]Dispatched '{escape(name)}'[/]{suffix} "
+        f"(job {escape(str(getattr(handle, 'key', '?')))})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -926,6 +1063,65 @@ def _check_schedule(root: Path) -> Check:
     return Check("schedule", "pass", f"{len(tasks)} {plural}")
 
 
+def _check_defaults() -> Check:
+    """The envelope every undecorated dispatch would carry (informational).
+
+    Surfacing the resolved QUEUE_TRIES/QUEUE_TIMEOUT/QUEUE_BACKOFF/QUEUE_TTL
+    floor here — right next to the driver/depth checks — means a team reads
+    its effective retry budget without decoding config layers by hand. A
+    misconfigured value surfaces as its own FAIL through dispatch-time
+    validation; this row only reports.
+    """
+    from fastplace.cli._doctor import Check
+    from fastplace.queue import effective_job_options
+
+    opts = effective_job_options()
+    detail = (
+        f"retries={opts['retries']} timeout={opts['timeout']:g}s "
+        f"backoff={opts['backoff']:g}s ttl={opts['ttl']}s"
+    )
+    return Check(
+        "defaults", "pass", detail, "QUEUE_TRIES / QUEUE_TIMEOUT / QUEUE_BACKOFF / QUEUE_TTL"
+    )
+
+
+def _check_aborted_jobs() -> Check:
+    """ABORTED jobs sitting in redis — crash-loss made visible (q2-G5).
+
+    Read-only on purpose: this row counts what the sweeper aborted, it does
+    not ledger anything (``queue:work``'s companion scan owns recording).
+    Memory driver has nothing to scan — the row states that honestly.
+    """
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+    from fastplace.queue import queue
+
+    try:
+        driver = queue()
+    except Exception:  # noqa: BLE001 — the driver row already reports this
+        return Check("aborted", "pass", "not checked (driver unresolved)")
+    if not hasattr(driver, "aborted_jobs"):
+        return Check("aborted", "pass", "not used (driver is memory)")
+    try:
+        aborted = asyncio.run(driver.aborted_jobs())  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001 — unreachable redis is the finding
+        return Check(
+            "aborted",
+            "warn",
+            f"cannot scan aborted jobs: {type(exc).__name__}",
+            "check QUEUE_REDIS_URL and that redis is running",
+        )
+    if aborted:
+        return Check(
+            "aborted",
+            "warn",
+            f"{len(aborted)} aborted job(s) in redis — worker crash-loss",
+            "fastplace queue:failed (queue:work's scan records them)",
+        )
+    return Check("aborted", "pass", "0 aborted jobs")
+
+
 @queue_app.command("queue:health")
 def queue_health() -> None:
     """Queue stack diagnosis: driver, redis, depth, restart, failures, schedule."""
@@ -950,6 +1146,8 @@ def queue_health() -> None:
             _check_depth,
             _check_restart_sentinel,
             _check_failed_jobs,
+            _check_aborted_jobs,
+            _check_defaults,
             _schedule_check,
         ],
     )

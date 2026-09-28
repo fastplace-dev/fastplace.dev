@@ -13,6 +13,7 @@ error. Neither command is in the spec's destructive set: no production guard.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 
 import pytest
@@ -138,13 +139,18 @@ def test_queue_work_without_sentinel_drains_normally(project):
 
 
 def test_queue_work_saq_prints_notice_when_sentinel_pending(project, monkeypatch):
-    """The saq branch: a sentinel pending when the worker starts is honored
-    at the first job boundary (the before_process hook) — the CLI reports
-    the restart as the reason the worker exited."""
-    from fastplace.queue import SaqQueue, set_restart_sentinel
+    """The saq branch with a pending sentinel: the worker's after_process
+    hook consumes the sentinel at the job boundary as it exits — the CLI's
+    exit verification finds it gone and reports a clean restart (exit 0)."""
+    from fastplace.queue import SaqQueue, clear_restart_sentinel, set_restart_sentinel
 
     class FakeWorker:
         async def start(self) -> None:
+            # Simulate one job boundary: the installed after_process hook
+            # consumed the sentinel before the worker's event loop ended.
+            await clear_restart_sentinel()
+
+        async def stop(self) -> None:
             return None
 
     def fake_build_worker(self, **kwargs):  # noqa: ANN001
@@ -157,7 +163,82 @@ def test_queue_work_saq_prints_notice_when_sentinel_pending(project, monkeypatch
     result = runner.invoke(cli_app, ["queue:work"])
     assert result.exit_code == 0, result.output
     plain = ANSI_RE.sub("", result.output)
+    assert "restart requested" in plain.lower()
+    assert "exited cleanly" in plain.lower()
+
+
+def test_queue_work_saq_exit_consumes_a_surviving_sentinel(project, monkeypatch):
+    """Review F3: an idle worker never reaches a job boundary, so the
+    after_process hook cannot consume a pending sentinel — but the process
+    exiting cleanly IS the restart completing for it. The exit path consumes
+    the sentinel (mirroring the memory driver) instead of failing: exit 0,
+    sentinel cleared, notice printed. Only a clear that FAILS stays loud
+    (the nonzero-exit contract lives beside the queue driver tests)."""
+    from fastplace.queue import SaqQueue, restart_requested_at, set_restart_sentinel
+
+    class FakeWorker:
+        async def start(self) -> None:
+            return None  # exits without reaching any job boundary
+
+    def fake_build_worker(self, **kwargs):  # noqa: ANN001
+        return FakeWorker()
+
+    monkeypatch.setattr(SaqQueue, "build_worker", fake_build_worker)
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+    asyncio.run(set_restart_sentinel())
+
+    result = runner.invoke(cli_app, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
     assert "restart" in plain.lower()
+    assert asyncio.run(restart_requested_at()) is None  # consumed by the exit path
+
+
+def test_queue_work_hides_saq_grace_noise_only_for_the_workers_lifetime(
+    project, monkeypatch, caplog
+):
+    """q2-G8: saq 0.26's stop() gathers its upkeep tasks with
+    ``timeout=shutdown_grace_period_s or 0`` — and the sweep poll sleeps on a
+    60s interval, so the "Some tasks did not finish within the shutdown grace
+    period" warning fires on EVERY exit, clean drained bursts included
+    (raising the grace instead would hang each exit waiting out that sleep —
+    and cancellation itself completes in microseconds). The CLI filters
+    exactly that one line for the worker's lifetime: a different saq log
+    passes through, and the filter is gone once the command exits."""
+    from fastplace.queue import SaqQueue
+
+    grace_line = (
+        "Some tasks did not finish within the shutdown grace period, requesting cancellation"
+    )
+    # Installed saq's worker module logs on logging.getLogger("saq") — not a
+    # "saq.worker" child (review F9: a filter on a child logger never sees the
+    # records saq actually emits).
+    saq_logger = logging.getLogger("saq")
+
+    class FakeWorker:
+        async def start(self) -> None:
+            # What a real saq stop() emits on a clean burst exit.
+            saq_logger.warning(grace_line)
+            saq_logger.warning("unrelated saq worker line")
+
+    def fake_build_worker(self, **kwargs):  # noqa: ANN001
+        return FakeWorker()
+
+    monkeypatch.setattr(SaqQueue, "build_worker", fake_build_worker)
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+
+    with caplog.at_level(logging.WARNING, logger="saq"):
+        result = runner.invoke(cli_app, ["queue:work", "--once"])
+    assert result.exit_code == 0, result.output
+
+    messages = [record.message for record in caplog.records]
+    assert "unrelated saq worker line" in messages  # scoped, not muzzled
+    assert grace_line not in messages  # the structural false-positive dies
+
+    # The filter is removed with the run — later saq logging is untouched.
+    with caplog.at_level(logging.WARNING, logger="saq"):
+        saq_logger.warning(grace_line)
+    assert any(record.message == grace_line for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +326,30 @@ def test_queue_monitor_help_documents_the_threshold(project):
     result = runner.invoke(cli_app, ["queue:monitor", "--help"])
     assert result.exit_code == 0, result.output
     assert "--max" in result.output
+
+
+def test_queue_monitor_saq_rows_show_active_depth(project, monkeypatch):
+    """q2-G5: on the saq driver each row also reports ACTIVE jobs — a worker
+    that died mid-job leaves jobs stuck ACTIVE (the sweeper aborts them
+    ~90s later), so depth alone hides the crash symptom."""
+    from fastplace.queue import SaqQueue
+
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+
+    async def _fake_depth(self) -> int:  # noqa: ANN001 — test seam
+        return 4
+
+    async def _fake_active(self) -> int:  # noqa: ANN001 — test seam
+        return 2
+
+    monkeypatch.setattr(SaqQueue, "queue_depth", _fake_depth)
+    monkeypatch.setattr(SaqQueue, "active_depth", _fake_active)
+
+    result = runner.invoke(cli_app, ["queue:monitor", "default", "--max", "5"])
+    assert result.exit_code == 0, result.output
+    plain = ANSI_RE.sub("", result.output)
+    assert "active" in plain  # the column exists…
+    assert "2" in plain  # …and carries the stuck-job count, not just depth
 
 
 def test_queue_work_failure_line_renders_markup_literally(project):

@@ -89,18 +89,27 @@ def _system_jobs_module(project):
         sys.path.remove(str(project))
 
 
-def test_dispatch_enqueues_without_running(project):
+def test_dispatch_on_memory_driver_is_refused(project):
+    """q1-G5 honesty: a CLI dispatch would land on this process's in-process
+    queue and die with it — refuse instead of printing 'Dispatched'."""
     from fastplace.queue import import_jobs, queue, reset_queue
 
     import_jobs(project)
     reset_queue()
     result = runner.invoke(cli_app, ["queue:dispatch", "note", "--kwargs", '{"message": "m1"}'])
-    assert result.exit_code == 0, result.output
-    assert "Dispatched 'note'" in _out(result)
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "memory driver" in out
+    assert "Dispatched" not in out
     store = queue()
-    assert len(store.pending) == 1
-    assert store.pending[0].kwargs == {"message": "m1"}
-    assert _system_jobs_module(project) == []  # dispatch only — handler never ran
+    assert len(store.pending) == 0  # nothing was queued
+    assert _system_jobs_module(project) == []  # and nothing ran
+
+
+def test_dispatch_delay_on_memory_driver_refused_too(project):
+    result = runner.invoke(cli_app, ["queue:dispatch", "note", "--delay", "5"])
+    assert result.exit_code == 1
+    assert "memory driver" in _out(result)
 
 
 def test_unknown_job_refused(project):
@@ -123,38 +132,93 @@ def test_non_object_kwargs_refused(project):
     assert "object" in _out(result)
 
 
-def test_delay_on_memory_driver_refused(project):
-    from fastplace.queue import import_jobs, reset_queue
+def test_saq_dispatch_builds_the_envelope(project, monkeypatch):
+    """q1-G3 surface: --retries/--timeout/--delay/--queue ride the builder
+    (queue().job(name, ...).dispatch(...)), and the printed line carries the
+    job key so the dispatch is trackable afterwards."""
+    from fastplace.queue import import_jobs
 
     import_jobs(project)
-    reset_queue()
-    result = runner.invoke(cli_app, ["queue:dispatch", "note", "--delay", "5"])
-    assert result.exit_code == 1
-    assert "cannot schedule delayed jobs" in _out(result)
-    from fastplace.queue import queue
+    captured: dict = {}
 
-    assert len(queue().pending) == 0
+    class _Pending:
+        def __init__(self, name, **options):
+            captured["name"] = name
+            captured["options"] = options
 
+        async def dispatch(self, **kwargs):
+            captured["kwargs"] = kwargs
 
-def test_saq_delay_routes_through_dispatch_delayed(project, monkeypatch):
-    recorded = {}
+            class _Handle:
+                key = "job-abc"
 
-    class _FakeSaqQueue:
-        async def dispatch(self, name, **kwargs):
-            recorded["dispatch"] = (name, kwargs)
+            return _Handle()
 
-        async def dispatch_delayed(self, name, kwargs=None, delay=1.0):
-            recorded["delayed"] = (name, kwargs, delay)
+    class _FakeSaqStore:
+        def job(self, name, **options):
+            return _Pending(name, **options)
 
-    monkeypatch.setattr("fastplace.queue.queue", lambda: _FakeSaqQueue())
+    monkeypatch.setattr("fastplace.queue.queue", lambda: _FakeSaqStore())
     result = runner.invoke(
-        cli_app, ["queue:dispatch", "note", "--kwargs", '{"message": "m2"}', "--delay", "5"]
+        cli_app,
+        [
+            "queue:dispatch",
+            "note",
+            "--kwargs",
+            '{"message": "m2"}',
+            "--retries",
+            "5",
+            "--timeout",
+            "9",
+            "--delay",
+            "2",
+            "--queue",
+            "emails",
+        ],
     )
     assert result.exit_code == 0, result.output
     out = _out(result)
     assert "Dispatched 'note'" in out
-    assert "(in 5.0s)" in out
-    assert recorded == {"delayed": ("note", {"message": "m2"}, 5.0)}
+    assert "job-abc" in out
+    assert "(in 2s)" in out
+    assert captured["name"] == "note"
+    assert captured["kwargs"] == {"message": "m2"}
+    assert captured["options"]["retries"] == 5
+    assert captured["options"]["timeout"] == 9.0
+    assert captured["options"]["delay"] == 2.0
+    assert captured["options"]["queue"] == "emails"
+
+
+def test_saq_plain_dispatch_passes_no_overrides(project, monkeypatch):
+    """No envelope flags → no builder overrides; every layer below (env,
+    @Job, defaults) decides."""
+    from fastplace.queue import import_jobs
+
+    import_jobs(project)
+    captured: dict = {}
+
+    class _Pending:
+        def __init__(self, name, **options):
+            captured["name"] = name
+            captured["options"] = options
+
+        async def dispatch(self, **kwargs):
+            captured["kwargs"] = kwargs
+
+            class _Handle:
+                key = "job-plain"
+
+            return _Handle()
+
+    class _FakeSaqStore:
+        def job(self, name, **options):
+            return _Pending(name, **options)
+
+    monkeypatch.setattr("fastplace.queue.queue", lambda: _FakeSaqStore())
+    result = runner.invoke(cli_app, ["queue:dispatch", "note"])
+    assert result.exit_code == 0, result.output
+    assert "Dispatched 'note'" in _out(result)
+    assert captured["options"] == {"retries": None, "timeout": None, "delay": None, "queue": None}
 
 
 def test_outside_project_exits_one(tmp_path, monkeypatch):
