@@ -19,7 +19,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolate_project_state():
-    """Give every test a clean db facade, model metadata, and module cache.
+    """Give every test a clean db facade, model metadata, module cache, and environ.
 
     Seeders import project models (``app.*``) through normal package
     resolution, so any foreign cached ``app`` package — the repo's own
@@ -30,13 +30,23 @@ def isolate_project_state():
     which blanket-clears: these tests run before ``tests/http``, whose
     repo-owned ``app.*`` must stay cached or a re-import collides in the
     global @Job registry).
+
+    ``os.environ`` gets the same snapshot/restore: CLI commands load the
+    invoked project's .env (``load_dotenv(override=False)`` writes it into
+    the process environ), and ``monkeypatch`` cannot undo that — a delenv
+    on a key that was absent at setup tracks nothing, so a dotenv-written
+    DATABASE_URL survives into every later test and its manager build
+    reads a foreign database.
     """
+    import os
+
     from fastplace.db import reset_db
     from fastplace.orm import Model
 
     reset_db()
     saved_path = list(sys.path)
     saved_modules = dict(sys.modules)
+    saved_environ = dict(os.environ)
     # Table snapshot as a mapping, not a set: CLI introspection (collect_models)
     # evicts foreign tables for its sandbox and — persist mode — leaves them
     # out, so teardown must also put back what the test REMOVED, or later
@@ -65,6 +75,8 @@ def isolate_project_state():
         del sys.modules[name]
     sys.modules.update(parked)
     sys.path[:] = saved_path
+    os.environ.clear()
+    os.environ.update(saved_environ)
 
 
 @contextlib.contextmanager

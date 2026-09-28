@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 from typing import Any
 
 from sqlalchemy.ext.asyncio import (
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from fastplace.orm.capabilities import Capabilities, driver_from_url
+from fastplace.orm.capabilities import Capabilities, driver_from_url, normalize_driver
 
 logger = logging.getLogger("fastplace.db")
 
@@ -71,6 +72,34 @@ def normalize_database_url(url: str) -> str:
     return f"{bound}://{rest}" if bound else url
 
 
+def resolve_driver(declared: str | None, url: str, *, connection: str = "default") -> str:
+    """Driver family for a connection: the URL's, unless a declared driver agrees.
+
+    The engine binds to the URL, so the capability registry must follow the
+    URL's family. A declared driver — ``DATABASE_DRIVER`` or a named
+    connection's ``driver`` key — is honored only when it names the same
+    family (aliases like ``postgres`` count): a contradiction (the
+    scaffold's ``DATABASE_DRIVER='sqlite'`` left behind after ``.env``
+    switched the URL to PostgreSQL) warns and follows the URL rather than
+    silently flipping capabilities to another backend's truth.
+    """
+    derived = driver_from_url(url)
+    if declared is None or str(declared).strip() == "":
+        return derived
+    normalized = normalize_driver(str(declared))
+    if normalized != derived:
+        logger.warning(
+            "declared driver %r contradicts connection %r's URL (%s family) — "
+            "using %r; remove the stale driver setting",
+            str(declared),
+            connection,
+            derived,
+            derived,
+        )
+        return derived
+    return normalized
+
+
 def get_manager() -> DatabaseManager:
     """Process-wide manager, configured from ``config/database.py`` + ``.env``."""
     global _manager
@@ -107,7 +136,9 @@ def _connections_from_config() -> dict[str, dict[str, Any]]:
                     f"DATABASE_CONNECTIONS[{cname!r}] must be a dict with at least a 'url' entry"
                 )
             entry: dict[str, Any] = {
-                "driver": spec.get("driver") or driver_from_url(str(spec["url"])),
+                "driver": resolve_driver(
+                    spec.get("driver"), str(spec["url"]), connection=str(cname)
+                ),
                 "url": spec["url"],
             }
             for key in _POOL_KEYS:
@@ -116,11 +147,11 @@ def _connections_from_config() -> dict[str, dict[str, Any]]:
             connections[str(cname)] = entry
 
     url = config("DATABASE_URL", default=None)
-    driver = config("DATABASE_DRIVER", default=None)
-    if url or driver:
+    declared = os.environ.get("DATABASE_DRIVER") or config("DATABASE_DRIVER", default=None)
+    if url or declared:
         url = url or "sqlite+aiosqlite:///./database.sqlite3"
         default_conn: dict[str, Any] = {
-            "driver": driver or driver_from_url(url),
+            "driver": resolve_driver(declared, str(url)),
             "url": url,
         }
         replicas = _parse_replica_urls(config("DATABASE_READ_REPLICAS", default=None))
@@ -193,6 +224,15 @@ class DatabaseManager:
             for key in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle"):
                 if key in cfg:
                     kwargs[key] = int(cfg[key])
+        if url.startswith(("mysql", "mariadb")):
+            # Pin the connection charset — a server defaulting to latin1
+            # would silently mangle anything outside ASCII (emoji, Bengali)
+            # even before the table DDL is considered.
+            from fastplace.config import config
+
+            kwargs.setdefault("connect_args", {})["charset"] = str(
+                config("DATABASE_CHARSET", default="utf8mb4")
+            )
 
         engine = create_async_engine(url, **kwargs)
         from fastplace.orm.instrumentation import install_instrumentation

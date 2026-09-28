@@ -153,6 +153,23 @@ def test_new_env_defaults_to_sqlite_and_generates_a_key(tmp_path, monkeypatch):
     assert 'APP_ENV = "local"' in (root / "blog" / "config" / "app.py").read_text()
 
 
+def test_new_env_pins_session_and_cache_drivers(tmp_path, monkeypatch):
+    """The scaffold must boot warn-free: run dev warns on memory sessions
+    (every reload drops the store) and serve's multi-worker guard refuses
+    them outright — so the default .env pins SESSION_DRIVER=database (the
+    zero-config SQLite store) instead of leaving the implicit memory default."""
+    _, root = _invoke(tmp_path, monkeypatch, "blog")
+    env = (root / "blog" / ".env").read_text()
+    example = (root / "blog" / ".env.example").read_text()
+
+    assert "SESSION_DRIVER=database" in env
+    assert "SESSION_DRIVER=database" in example
+    # Cache has no dev-time warning; the explicit line documents the knob a
+    # production deploy must move off memory (serve refuses it there).
+    assert "CACHE_DRIVER=memory" in env
+    assert "CACHE_DRIVER=memory" in example
+
+
 def test_new_refuses_a_non_empty_directory(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
@@ -300,10 +317,10 @@ def test_new_refuses_overlong_names(tmp_path, monkeypatch):
 
 def test_new_dependency_carries_version_floor_when_installed(tmp_path, monkeypatch):
     """From a published install (no framework checkout on disk) the scaffolded
-    app must pin a floor — ``fastplace[webauthn]>=<version>`` — never a bare
+    app must pin a floor — ``fastplace[queue,webauthn]>=<version>`` — never a bare
     specifier: a bare dependency silently tracks future breaking releases,
     and the npm side already caret-pins its published fallback (``^0.1.0``).
-    The extra stays pinned so the passkey surface is importable as-is."""
+    The extras stay pinned so the passkey surface and the mail queue are importable as-is."""
     from fastplace.cli import generators
 
     monkeypatch.setattr(generators, "_framework_checkout", lambda: None)
@@ -311,7 +328,7 @@ def test_new_dependency_carries_version_floor_when_installed(tmp_path, monkeypat
     assert result.exit_code == 0, result.output
 
     pyproject = (root / "blog" / "pyproject.toml").read_text()
-    assert '"fastplace[webauthn]>=' in pyproject, pyproject
+    assert '"fastplace[queue,webauthn]>=' in pyproject, pyproject
     # A bare specifier or a leaked local path is the regression.
     assert '"fastplace"' not in pyproject
     assert "file://" not in pyproject
@@ -338,9 +355,9 @@ def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
     # is disabled explicitly — the app is not a distribution.
     assert "[tool.setuptools]" in pyproject
     if from_source_checkout:
-        assert f"fastplace[webauthn] @ file://{checkout}" in pyproject
+        assert f"fastplace[queue,webauthn] @ file://{checkout}" in pyproject
     else:  # pragma: no cover — CI/dev always runs from the checkout
-        assert '"fastplace[webauthn]>=' in pyproject
+        assert '"fastplace[queue,webauthn]>=' in pyproject
     if from_source_checkout and dist_built:
         assert '"@fastplace/react": "file:' in package_json
     else:

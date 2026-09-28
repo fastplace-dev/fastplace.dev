@@ -56,6 +56,13 @@ describe("Button", () => {
     expect(button).toBeDisabled();
   });
 
+  it("keeps the focus ring strong enough for WCAG 2.2 focus-appearance (a11y1-G9)", () => {
+    render(<Button>Save</Button>);
+    // /50 blends under the 3:1 UI bar in light theme; /75 clears it with
+    // margin (see the theme-contrast guard for the computed ratios).
+    expect(screen.getByRole("button").className).toContain("focus-visible:ring-ring/75");
+  });
+
   it("renders its child element instead of a button when asChild", () => {
     render(
       <Button asChild>

@@ -61,25 +61,37 @@ CAPABILITY_GROUPS: dict[str, dict[str, bool]] = {
         "row_level_security": False,  # never claim PostgreSQL-style RLS
     },
     "mongodb": {
-        "transactions": True,
+        # The document adapter exposes no session/transaction surface and
+        # no read-preference wiring — claiming either would pass the
+        # supports() gate into code that has no Mongo path at all.
+        "transactions": False,
         "foreign_keys": False,
         "joins": False,
         "window_functions": False,
         "cte": False,
         "returning": False,
-        "full_text": True,
+        # The document adapter emits no $text and no $vectorSearch query —
+        # Atlas Vector Search is a hosted-only feature the framework has no
+        # path for. Never claim a capability the query builder cannot emit.
+        "full_text": False,
         "trigram": False,
         "json": True,
         "json_path": True,
-        "vector": True,  # Atlas Vector Search
-        "similarity_search": True,
+        "vector": False,
+        "similarity_search": False,
         "advisory_locks": False,
-        "read_replicas": True,
+        "read_replicas": False,
         "row_level_security": False,
     },
 }
 
 _ALIASES = {"postgres": "postgresql", "sqlite3": "sqlite", "mariadb": "mysql"}
+
+
+def normalize_driver(driver: str) -> str:
+    """Canonical family name for a driver alias (``postgres`` → ``postgresql``)."""
+    lowered = str(driver).strip().lower()
+    return _ALIASES.get(lowered, lowered)
 
 
 def driver_from_url(url: str) -> str:
@@ -88,7 +100,7 @@ def driver_from_url(url: str) -> str:
     Case-insensitive — URLs pasted from dashboards arrive in any casing.
     """
     scheme = url.split(":", 1)[0].split("+", 1)[0].lower()
-    return _ALIASES.get(scheme, scheme)
+    return normalize_driver(scheme)
 
 
 class Capabilities:

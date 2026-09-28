@@ -49,6 +49,11 @@ class Field:  # noqa: A001 — deliberate public name (blueprint API)
         text: bool = False,
         server_default: Any = None,
         autoincrement: bool | None = None,
+        ann: str | None = None,
+        distance: str = "cosine",
+        lists: int = 100,
+        m: int = 16,
+        ef_construction: int = 64,
     ) -> None:
         self.primary_key = primary_key
         self.default = default
@@ -64,14 +69,57 @@ class Field:  # noqa: A001 — deliberate public name (blueprint API)
         self.text = text
         self.server_default = server_default
         self.autoincrement = autoincrement
+        # Vector-only knobs (consumed when ``ann`` marks an ANN index).
+        self.ann = ann
+        self.distance = distance
+        self.lists = lists
+        self.m = m
+        self.ef_construction = ef_construction
 
     def has_default(self) -> bool:
         return self.default is not _MISSING or self.default_factory is not _MISSING
 
 
-def VectorField(dimensions: int) -> Field:
-    """High-level vector column (blueprint §9): ``embedding: list[float] = VectorField(dimensions=1536)``."""
-    return Field(type="vector", dimensions=dimensions)
+_VECTOR_DISTANCES = ("cosine", "l2", "inner_product")
+
+
+def VectorField(
+    dimensions: int,
+    *,
+    index: bool | str = False,
+    distance: str = "cosine",
+    lists: int = 100,
+    m: int = 16,
+    ef_construction: int = 64,
+) -> Field:
+    """High-level vector column (blueprint §9).
+
+    ``embedding: list[float] = VectorField(dimensions=1536)``. ``index=True``
+    emits the default ANN index (HNSW, cosine distance); pass ``"ivfflat"``
+    to choose IVF instead. ``distance`` must match the query metric —
+    "cosine" (default), "l2", or "inner_product" — it picks the index
+    opclass, and a mismatched opclass makes the index unusable for the
+    query. On backends without native vectors the JSON fallback column
+    gets no index at all (a btree over a JSON blob is dead weight).
+    """
+    if distance not in _VECTOR_DISTANCES:
+        raise ValueError(
+            f"unknown vector distance {distance!r} — use one of: cosine, l2, inner_product"
+        )
+    field = Field(
+        type="vector",
+        dimensions=dimensions,
+        distance=distance,
+        lists=lists,
+        m=m,
+        ef_construction=ef_construction,
+    )
+    if index:
+        algorithm = "hnsw" if index is True else str(index)
+        if algorithm not in ("hnsw", "ivfflat"):
+            raise ValueError(f"unknown vector index algorithm {index!r} — use 'hnsw' or 'ivfflat'")
+        field.ann = algorithm
+    return field
 
 
 _SIMPLE_TYPE_MAP: dict[Any, Any] = {

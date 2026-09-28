@@ -93,6 +93,26 @@ describe("AppSidebarLayout", () => {
     expect(main?.className).toContain("overflow-x-clip");
   });
 
+  it("exposes the inset main as the skip-link target (a11y1-G2)", () => {
+    renderLayout({ breadcrumbs });
+
+    const main = document.querySelector("main[data-slot='sidebar-inset']");
+    expect(main).toHaveAttribute("id", "main-content");
+  });
+
+  it("renders the skip link as the first focusable element in the layout", () => {
+    renderLayout({ breadcrumbs });
+
+    const skip = screen.getByRole("link", { name: "Skip to content" });
+    expect(skip).toHaveAttribute("href", "#main-content");
+
+    const focusables = document.querySelectorAll(
+      "a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex='-1'])",
+    );
+    expect(focusables.length).toBeGreaterThan(0);
+    expect(focusables[0]).toBe(skip);
+  });
+
   it("forwards breadcrumbs to the sidebar header", () => {
     renderLayout({ breadcrumbs });
 

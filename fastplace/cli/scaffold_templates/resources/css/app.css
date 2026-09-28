@@ -30,7 +30,7 @@
   --color-brand-100: oklch(0.93 0.05 250);
   --color-brand-300: oklch(0.8 0.1 250);
   --color-brand-500: oklch(0.62 0.17 258);
-  --color-brand-600: oklch(0.55 0.19 260);
+  --color-brand-600: oklch(0.52 0.19 260);
   --color-brand-700: oklch(0.48 0.18 262);
   --color-brand-900: oklch(0.3 0.12 262);
 
@@ -90,9 +90,11 @@
   --ink-muted: oklch(0.5 0.02 260);
   --line: oklch(0.91 0.01 255);
   --accent: var(--color-brand-500);
-  --success: oklch(0.6 0.13 155);
-  --warning: oklch(0.72 0.15 75);
-  --danger: oklch(0.58 0.2 25);
+  /* Status hues at WCAG AA depth on light surfaces (4.5:1+ against both
+   * --surface and --card); dark keeps its own lighter shades below. */
+  --success: oklch(0.52 0.13 155);
+  --warning: oklch(0.55 0.14 75);
+  --danger: oklch(0.5 0.2 25);
 
   /* Aliases over the palette (light) */
   --background: var(--surface);
@@ -113,7 +115,7 @@
   --destructive-foreground: oklch(1 0 0);
   --border: var(--line);
   --input: var(--line);
-  --ring: var(--color-brand-500);
+  --ring: var(--color-brand-600);
   --radius: 0.625rem;
 
   /* Sidebar namespace — most values ride the palette through var()
@@ -143,7 +145,7 @@
      * surfaces (these were previously left unswapped). */
     --success: oklch(0.68 0.13 155);
     --warning: oklch(0.79 0.14 75);
-    --danger: oklch(0.65 0.19 25);
+    --danger: oklch(0.67 0.19 25);
 
     /* Palette-dependent aliases re-pointed for dark */
     --popover: oklch(0.28 0.02 262);
@@ -179,7 +181,7 @@
   --accent: var(--color-brand-300);
   --success: oklch(0.68 0.13 155);
   --warning: oklch(0.79 0.14 75);
-  --danger: oklch(0.65 0.19 25);
+  --danger: oklch(0.67 0.19 25);
 
   --popover: oklch(0.28 0.02 262);
   --primary: var(--color-brand-300);
@@ -212,4 +214,19 @@
 body {
   background-color: var(--color-surface);
   color: var(--color-ink);
+}
+
+/* Respect prefers-reduced-motion (WCAG 2.3.3 / a11y2-G7): collapse every
+ * animation and transition to a near-zero step so motion-sensitive users
+ * get instant state changes, and never leave an interstitial frame stuck
+ * mid-transition. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

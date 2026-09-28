@@ -39,9 +39,11 @@ function ProfilePage({ mustVerifyEmail }: { mustVerifyEmail: boolean }) {
                   required
                   autoComplete="name"
                   placeholder="Full name"
+                  aria-describedby={errors.name ? "name-error" : undefined}
+                  aria-invalid={errors.name ? true : undefined}
                 />
 
-                <InputError className="mt-2" message={errors.name?.[0]} />
+                <InputError id="name-error" className="mt-2" message={errors.name?.[0]} />
               </div>
 
               <div className="grid gap-2">
@@ -56,9 +58,11 @@ function ProfilePage({ mustVerifyEmail }: { mustVerifyEmail: boolean }) {
                   required
                   autoComplete="username"
                   placeholder="Email address"
+                  aria-describedby={errors.email ? "email-error" : undefined}
+                  aria-invalid={errors.email ? true : undefined}
                 />
 
-                <InputError className="mt-2" message={errors.email?.[0]} />
+                <InputError id="email-error" className="mt-2" message={errors.email?.[0]} />
               </div>
 
               {mustVerifyEmail && user?.email_verified_at === null && (
@@ -75,7 +79,10 @@ function ProfilePage({ mustVerifyEmail }: { mustVerifyEmail: boolean }) {
                   </p>
 
                   {status === "verification-link-sent" && (
-                    <div className="mt-2 text-sm font-medium text-green-600">
+                    <div
+                      role="status"
+                      className="text-success mt-2 text-sm font-medium"
+                    >
                       A new verification link has been sent to your email address.
                     </div>
                   )}

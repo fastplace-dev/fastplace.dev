@@ -36,12 +36,14 @@ export default function Register() {
                   type="text"
                   required
                   autoFocus
-                  tabIndex={1}
+
                   autoComplete="name"
                   name="name"
                   placeholder="Full name"
+                  aria-describedby={errors.name ? "name-error" : undefined}
+                  aria-invalid={errors.name ? true : undefined}
                 />
-                <InputError message={errors.name?.[0]} className="mt-2" />
+                <InputError id="name-error" message={errors.name?.[0]} className="mt-2" />
               </div>
 
               <div className="grid gap-2">
@@ -50,12 +52,14 @@ export default function Register() {
                   id="email"
                   type="email"
                   required
-                  tabIndex={2}
+
                   autoComplete="email"
                   name="email"
                   placeholder="email@example.com"
+                  aria-describedby={errors.email ? "email-error" : undefined}
+                  aria-invalid={errors.email ? true : undefined}
                 />
-                <InputError message={errors.email?.[0]} />
+                <InputError id="email-error" message={errors.email?.[0]} />
               </div>
 
               <div className="grid gap-2">
@@ -63,13 +67,15 @@ export default function Register() {
                 <PasswordInput
                   id="password"
                   required
-                  tabIndex={3}
+
                   autoComplete="new-password"
                   name="password"
                   placeholder="Password"
                   passwordrules={passwordRules}
+                  aria-describedby={errors.password ? "password-error" : undefined}
+                  aria-invalid={errors.password ? true : undefined}
                 />
-                <InputError message={errors.password?.[0]} />
+                <InputError id="password-error" message={errors.password?.[0]} />
               </div>
 
               <div className="grid gap-2">
@@ -77,19 +83,26 @@ export default function Register() {
                 <PasswordInput
                   id="password_confirmation"
                   required
-                  tabIndex={4}
+
                   autoComplete="new-password"
                   name="password_confirmation"
                   placeholder="Confirm password"
                   passwordrules={passwordRules}
+                  aria-describedby={
+                    errors.password_confirmation ? "password_confirmation-error" : undefined
+                  }
+                  aria-invalid={errors.password_confirmation ? true : undefined}
                 />
-                <InputError message={errors.password_confirmation?.[0]} />
+                <InputError
+                  id="password_confirmation-error"
+                  message={errors.password_confirmation?.[0]}
+                />
               </div>
 
               <Button
                 type="submit"
                 className="mt-2 w-full"
-                tabIndex={5}
+
                 disabled={processing}
                 data-test="register-user-button"
               >
@@ -100,7 +113,7 @@ export default function Register() {
 
             <div className="text-ink-muted text-center text-sm">
               Already have an account?{" "}
-              <TextLink href="/login" tabIndex={6}>
+              <TextLink href="/login">
                 Log in
               </TextLink>
             </div>

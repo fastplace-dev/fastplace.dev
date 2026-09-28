@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastplace.config import config  # noqa: E402
+from fastplace.config import config, load_env  # noqa: E402
 from fastplace.orm.manager import normalize_database_url  # noqa: E402
 from fastplace.orm.model import Model  # noqa: E402
 from fastplace.orm.registry import import_all_models  # noqa: E402
@@ -28,6 +28,11 @@ alembic_config = context.config
 
 if alembic_config.config_file_name is not None:
     fileConfig(alembic_config.config_file_name)
+
+# Same config source as the running app: a bare `alembic upgrade` (no
+# fastplace CLI involved) must still resolve the .env DATABASE_URL. Never
+# overrides a real environment variable.
+load_env(PROJECT_ROOT / ".env")
 
 # Discover declared models so autogenerate diffs against full metadata.
 import_all_models(PROJECT_ROOT)
@@ -48,6 +53,18 @@ _FRAMEWORK_TABLES = frozenset({"fastplace_migrations", "alembic_version"})
 def _include_object(obj, name, type_, reflected, compare_to):
     if type_ == "table" and name in _FRAMEWORK_TABLES:
         return False
+    # Reflected ANN indexes (pgvector HNSW/IVF) with no metadata counterpart
+    # must not be dropped: Alembic cannot order/compare their opclass and
+    # build options, so autogenerate reads them as unknown and would emit a
+    # destructive drop on every diff. Indexes the metadata DOES declare diff
+    # normally (compare_to is not None).
+    if type_ == "index" and reflected and compare_to is None:
+        try:
+            using = obj.dialect_options["postgresql"].get("using")
+        except Exception:
+            using = None
+        if using in ("hnsw", "ivfflat"):
+            return False
     return True
 
 
@@ -113,10 +130,16 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    connect_args: dict = {}
+    if database_url.startswith(("mysql", "mariadb")):
+        # Same pin as the runtime engine: a latin1-default server would
+        # mangle non-ASCII data inside hand-written data migrations.
+        connect_args["charset"] = str(config("DATABASE_CHARSET", default="utf8mb4"))
     connectable = async_engine_from_config(
         alembic_config.get_section(alembic_config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     async with connectable.connect() as connection:

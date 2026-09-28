@@ -24,6 +24,25 @@ def reset_db_singleton():
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_environ():
+    """Confine os.environ changes to the test that caused them.
+
+    db commands load the invoked project's .env (load_dotenv writes it
+    into the process environment) and monkeypatch cannot undo that — a
+    delenv on a key absent at setup tracks nothing, and a dotenv-written
+    value outlives every fixture. One leaked APP_NAME or DATABASE_URL
+    reaches later suites through env-first config (the sample-suite
+    failures this once caused).
+    """
+    import os
+
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
 def reset_model_registry():
     """Unmap every model class around each test; the registry starts empty.
 

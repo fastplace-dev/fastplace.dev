@@ -70,19 +70,12 @@ class CompanyDocument(Document):
 
     @classmethod
     def where(cls, filter: dict[str, Any] | None = None, /, **equality) -> DocumentQuery:
-        return super().where(filter, **{**equality, **cls._tenant_filter()})
-
-    @classmethod
-    async def find(
-        cls,
-        filter: dict[str, Any] | None = None,
-        *,
-        sort: Any = None,
-        skip: int = 0,
-        limit: int | None = None,
-    ) -> list[Document]:
-        merged = {**(filter or {}), **cls._tenant_filter()}
-        return await super().find(merged, sort=sort, skip=skip, limit=limit)
+        # Chained, not dict-merged: the tenant criterion rides the query
+        # engine's $and, so a caller's company_id condition (an equality or
+        # an operator like $ne) is intersected — never silently replaced by
+        # the tenant equality. find()/first()/count() all build through
+        # here, so they inherit the intersection for free.
+        return super().where(filter, **equality).where(cls._tenant_filter())
 
     @classmethod
     async def create(cls, **data: Any) -> Document:

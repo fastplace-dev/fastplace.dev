@@ -22,9 +22,14 @@ describe("Alert", () => {
     expect(alert.className).toContain("text-foreground");
   });
 
-  it("maps the destructive variant onto its foreground color", () => {
+  it("maps the destructive variant onto readable destructive text (a11y2-G1)", () => {
     render(<Alert variant="destructive">Something went wrong</Alert>);
-    expect(screen.getByRole("alert").className).toContain("text-destructive-foreground");
+    const { className } = screen.getByRole("alert");
+    // Colored text on the card behind it — white foreground text is only
+    // valid over a solid destructive fill, which this variant no longer sets.
+    expect(className).toContain("text-destructive");
+    expect(className).not.toContain("text-destructive-foreground");
+    expect(className).toContain("border-destructive/50");
   });
 
   it("renders AlertTitle text visibly with its slot", () => {

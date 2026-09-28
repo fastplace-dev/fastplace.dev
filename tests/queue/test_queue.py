@@ -363,15 +363,16 @@ def test_saq_queue_builds_redis_queue_lazily():
 
 async def test_saq_dispatch_wraps_kwargs_to_avoid_field_hijack():
     # saq's enqueue splats kwargs and hijacks any name matching its Job
-    # dataclass fields (timeout, ttl, kwargs…) into job properties — the
-    # payload must arrive as one explicit kwargs dict instead.
+    # dataclass fields (timeout, ttl, kwargs…) into job properties — so the
+    # driver enqueues one explicit Job whose kwargs dict is the payload and
+    # whose reliability fields it set deliberately (test_dispatch_options).
     class FakeSaqQueue:
         def __init__(self):
             self.enqueued = []
 
-        async def enqueue(self, name, **kwargs):
-            self.enqueued.append((name, kwargs))
-            return None
+        async def enqueue(self, job):
+            self.enqueued.append(job)
+            return job
 
     fake = FakeSaqQueue()
     driver = SaqQueue(queue=fake)
@@ -380,8 +381,12 @@ async def test_saq_dispatch_wraps_kwargs_to_avoid_field_hijack():
     async def notify(user_id: int, timeout: str = ""):
         return None
 
-    await driver.dispatch("notify", user_id=9, timeout="safe")
-    assert fake.enqueued == [("notify", {"kwargs": {"user_id": 9, "timeout": "safe"}})]
+    handle = await driver.dispatch("notify", user_id=9, timeout="safe")
+    (job,) = fake.enqueued
+    assert job.function == "notify"
+    assert job.kwargs == {"user_id": 9, "timeout": "safe"}  # intact — no hijack
+    assert job.timeout != "safe"  # the kwarg never leaked into the property
+    assert handle is job  # dispatch hands back the enqueued Job (q1-G10)
 
 
 def test_saq_worker_assembly_registers_jobs_by_name():
@@ -392,6 +397,54 @@ def test_saq_worker_assembly_registers_jobs_by_name():
     driver = SaqQueue(url="redis://localhost:6379/2", name="fastplace")
     worker = driver.build_worker()
     assert "billing.reconcile" in worker.functions
+
+
+# ---------------------------------------------------------------------------
+# build_worker handler shape — saq calls fn(ctx, **kwargs); @Job handlers are
+# documented as fn(**kwargs). The worker must adapt, not the developer.
+# ---------------------------------------------------------------------------
+
+
+async def test_saq_worker_function_accepts_ctx_and_forwards_kwargs():
+    """saq's process() invokes ``function(context, **kwargs)`` — the registered
+    callable must accept that leading ctx positional and hand the handler
+    ONLY its dispatched kwargs (q1-G1/q2-G1)."""
+    seen: dict = {}
+
+    @Job(name="shape.kwargs_probe")
+    async def probe(user_id: int, timeout: str = "unset"):
+        seen["call"] = (user_id, timeout)
+        return "done"
+
+    driver = SaqQueue(url="redis://localhost:6379/2", name="fastplace")
+    worker = driver.build_worker()
+
+    result = await worker.functions["shape.kwargs_probe"](
+        {"worker": object(), "job": object()},  # saq's ctx positional
+        user_id=3,
+        timeout="payload",  # a Job-dataclass field name — must stay a kwarg
+    )
+    assert seen["call"] == (3, "payload")
+    assert result == "done"
+
+
+async def test_saq_worker_function_shields_no_kwarg_handler_from_ctx():
+    """A no-kwargs handler dispatched with no kwargs must receive nothing —
+    the bare-handler bug silently fed it saq's ctx dict as its first
+    declared parameter."""
+    ran: list[object] = []
+
+    @Job(name="shape.bare_probe")
+    async def bare():
+        ran.append(True)
+        return None
+
+    driver = SaqQueue(url="redis://localhost:6379/2", name="fastplace")
+    worker = driver.build_worker()
+
+    result = await worker.functions["shape.bare_probe"]({"worker": object()})
+    assert result is None
+    assert ran == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +577,149 @@ def test_queue_work_once_with_empty_queue(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# CLI queue:work — saq branch restart-exit honesty (q1-G2/q2-G3)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSaqWorker:
+    """start() returns immediately — the CLI's sentinel-verification exit
+    path is what's under test, not saq itself."""
+
+    def __init__(self, on_start=None) -> None:
+        self.started = False
+        self._on_start = on_start
+
+    async def start(self) -> None:
+        self.started = True
+        if self._on_start is not None:
+            await self._on_start()  # e.g. the hook consuming the sentinel
+
+
+def _patch_saq_worker(monkeypatch, worker: _FakeSaqWorker) -> None:
+    import fastplace.queue as queue_module
+
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+    monkeypatch.setattr(queue_module.SaqQueue, "build_worker", lambda self, **kwargs: worker)
+
+    async def _no_scan(self):  # hermetic: the startup scan stays off redis
+        return []
+
+    monkeypatch.setattr(queue_module.SaqQueue, "record_aborted_jobs", _no_scan)
+
+
+def test_queue_work_saq_branch_never_touches_redis_for_the_aborted_scan(tmp_path, monkeypatch):
+    """Review F13: the saq-branch CLI tests must be hermetic — the startup
+    scan's ``record_aborted_jobs()`` call reached for a real redis connection
+    (caught and warned, so it passed, but a network attempt all the same —
+    and on a host with redis actually listening, a real SCAN). The section's
+    patch helper must stub the scan; nothing may reach the driver."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    attempts: list[bool] = []
+
+    async def _sentry(self):
+        attempts.append(True)
+        return []
+
+    monkeypatch.setattr(queue_module.SaqQueue, "aborted_jobs", _sentry)
+    _patch_saq_worker(monkeypatch, _FakeSaqWorker())
+
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    assert attempts == []  # the scan never reached the driver
+
+
+def test_queue_work_saq_exit_is_clean_when_sentinel_was_consumed(tmp_path, monkeypatch):
+    """A restart honored mid-run must end exit 0 — the hook consumed the
+    sentinel and the worker finished its in-flight job."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    asyncio.run(queue_module.set_restart_sentinel())
+    # The worker honors the restart during its run: consumes the sentinel.
+    worker = _FakeSaqWorker(on_start=queue_module.clear_restart_sentinel)
+
+    _patch_saq_worker(monkeypatch, worker)
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    assert asyncio.run(queue_module.restart_requested_at()) is None
+
+
+def test_queue_work_saq_consumes_a_surviving_sentinel_on_clean_exit(tmp_path, monkeypatch):
+    """An idle worker never reaches a job boundary, so the hook cannot
+    consume the sentinel — but the process exiting cleanly IS the restart
+    completing for it. The exit path consumes (mirroring the memory driver)
+    instead of failing: exit 0, sentinel cleared, notice printed."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    asyncio.run(queue_module.set_restart_sentinel())
+
+    _patch_saq_worker(monkeypatch, _FakeSaqWorker())
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    assert asyncio.run(queue_module.restart_requested_at()) is None
+    assert "restart" in result.output.lower()
+
+
+def test_queue_work_saq_consumes_a_midrun_sentinel_after_clean_exit(tmp_path, monkeypatch):
+    """A restart published AFTER the worker started was invisible to the old
+    pre-start sample — the exit check was skipped entirely. The post-exit
+    check must run unconditionally: clean exit, sentinel consumed, exit 0."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    # Sentinel lands while the worker runs — nothing pre-set at start.
+    worker = _FakeSaqWorker(on_start=queue_module.set_restart_sentinel)
+
+    _patch_saq_worker(monkeypatch, worker)
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 0, result.output
+    assert asyncio.run(queue_module.restart_requested_at()) is None
+    assert "restart" in result.output.lower()
+
+
+def test_queue_work_saq_exits_nonzero_when_the_surviving_clear_fails(tmp_path, monkeypatch):
+    """Consuming the surviving sentinel is load-bearing for the restart
+    contract: a cache that refuses the clear must fail the exit loudly, not
+    leave the sentinel latched for the replacement to trip on."""
+    from fastplace import queue as queue_module
+    from fastplace.cli import app as root_cli
+
+    monkeypatch.chdir(tmp_path)
+    reset_registry()
+    reset_queue()
+
+    asyncio.run(queue_module.set_restart_sentinel())
+
+    async def broken_clear() -> None:
+        raise ConnectionError("cache down")
+
+    monkeypatch.setattr(queue_module, "clear_restart_sentinel", broken_clear)
+    _patch_saq_worker(monkeypatch, _FakeSaqWorker())
+    result = CliRunner().invoke(root_cli, ["queue:work"])
+    assert result.exit_code == 1
+    assert "sentinel" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
 # set_queue — installing a custom driver as the process default
 # ---------------------------------------------------------------------------
 async def test_set_queue_installs_a_custom_driver():
@@ -536,3 +732,43 @@ async def test_set_queue_installs_a_custom_driver():
     set_queue(custom)
     assert queue() is custom
     # reset_queue() (the autouse fixture here) clears it back to config.
+
+
+# ---------------------------------------------------------------------------
+# review F9 — the grace-noise filter must attach to the logger saq logs on
+# ---------------------------------------------------------------------------
+
+
+def test_grace_noise_filter_covers_the_installed_saq_logger(caplog):
+    """Installed saq's worker module logs on ``logging.getLogger("saq")`` —
+    a filter attached to ``"saq.worker"`` never sees those records (logger
+    filters do not inherit DOWN from parent to child), so the structural
+    shutdown noise would keep printing. The filter must sit on the logger
+    saq actually uses, and only drop the one known-noise line."""
+    import logging
+
+    import saq.worker
+
+    from fastplace.cli.queue import (
+        _SAQ_GRACE_NOISE,
+        _SAQ_LOGGER_NAME,
+        _SuppressSaqGraceNoise,
+    )
+
+    # Verified against the installed saq: its worker module's logger is the
+    # attachment target the CLI must use.
+    assert saq.worker.logger is logging.getLogger(_SAQ_LOGGER_NAME)
+
+    target = logging.getLogger(_SAQ_LOGGER_NAME)
+    grace_filter = _SuppressSaqGraceNoise()
+    target.addFilter(grace_filter)
+    try:
+        with caplog.at_level(logging.WARNING, logger=_SAQ_LOGGER_NAME):
+            target.warning(_SAQ_GRACE_NOISE)
+            target.warning("did not finish cancellation in time")
+    finally:
+        target.removeFilter(grace_filter)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert _SAQ_GRACE_NOISE not in messages  # the structural false-positive
+    assert "did not finish cancellation in time" in messages  # real signal kept

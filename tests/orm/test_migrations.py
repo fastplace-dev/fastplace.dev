@@ -272,6 +272,38 @@ def test_render_item_imports_third_party_user_defined_types():
     assert "import pgvector.sqlalchemy" in ctx.imports
 
 
+def test_tracking_table_guard_emits_no_ddl_when_table_exists():
+    """Steady-state migrate runs must issue no tracking DDL at all.
+
+    ``CREATE TABLE IF NOT EXISTS`` answers with MariaDB NOTE 1050 whenever
+    the table already exists, and asyncmy mirrors the note to stderr — so
+    every migrate after the first printed noise. The inspector-guarded
+    ensure must create the table once and then stay completely silent.
+    """
+    import sqlalchemy
+    from sqlalchemy import event
+
+    from fastplace.orm.migrations.manager import _ensure_tracking_table
+
+    engine = sqlalchemy.create_engine("sqlite://")
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    with engine.begin() as conn:
+        _ensure_tracking_table(conn)
+    assert any("fastplace_migrations" in s for s in statements)  # created once
+
+    statements.clear()
+    with engine.begin() as conn:
+        _ensure_tracking_table(conn)
+    # Steady state: reflection probes are fine; DDL is not (each CREATE TABLE
+    # IF NOT EXISTS would answer with a MariaDB NOTE on a real server).
+    assert [s for s in statements if not s.startswith("PRAGMA")] == []
+
+
 def test_migrate_bookkeeping_never_builds_a_sync_engine(project, monkeypatch):
     """Batch tracking rides the async engine — migrate must not require the
     sync drivers (psycopg2/pymysql) that the framework never ships."""
@@ -401,6 +433,16 @@ def test_db_configure_mongodb_writes_the_document_adapter_url(project):
     assert "MONGODB_URL=mongodb://localhost:27017/fastplace" in env
 
 
+def test_db_configure_mongodb_says_migrations_stay_relational(project):
+    """Mongo has no schema migrations — the scaffolded Alembic env targets
+    DATABASE_URL. Saying nothing leaves users believing `migrate` shapes
+    their Mongo database; it does not, and never will."""
+    result = runner.invoke(cli_app, ["db:configure", "mongodb"])
+    assert result.exit_code == 0, result.output
+    assert "migrate" in result.output
+    assert "Mongo" in result.output
+
+
 def test_db_configure_keeps_env_example_in_sync(project):
     result = runner.invoke(cli_app, ["db:configure", "postgresql"])
     assert result.exit_code == 0, result.output
@@ -468,6 +510,21 @@ def test_db_configure_rewrites_every_duplicate_of_a_key(project):
     assert "stale" not in env
 
 
+def test_env_file_loads_do_not_leak_into_later_tests():
+    """db commands load the invoked project's .env — the process must not keep it.
+
+    The test above invokes db:configure with an .env carrying
+    ``APP_NAME=TestApp``; the command's dotenv load writes that into
+    os.environ, where nothing in this suite tracks it (monkeypatch only
+    restores what IT set). Env-first config then hands later suites a
+    foreign APP_NAME — the sample-suite dashboard assertion this pair once
+    broke. Runs right after the leaker in file order on purpose.
+    """
+    import os
+
+    assert os.environ.get("APP_NAME") != "TestApp"
+
+
 def test_db_configure_placeholder_switch_needs_no_force(project):
     """Switching between known placeholder values stays friction-free."""
     assert runner.invoke(cli_app, ["db:configure", "postgresql"]).exit_code == 0
@@ -514,6 +571,27 @@ def test_env_template_binds_async_drivers(project):
     assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
     env_py = (project / "database" / "migrations" / "env.py").read_text()
     assert "normalize_database_url" in env_py
+
+
+def test_env_template_pins_mysql_charset_on_the_migration_engine(project):
+    """Data migrations ride the same charset pin as the runtime engine.
+
+    A hand-written data migration on a latin1-default server would mangle
+    every non-ASCII value it touches — the pin must reach Alembic's engine
+    too, not just the runtime DatabaseManager.
+    """
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    env_py = (project / "database" / "migrations" / "env.py").read_text()
+    assert "DATABASE_CHARSET" in env_py
+    assert "connect_args" in env_py
+
+
+def test_env_template_loads_the_project_env_file(project):
+    """A bare ``alembic upgrade`` (no fastplace CLI) still resolves .env —
+    the belt-and-braces load the env-wiring commit relies on."""
+    assert runner.invoke(cli_app, ["db:configure"]).exit_code == 0
+    env_py = (project / "database" / "migrations" / "env.py").read_text()
+    assert "load_env" in env_py
 
 
 def test_config_version_locations_is_absolute(project, monkeypatch):

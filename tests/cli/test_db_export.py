@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import re
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-# Autouse fixture: clean db/model/module state per test (see _isolation.py).
+# Autouse fixture: clean db/model/module/environ state per test (see
+# _isolation.py — the environ confinement there replaced this file's own).
 from _isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 from typer.testing import CliRunner
 
@@ -17,15 +17,6 @@ from fastplace.cli import app as cli_app
 
 runner = CliRunner()
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-
-@pytest.fixture(autouse=True)
-def _hermetic_environ():
-    """Confine os.environ changes to the test that caused them."""
-    env_before = dict(os.environ)
-    yield
-    os.environ.clear()
-    os.environ.update(env_before)
 
 
 def _out(result) -> str:
@@ -177,3 +168,76 @@ def test_mysqldump_password_never_in_argv(seeded, monkeypatch):
     assert not any(part.startswith("--password") for part in argv)
     env = calls[0][1].get("env") or {}
     assert env.get("MYSQL_PWD") == "hush"
+
+
+# mongo-G2 — the document store is a first-class citizen: a configured
+# MONGODB_URL rides every export, beside the relational dump.
+def test_mongodb_url_also_gets_dumped_beside_the_relational_export(seeded, monkeypatch):
+    monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017/appdb")
+
+    calls = []
+
+    class _FakeResult:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return _FakeResult()
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    dump_argv = next((a for a in calls if a[0] == "mongodump"), None)
+    assert dump_argv is not None, "mongodump must run when MONGODB_URL is set"
+    assert "--uri=mongodb://localhost:27017/appdb" in dump_argv
+    # Both stores exported in one invocation — the sqlite backup still landed.
+    assert sorted((seeded / "storage" / "backups").glob("sqlite-*.sqlite3")), (
+        "the relational export must keep running beside the mongo dump"
+    )
+
+
+def test_mongodump_uri_password_prints_the_process_list_note(seeded, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:pw@localhost:5432/app")
+    monkeypatch.setenv("MONGODB_URL", "mongodb://svc:hush@localhost:27017/appdb")
+
+    class _FakeResult:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        return _FakeResult()
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    assert "process list" in _out(result)
+
+
+def test_no_mongodb_url_leaves_the_relational_export_alone(seeded, monkeypatch):
+    """Without MONGODB_URL nothing reaches for mongodump (sqlite VACUUM path)."""
+    result = runner.invoke(cli_app, ["db:export"])
+    assert result.exit_code == 0, result.output
+    assert "mongodump" not in _out(result)
+
+
+def test_relational_report_survives_a_mongodump_failure(seeded, monkeypatch):
+    """A failed Mongo dump must not swallow the relational export report.
+
+    The relational backup exists on disk before the document-store leg
+    runs; the operator must see its path even when that second leg dies.
+    """
+    monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017/appdb")
+
+    def fake_run(argv, **kwargs):
+        class _Result:
+            def __init__(self, code):
+                self.returncode = code
+                self.stderr = b"connection refused"
+
+        return _Result(1) if argv[0] == "mongodump" else _Result(0)
+
+    monkeypatch.setattr("fastplace.cli.db_ops.subprocess.run", fake_run)
+    result = runner.invoke(cli_app, ["db:export"])
+    out = _out(result)
+    assert result.exit_code == 1  # the failed dump is still an error
+    assert "sqlite-" in out  # ...but the relational report printed first
+    assert "exported" in out

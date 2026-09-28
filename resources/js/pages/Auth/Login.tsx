@@ -41,18 +41,20 @@ export default function Login() {
                   name="email"
                   required
                   autoFocus
-                  tabIndex={1}
+
                   autoComplete="email"
                   placeholder="email@example.com"
+                  aria-describedby={errors.email ? "email-error" : undefined}
+                  aria-invalid={errors.email ? true : undefined}
                 />
-                <InputError message={errors.email?.[0]} />
+                <InputError id="email-error" message={errors.email?.[0]} />
               </div>
 
               <div className="grid gap-2">
                 <div className="flex items-center">
                   <Label htmlFor="password">Password</Label>
                   {mayReset && (
-                    <TextLink href="/forgot-password" className="ml-auto text-sm" tabIndex={5}>
+                    <TextLink href="/forgot-password" className="ml-auto text-sm">
                       Forgot your password?
                     </TextLink>
                   )}
@@ -61,22 +63,24 @@ export default function Login() {
                   id="password"
                   name="password"
                   required
-                  tabIndex={2}
+
                   autoComplete="current-password"
                   placeholder="Password"
+                  aria-describedby={errors.password ? "password-error" : undefined}
+                  aria-invalid={errors.password ? true : undefined}
                 />
-                <InputError message={errors.password?.[0]} />
+                <InputError id="password-error" message={errors.password?.[0]} />
               </div>
 
               <div className="flex items-center space-x-3">
-                <Checkbox id="remember" name="remember" tabIndex={3} />
+                <Checkbox id="remember" name="remember" />
                 <Label htmlFor="remember">Remember me</Label>
               </div>
 
               <Button
                 type="submit"
                 className="mt-4 w-full"
-                tabIndex={4}
+
                 disabled={processing}
                 data-test="login-button"
               >
@@ -87,7 +91,7 @@ export default function Login() {
 
             <div className="text-ink-muted text-center text-sm">
               Don't have an account?{" "}
-              <TextLink href="/register" tabIndex={5}>
+              <TextLink href="/register">
                 Sign up
               </TextLink>
             </div>
@@ -95,7 +99,11 @@ export default function Login() {
         )}
       </Form>
 
-      {status && <div className="text-success mb-4 text-center text-sm font-medium">{status}</div>}
+      {status && (
+        <div role="status" className="text-success mb-4 text-center text-sm font-medium">
+          {status}
+        </div>
+      )}
     </>
   );
 }

@@ -16,17 +16,16 @@ __all__ = [
     "DatabaseSessionStore",
     "RedisSessionStore",
     "session_store",
+    "resolve_session_driver",
 ]
 
 
-def session_store(config_get: Callable[[str, Any], Any] | None = None) -> SessionStore:
-    """Build the configured session store (spec §3.2 + Deviations §1).
-
-    Explicit ``SESSION_DRIVER`` always wins; when unset, production apps get
-    the revocable ``database`` driver and everything else (local dev, tests)
-    gets ``memory`` — zero-config both ways.
+def resolve_session_driver(config_get: Callable[[str, Any], Any] | None = None) -> str:
+    """The effective session driver: explicit ``SESSION_DRIVER`` wins; when
+    unset, ``database`` in production and ``memory`` elsewhere (spec §3.2 +
+    Deviations §1). Shared by ``session_store`` and the CLI runtime guards,
+    which need the same answer the booted app will get.
     """
-    from fastplace.errors import ConfigurationError
 
     def get(key: str, default: Any = None) -> Any:
         if config_get is not None:
@@ -39,6 +38,19 @@ def session_store(config_get: Callable[[str, Any], Any] | None = None) -> Sessio
     if not driver:
         env = str(get("APP_ENV", default="local")).lower()
         driver = "database" if env == "production" else "memory"
+    return driver
+
+
+def session_store(config_get: Callable[[str, Any], Any] | None = None) -> SessionStore:
+    """Build the configured session store (spec §3.2 + Deviations §1).
+
+    Explicit ``SESSION_DRIVER`` always wins; when unset, production apps get
+    the revocable ``database`` driver and everything else (local dev, tests)
+    gets ``memory`` — zero-config both ways.
+    """
+    from fastplace.errors import ConfigurationError
+
+    driver = resolve_session_driver(config_get)
 
     if driver == "memory":
         return MemorySessionStore()

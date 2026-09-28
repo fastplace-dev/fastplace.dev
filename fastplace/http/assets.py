@@ -7,6 +7,7 @@ hashed assets from ``public/build/manifest.json``.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 _DEV_ENVS = {"local", "dev", "development"}
@@ -19,7 +20,14 @@ _manifest_cache: dict[Path, tuple[int, dict | None]] = {}
 
 def asset_tags(project_root: str | Path, *, vite_dev_url: str | None, app_env: str) -> str:
     """Return <script>/<link> tags for the app entry point."""
-    if vite_dev_url and app_env.lower() in _DEV_ENVS:
+    if (
+        vite_dev_url
+        and app_env.lower() in _DEV_ENVS
+        # `serve` is a real server even under APP_ENV=local: no Vite process
+        # answers at the dev URL, so dev tags would 404 the whole SPA. The
+        # runtime marker (set by the CLI on the serve child) wins over env.
+        and os.environ.get("FASTPLACE_RUNTIME", "").lower() != "serve"
+    ):
         base = vite_dev_url.rstrip("/")
         # The react-refresh preamble normally rides Vite's transformIndexHtml;
         # this shell never passes through Vite, so the framework injects it

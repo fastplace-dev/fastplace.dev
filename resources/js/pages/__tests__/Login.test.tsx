@@ -172,6 +172,41 @@ describe("Login page", () => {
     expect(screen.getByLabelText("Email address")).toHaveValue("jane@example.com");
   });
 
+  it("announces field errors and ties them to their input (a11y1-G1)", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(
+        {
+          message: "The given data was invalid.",
+          errors: { email: ["These credentials do not match our records."] },
+        },
+        false,
+        422,
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = userEvent.setup();
+    renderLogin();
+    await user.type(screen.getByLabelText("Email address"), "jane@example.com");
+    await user.type(screen.getByLabelText("Password"), "secret123");
+    await user.click(screen.getByRole("button", { name: "Log in" }));
+
+    // The error paragraph is an announced alert with a stable id...
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("These credentials do not match our records.");
+    expect(alert).toHaveAttribute("id", "email-error");
+    // ...and the failing input points at it.
+    const email = screen.getByLabelText("Email address");
+    expect(email).toHaveAttribute("aria-describedby", "email-error");
+    expect(email).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("announces the status flash as a polite status region (a11y1-G1)", () => {
+    renderLogin({ status: "Your password has been reset." });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Your password has been reset.");
+  });
+
   it("resets only the password field after a successful submit", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);

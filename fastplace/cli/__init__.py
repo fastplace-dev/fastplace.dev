@@ -41,6 +41,7 @@ def _root(
 @app.command("about")
 def about() -> None:
     """Show framework + application environment information."""
+    import os
     import platform
     import sys
 
@@ -52,6 +53,14 @@ def about() -> None:
     from rich.table import Table
 
     from fastplace.console import console
+    from fastplace.orm.manager import resolve_driver
+
+    # The database row must describe the engine the app will actually build:
+    # derive the driver from DATABASE_URL (the engine's source of truth).
+    # A bare config-module DATABASE_DRIVER default shows "sqlite" forever,
+    # even after the operator switched .env to MySQL/PostgreSQL.
+    database_url = str(config("DATABASE_URL", default="sqlite+aiosqlite:///./database.sqlite3"))
+    driver = resolve_driver(os.environ.get("DATABASE_DRIVER"), database_url)
 
     table = Table(show_header=False, box=None)
     table.add_column(style="dim")
@@ -60,7 +69,7 @@ def about() -> None:
     table.add_row("Python", f"{platform.python_version()} ({sys.executable})")
     table.add_row("Application", str(config("APP_NAME", default="Fastplace")))
     table.add_row("Environment", str(config("APP_ENV", default="production")))
-    table.add_row("Database", str(config("DATABASE_DRIVER", default="sqlite")))
+    table.add_row("Database", driver)
     console.print(Panel(table, title="[fastplace]Fastplace[/]", expand=False))
 
 
