@@ -12,8 +12,10 @@ describe("AlertError", () => {
     render(<AlertError errors={["First failure"]} />);
 
     const alert = screen.getByRole("alert");
+    // Destructive alerts read as colored text on the surface behind them;
+    // the old white-foreground text was invisible in light theme (a11y2-G1).
     expect(alert.className).toContain("text-destructive");
-    expect(alert.className).toContain("border-destructive/50");
+    expect(alert.className).not.toContain("text-destructive-foreground");
     expect(alert).toHaveTextContent("Something went wrong.");
   });
 

@@ -45,7 +45,8 @@ describe("AuthLayout", () => {
   it("links the logo back to the home page", () => {
     renderLayout({ title: "Sign in" });
 
-    const link = screen.getByRole("link");
+    // Pin by accessible name — the skip link is also a link in the tree.
+    const link = screen.getByRole("link", { name: "Sign in" });
     expect(link).toHaveAttribute("href", "/");
     expect(link.querySelector("svg")).not.toBeNull();
   });

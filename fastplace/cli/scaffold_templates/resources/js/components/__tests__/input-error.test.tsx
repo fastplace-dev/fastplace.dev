@@ -45,4 +45,16 @@ describe("InputError", () => {
     const error = screen.getByTestId("field-error");
     expect(error).toHaveAttribute("id", "password-error");
   });
+
+  it("announces itself as an alert for screen readers (a11y1-G1)", () => {
+    render(<InputError message="Wrong password" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Wrong password");
+  });
+
+  it("falls back to a generated id so callers can associate the input", () => {
+    render(<InputError message="Wrong password" />);
+
+    expect(screen.getByRole("alert").id).toMatch(/[:\w-]+/); // any non-empty id
+  });
 });

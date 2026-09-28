@@ -114,12 +114,6 @@ INTENTIONALLY_DIVERGED = {
     "resources/js/components/app-sidebar.tsx",
     "resources/js/pages/Home/Index.tsx",
     "resources/js/pages/__tests__/Home.test.tsx",
-    # W4 moved the TEMPLATES ahead of the repo copies (option-B destructive
-    # tokens, component + the two tests that pin them). W5 owns resources/js
-    # — remove these entries once it syncs.
-    "resources/js/components/ui/alert.tsx",
-    "resources/js/components/ui/__tests__/alert.test.tsx",
-    "resources/js/components/__tests__/alert-error.test.tsx",
     # The starter config drops repo-only ignores/aliases (docs/, packages/,
     # agent worktrees) an app template never needs.
     "eslint.config.js",
