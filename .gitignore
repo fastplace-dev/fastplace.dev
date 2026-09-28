@@ -26,7 +26,7 @@ htmlcov/
 coverage/
 
 # Runtime output
-storage/
+/storage/
 public/build/
 *.sqlite3
 *.sqlite3-*

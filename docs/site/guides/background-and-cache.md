@@ -78,6 +78,37 @@ Tenant-aware apps wrap the store once — `CompanyCacheStore(store)` —
 and every key becomes `company:{id}:…`; `flush()` is refused because a
 company-scoped wrapper cannot know what else lives in the shared store.
 
+### Locks
+
+Every store hands out named, auto-expiring locks — one holder per name,
+useful to keep concurrent jobs from duplicating work:
+
+```python
+async with cache().lock("rebuild:42", ttl=60):
+    report = await build_report(42)   # one runner at a time, per cache driver
+    await cache().put("reports:42", report, ttl=600)
+```
+
+- `ttl` is required: the lock frees itself if the holder dies, so a crash
+  cannot deadlock the name forever.
+- Release is owner-checked — a stale handle whose lock expired and was
+  reclaimed cannot drop the new holder's lock; it is a no-op.
+- `acquire()` is the non-blocking form (`True`/`False`); `block(timeout=...)`
+  waits, raising `LockTimeout` when the timeout passes. The context manager
+  waits indefinitely — pass a `timeout` to `block()` when you need a bound.
+- Locks survive `flush()` (that forgets cached keys, not coordination
+  state), and work identically on `memory`, `redis`, and `database`.
+- The `locks:` key segment is reserved — lock state lives under it, and
+  on `redis` a value there survives `flush()` by design — so never store
+  a value under a key starting with `locks:`.
+- On the `database` driver a lock name plus the configured cache prefix
+  must fit 255 characters — keep lock names short (memory and redis
+  accept longer names; short names behave identically everywhere).
+
+Cache tags are not supported on purpose: memory tags are per-process and
+lie under multi-worker serve. Namespace your keys instead
+(`"user:{id}:settings"`) — invalidation behaves the same on every driver.
+
 ## Scheduling
 
 Long-running work belongs in the queue, not the request: the kernel

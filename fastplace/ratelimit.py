@@ -49,18 +49,22 @@ class Limit:
 
     @classmethod
     def per_second(cls, max_attempts: int) -> Limit:
+        """At most ``max_attempts`` per second."""
         return cls(max_attempts=max_attempts, decay=1)
 
     @classmethod
     def per_minute(cls, max_attempts: int) -> Limit:
+        """At most ``max_attempts`` per 60 seconds."""
         return cls(max_attempts=max_attempts, decay=60)
 
     @classmethod
     def per_hour(cls, max_attempts: int) -> Limit:
+        """At most ``max_attempts`` per hour."""
         return cls(max_attempts=max_attempts, decay=3600)
 
     @classmethod
     def per_day(cls, max_attempts: int) -> Limit:
+        """At most ``max_attempts`` per 24 hours."""
         return cls(max_attempts=max_attempts, decay=86400)
 
     def by(self, resolver: LimitResolver) -> Limit:
@@ -108,7 +112,11 @@ def registered_limits() -> list[str]:
 
 
 class RateLimiter:
-    """Sliding-decay attempt counter over any cache store."""
+    """Sliding-decay attempt counter over any cache store.
+
+    ``store`` accepts any ``CacheStore`` — pass ``MemoryCache()`` or a fake
+    for tests; it defaults to the ``cache()`` singleton.
+    """
 
     def __init__(self, store: CacheStore | None = None) -> None:
         self._store = store if store is not None else cache()
@@ -122,13 +130,16 @@ class RateLimiter:
         return await self._store.increment(self._key(key), ttl=decay)
 
     async def attempts(self, key: str) -> int:
+        """The key's current attempt count (0 once the window has expired)."""
         value = await self._store.get(self._key(key))
         return value if isinstance(value, int) else 0
 
     async def too_many_attempts(self, key: str, max_attempts: int) -> bool:
+        """Whether the key has exhausted its ``max_attempts`` budget."""
         return await self.attempts(key) >= max_attempts
 
     async def clear(self, key: str) -> None:
+        """Reset the key's counter — e.g. after a successful login."""
         await self._store.forget(self._key(key))
 
     async def available_in(self, key: str) -> int:
@@ -149,6 +160,9 @@ class ThrottleMiddleware(Middleware):
     registered in app bootstrap — either order must work. An unknown name
     therefore surfaces as a ConfigurationError on the first request that
     reaches the route, and re-registering a name hot-swaps the behavior.
+
+    ``store`` accepts any ``CacheStore`` — pass ``MemoryCache()`` or a fake
+    for tests; it defaults to the ``cache()`` singleton.
     """
 
     def __init__(self, *args: str, store: CacheStore | None = None) -> None:

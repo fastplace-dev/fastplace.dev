@@ -87,7 +87,12 @@ class SearchNotSupported(RuntimeError):
 
 
 class DatabaseSearchService:
-    """Default service — PostgreSQL FTS via ``Model.full_text_search()``."""
+    """Default service — PostgreSQL FTS via ``Model.full_text_search()``.
+
+    ``capabilities`` accepts anything with ``supports_full_text: bool`` and
+    ``driver: str`` (the ``db.capabilities`` shape) — pass a stub to fake a
+    backend in tests; ``None`` resolves the live ``db.capabilities``.
+    """
 
     def __init__(self, capabilities: Any | None = None) -> None:
         self._capabilities = capabilities
@@ -177,18 +182,22 @@ class SearchEngine(ABC):
     """
 
     @abstractmethod
-    async def update(self, records: list[Any]) -> int: ...
+    async def update(self, records: list[Any]) -> int:
+        """Upsert records into the index; returns the count accepted."""
 
     @abstractmethod
-    async def delete(self, records: list[Any]) -> int: ...
+    async def delete(self, records: list[Any]) -> int:
+        """Remove records from the index; returns the count removed."""
 
     @abstractmethod
-    async def flush(self, model: type[Any]) -> None: ...
+    async def flush(self, model: type[Any]) -> None:
+        """Drop everything indexed for one model."""
 
     @abstractmethod
     async def search(
         self, query: str, *, model: type[Any] | None = None, limit: int = 20
-    ) -> list[Any]: ...
+    ) -> list[Any]:
+        """Query the index — same contract as ``SearchService.search``."""
 
 
 _QUERY_ONLY = (
@@ -205,6 +214,10 @@ class DatabaseSearchEngine(SearchEngine):
     database needs no maintained index, but a searchable model pointed at
     this engine is a configuration gap, and silence would let every write
     drift away without a word.
+
+    ``capabilities`` accepts anything with ``supports_full_text: bool`` and
+    ``driver: str`` (the ``db.capabilities`` shape) — pass a stub to fake a
+    backend in tests; ``None`` resolves the live ``db.capabilities``.
     """
 
     def __init__(self, capabilities: Any | None = None) -> None:
