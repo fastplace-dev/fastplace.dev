@@ -2,7 +2,7 @@
 
 from fastplace.orm.fields import Field, VectorField
 from fastplace.orm.model import Model
-from fastplace.orm.pagination import Paginator
+from fastplace.orm.pagination import CursorPaginator, Paginator
 from fastplace.orm.relationships import (
     belongs_to,
     has_many,
@@ -21,6 +21,7 @@ __all__ = [
     "Model",
     "Field",
     "VectorField",
+    "CursorPaginator",
     "Paginator",
     "scope",
     "GlobalScope",

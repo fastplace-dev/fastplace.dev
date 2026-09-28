@@ -1,8 +1,13 @@
-"""Paginator — the object returned by ``.paginate(per_page)``."""
+"""Paginators — ``.paginate()`` page numbers and ``.cursor_paginate()`` keysets."""
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 from typing import Any
+
+from fastplace.errors import ConfigurationError
 
 
 class Paginator:
@@ -58,3 +63,47 @@ class Paginator:
             "has_more": self.has_more,
             "has_pages": self.has_pages,
         }
+
+
+class CursorPaginator:
+    """One keyset page — an opaque cursor instead of page numbers.
+
+    No COUNT query runs; ``next_cursor`` is ``None`` on the last page.
+    """
+
+    def __init__(self, items: list[Any], *, next_cursor: str | None, has_more: bool) -> None:
+        self.items = items
+        self.next_cursor = next_cursor
+        self.has_more = has_more
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index):
+        return self.items[index]
+
+    def to_dict(self) -> dict:
+        items = [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items]
+        return {"items": items, "next_cursor": self.next_cursor, "has_more": self.has_more}
+
+
+def encode_cursor(values: list[Any]) -> str:
+    """Pack keyset values into an opaque, URL-safe token."""
+    raw = json.dumps(values, separators=(",", ":"), default=str).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def decode_cursor(cursor: str) -> list[Any]:
+    """Unpack an opaque token; anything unreadable is a configuration error,
+    never a silent first-page restart (that would loop clients forever)."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        values = json.loads(raw)
+    except (binascii.Error, UnicodeEncodeError, ValueError, json.JSONDecodeError):
+        raise ConfigurationError("cursor_paginate received a malformed cursor") from None
+    if not isinstance(values, list):
+        raise ConfigurationError("cursor_paginate received a malformed cursor")
+    return values

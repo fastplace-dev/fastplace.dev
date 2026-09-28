@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload, selectinload, with_loader_criteria
 from sqlalchemy.sql import Select
 
-from fastplace.orm.pagination import Paginator
+from fastplace.orm.pagination import CursorPaginator, Paginator
 from fastplace.orm.scopes import is_scope
 from fastplace.orm.session import run_read
 
@@ -268,3 +268,86 @@ class QueryBuilder:
         total = await self.count()
         items = await self.limit(per_page).offset((page - 1) * per_page).get()
         return Paginator(items, total=total, per_page=per_page, current_page=page)
+
+    async def cursor_paginate(
+        self, per_page: int = 20, after: str | None = None
+    ) -> CursorPaginator:
+        """Keyset pagination — stable under concurrent writes, no COUNT query.
+
+        The current sort criteria become a lexicographic keyset against the
+        cursor values (the primary key joins as the deterministic tiebreaker);
+        ``after`` is the previous page's opaque ``next_cursor``. Relational
+        models only — Mongo document queries paginate by page number.
+        """
+        from sqlalchemy import and_, or_
+
+        from fastplace.errors import ConfigurationError
+        from fastplace.orm.pagination import decode_cursor, encode_cursor
+
+        per_page = max(1, per_page)
+        columns = _cursor_columns(self.model, self._orders)
+        if after:
+            values = decode_cursor(after)
+            if len(values) != len(columns):
+                raise ConfigurationError("cursor does not match the sort order")
+        else:
+            values = []
+        # Lexicographic keyset: position i matches rows strictly after the
+        # cursor where every earlier sort column is equal. Row-value tuple
+        # comparison is avoided deliberately — MySQL support is uneven. The
+        # OR chain goes in as ONE criterion (where() ANDs its arguments).
+        keyset: Any = None
+        if values:
+            for index, ((key, is_desc), value) in enumerate(zip(columns, values, strict=True)):
+                column = getattr(self.model, key)
+                clause = column < value if is_desc else column > value
+                for (prev_key, _), prev_value in zip(columns[:index], values[:index], strict=True):
+                    clause = and_(clause, getattr(self.model, prev_key) == prev_value)
+                keyset = or_(keyset, clause) if keyset is not None else clause
+        query = self.where(keyset) if keyset is not None else self
+        rows = await query.limit(per_page + 1).get()
+        has_more = len(rows) > per_page
+        items = rows[:per_page]
+        next_cursor = (
+            encode_cursor([getattr(items[-1], key) for key, _ in columns])
+            if has_more and items
+            else None
+        )
+        return CursorPaginator(items, next_cursor=next_cursor, has_more=has_more)
+
+
+def _cursor_columns(model: Any, orders: list[Any]) -> list[tuple[str, bool]]:
+    """``(attribute key, is_desc)`` pairs describing the keyset sort.
+
+    Every order criterion must be a bare column (optionally wrapped in
+    ``.asc()``/``.desc()``) — anything else cannot be encoded into a cursor.
+    Without an explicit order the primary key (ascending) sorts alone.
+    """
+    from sqlalchemy.sql.elements import UnaryExpression
+    from sqlalchemy.sql.operators import desc_op
+
+    from fastplace.errors import ConfigurationError
+
+    columns: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for criterion in orders:
+        element: Any = criterion
+        is_desc = False
+        if isinstance(criterion, UnaryExpression):
+            element = criterion.element
+            is_desc = criterion.modifier is desc_op
+        key = getattr(element, "key", None) or getattr(element, "name", None)
+        if key is None:
+            raise ConfigurationError(
+                "cursor_paginate needs plain column order_by (col, col.desc())"
+            )
+        if key not in seen:
+            columns.append((key, is_desc))
+            seen.add(key)
+    pk = model._pk_attr()
+    # _pk_attr() returns the mapped attribute object; keyset columns need
+    # its string key for cursor encoding and getattr access.
+    pk_key = getattr(pk, "key", None) or getattr(pk, "name", None) or str(pk)
+    if pk_key not in seen:
+        columns.append((pk_key, False))
+    return columns
