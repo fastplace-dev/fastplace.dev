@@ -246,6 +246,12 @@ def test_document_query_without_a_company_fails_closed():
 
 
 async def test_document_caller_filter_cannot_override_the_tenant():
+    """A caller's company_id condition is intersected, never replaced.
+
+    The tenant criterion rides its own chained where(), so the query
+    engine's $and machinery keeps BOTH company_id constraints — Mongo
+    answers the intersection, and company 9 stays invisible to company 5.
+    """
     from fastplace_tenancy import company_context
     from fastplace_tenancy.documents import CompanyDocument
 
@@ -254,7 +260,39 @@ async def test_document_caller_filter_cannot_override_the_tenant():
 
     async with company_context(5):
         query = Note.where({"company_id": 9, "title": "forged"})
-    assert query._filter["company_id"] == 5  # the bound company wins
+    clauses = query._filter["$and"]
+    assert {"company_id": 9} in clauses  # caller's constraint survives…
+    assert {"company_id": 5} in clauses  # …and the tenant narrows it
+    assert query._filter["title"] == "forged"
+
+
+async def test_document_operator_filter_on_the_tenant_column_intersects():
+    """$ne and friends must meet the tenant equality in an $and, not be
+    clobbered by a dict merge (which would drop the exclusion entirely)."""
+    from fastplace_tenancy import company_context
+    from fastplace_tenancy.documents import CompanyDocument
+
+    class Note(CompanyDocument):
+        title: str = ""
+
+    async with company_context(5):
+        query = Note.where({"company_id": {"$ne": 5}, "title": "cross"})
+    clauses = query._filter["$and"]
+    assert {"company_id": {"$ne": 5}} in clauses
+    assert {"company_id": 5} in clauses
+
+
+def test_document_find_has_no_tenant_bypass_override():
+    """find() must ride the same chained where() as everything else.
+
+    A find() override that dict-merges the tenant filter would bypass the
+    $and intersection — so the override must not exist at all.
+    """
+    from fastplace_tenancy.documents import CompanyDocument
+
+    from fastplace.orm.documents import Document
+
+    assert CompanyDocument.find.__func__ is Document.find.__func__
 
 
 # ---------------------------------------------------------------------------

@@ -341,6 +341,18 @@ class Document:
         return documents_database()[cls.__collection__]
 
     @classmethod
+    def collection(cls) -> AsyncCollection:
+        """The raw ``AsyncCollection`` behind this document class.
+
+        The public escape hatch for operations the query builder does not
+        model — aggregation pipelines, index management, ``bulkWrite`` —
+        without reaching for framework internals. Tenant-scoped bases that
+        need the guard to ride along should go through ``where()`` instead;
+        nothing here applies filters automatically.
+        """
+        return cls._mongo_collection()
+
+    @classmethod
     def _from_mongo(cls, doc: dict[str, Any]) -> Document:
         return cls(**doc)
 

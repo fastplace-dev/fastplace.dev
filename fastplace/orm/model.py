@@ -295,24 +295,50 @@ class Model(AsyncAttrs, DeclarativeBase):
     # capability-gated search
     # ------------------------------------------------------------------
     @classmethod
-    async def vector_search(cls, embedding: list[float], limit: int = 10) -> list[Any]:
-        """Similarity search; requires a vector-capable backend (pgvector)."""
+    async def vector_search(
+        cls,
+        embedding: list[float],
+        limit: int = 10,
+        *,
+        metric: str = "cosine",
+        max_distance: float | None = None,
+        return_distances: bool = False,
+    ) -> list[Any]:
+        """Similarity search; requires a vector-capable backend (pgvector).
+
+        ``metric`` picks the distance operator — "cosine" (the default),
+        "l2", or "inner_product" — and should match the column's index
+        opclass (``VectorField(distance=...)``) or the ANN index cannot
+        serve the query. ``max_distance`` drops hits farther than the
+        threshold. ``return_distances=True`` returns ``(instance,
+        distance)`` pairs, ascending by distance, instead of bare
+        instances.
+        """
         from fastplace.db import db
 
+        if metric not in _VECTOR_METRICS:
+            raise ValueError(
+                f"unknown vector metric {metric!r} — use one of: cosine, l2, inner_product"
+            )
         if not db.capabilities.supports_vector:
             raise SearchCapabilityMissing(
                 "vector search requires a vector-capable backend (PostgreSQL + pgvector)"
             )
         column = cls._vector_column()
-        stmt = (
-            select(cls)
-            .where(*cls._search_scope_criteria())
-            .order_by(column.cosine_distance(embedding))
-            .limit(limit)
-        )
+        distance = getattr(column, _VECTOR_METRICS[metric])(embedding)
         from fastplace.orm.session import run_read
 
+        if return_distances:
+            stmt = select(cls, distance.label("distance"))
+        else:
+            stmt = select(cls)
+        stmt = stmt.where(*cls._search_scope_criteria()).order_by(distance).limit(limit)
+        if max_distance is not None:
+            stmt = stmt.where(distance <= max_distance)
+
         result = await run_read(stmt)
+        if return_distances:
+            return [(row[0], float(row[1])) for row in result.all()]
         return list(result.scalars().all())
 
     @classmethod
@@ -592,6 +618,132 @@ def _json_safe(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+#: ANN opclass per query metric — the opclass must match the distance
+#: operator the query uses or PostgreSQL cannot use the index at all.
+_VECTOR_OPS = {
+    "cosine": "vector_cosine_ops",
+    "l2": "vector_l2_ops",
+    "inner_product": "vector_ip_ops",
+}
+
+#: Distance comparator per query metric (pgvector column operators).
+_VECTOR_METRICS = {
+    "cosine": "cosine_distance",
+    "l2": "l2_distance",
+    "inner_product": "max_inner_product",
+}
+
+
+def _append_table_arg(cls: type, item: Any) -> None:
+    """Extend the class's ``__table_args__`` with one more item.
+
+    Rebuilds an own ``__table_args__`` that carries everything inherited
+    (an abstract base's dialect kwargs) plus ``item`` — SQLAlchemy only
+    walks the MRO when the subclass declares nothing, so a naive
+    assignment would silently drop the base's args. Handles the plain
+    tuple, the (args, {dialect kwargs}) form, and a bare dict.
+    """
+    existing = getattr(cls, "__table_args__", None)
+    if existing is None:
+        cls.__table_args__ = (item,)  # type: ignore[attr-defined]
+    elif isinstance(existing, tuple) and existing and isinstance(existing[-1], dict):
+        cls.__table_args__ = (*existing[:-1], item, existing[-1])  # type: ignore[attr-defined]
+    elif isinstance(existing, tuple):
+        cls.__table_args__ = (*existing, item)  # type: ignore[attr-defined]
+    else:
+        cls.__table_args__ = (item, dict(existing))  # type: ignore[attr-defined]
+
+
+def _append_ann_index(cls: type, column_name: str, field: Any, url: str) -> None:
+    """Emit the vector column's ANN index (pgvector HNSW / IVF).
+
+    Only PostgreSQL has native vectors; everywhere else the column is the
+    JSON fallback and no index is emitted at all. The index is declared
+    through ``postgresql_using``/``postgresql_ops``/``postgresql_with`` so
+    migrations render real ANN DDL instead of a useless btree.
+    """
+    if not url.startswith(("postgresql", "postgres")):
+        return
+    from sqlalchemy import Index
+
+    algorithm = field.ann
+    build = (
+        {"m": field.m, "ef_construction": field.ef_construction}
+        if algorithm == "hnsw"
+        else {"lists": field.lists}
+    )
+    # This runs inside the column pass, BEFORE the auto-derived tablename is
+    # assigned (that happens after both passes) — read the name the same way
+    # the assignment will compute it, never cls.__tablename__.
+    table = cls.__dict__.get("__tablename__") or _plural(_snake(cls.__name__))
+    _append_table_arg(
+        cls,
+        Index(
+            f"ix_{table}_{column_name}",
+            column_name,
+            postgresql_using=algorithm,
+            postgresql_ops={column_name: _VECTOR_OPS[field.distance]},
+            postgresql_with=build,
+        ),
+    )
+
+
+def _apply_mysql_table_defaults(cls: type, url: str) -> None:
+    """Pin InnoDB + utf8mb4 on MySQL tables (charset survives server defaults).
+
+    A database created with a latin1 (or other non-utf8mb4) server default
+    would hand every framework table that charset, silently truncating
+    non-ASCII text. The framework declares sane DDL defaults instead; the
+    model's own ``__table_args__`` entries always win, and DATABASE_CHARSET
+    / DATABASE_COLLATION re-pin globally.
+    """
+    if not url.startswith(("mysql", "mariadb")):
+        return
+    from fastplace.config import config
+
+    charset = str(config("DATABASE_CHARSET", default="utf8mb4"))
+    collation = config("DATABASE_COLLATION", default=None)
+    if collation is None:
+        # unicode_ci is the portable pick — MariaDB does not know MySQL 8's
+        # utf8mb4_0900_ai_ci, so the framework default must work on both.
+        collation = f"{charset}_unicode_ci"
+    defaults = {
+        "mysql_engine": "InnoDB",
+        "mysql_charset": charset,
+        # mysql_collate (not mysql_collation): SQLAlchemy renders the latter
+        # as the ``COLLATION=`` table option, which MariaDB 13 rejects —
+        # ``mysql_collate`` renders the portable ``COLLATE`` spelling that
+        # MySQL and MariaDB both accept.
+        "mysql_collate": str(collation),
+    }
+
+    existing = getattr(cls, "__table_args__", None)
+
+    def _merged(table_args: Any) -> Any:
+        # A user-supplied collation (either spelling) must not end up beside
+        # the framework default — the server would receive two collations.
+        user_dict = table_args[-1] if isinstance(table_args[-1], dict) else {}
+        fill = dict(defaults)
+        if "mysql_collation" in user_dict or "mysql_collate" in user_dict:
+            fill = {k: v for k, v in fill.items() if not k.startswith("mysql_coll")}
+        elif str(user_dict.get("mysql_charset", charset)) != charset:
+            # A lone charset override must not inherit the default charset's
+            # collation either — utf8mb4_unicode_ci beside CHARSET=latin1 is
+            # a pair the server rejects. Let the server pick that charset's
+            # own collation.
+            fill.pop("mysql_collate")
+        return {**fill, **user_dict}
+
+    if existing is None:
+        cls.__table_args__ = dict(defaults)  # type: ignore[attr-defined]
+    elif isinstance(existing, tuple) and existing and isinstance(existing[-1], dict):
+        cls.__table_args__ = (*existing[:-1], _merged(existing))  # type: ignore[attr-defined]
+    elif isinstance(existing, tuple):
+        cls.__table_args__ = (*existing, dict(defaults))  # type: ignore[attr-defined]
+    else:
+        cls.__table_args__ = _merged((existing,))  # type: ignore[attr-defined]
+
+
 def _transform_declarative_fields(cls: type) -> None:
     """Rewrite Fastplace-style annotations into SQLAlchemy Mapped columns."""
     import sys
@@ -677,7 +829,10 @@ def _transform_declarative_fields(cls: type) -> None:
                 kwargs["default"] = field.default
         elif plain_default is not _MISSING:
             kwargs["default"] = plain_default
-        if field.index:
+        if field.index and field.type != "vector":
+            # A vector column never takes the generic btree: on PostgreSQL
+            # its ANN index is emitted after the column below; the JSON
+            # fallback on other backends cannot use an index at all.
             kwargs["index"] = True
         if field.unique:
             kwargs["unique"] = True
@@ -706,6 +861,9 @@ def _transform_declarative_fields(cls: type) -> None:
             (column_type, ForeignKey(field.foreign_key)) if field.foreign_key else (column_type,)
         )
         setattr(cls, name, mapped_column(*args, **kwargs))
+
+        if getattr(field, "ann", None):
+            _append_ann_index(cls, name, field, url)
 
         _mapped: Any = Mapped
         resolved_annotations[name] = _mapped[annotation]
@@ -778,6 +936,7 @@ def _transform_declarative_fields(cls: type) -> None:
 
     cls.__annotations__ = resolved_annotations
     cls.__tablename__ = tablename  # type: ignore[attr-defined]
+    _apply_mysql_table_defaults(cls, url)
 
 
 def _replace_superseded_declaration(cls: type) -> None:
