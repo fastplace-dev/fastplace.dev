@@ -90,10 +90,7 @@ export default function Login() {
             </div>
 
             <div className="text-ink-muted text-center text-sm">
-              Don't have an account?{" "}
-              <TextLink href="/register">
-                Sign up
-              </TextLink>
+              Don't have an account? <TextLink href="/register">Sign up</TextLink>
             </div>
           </>
         )}

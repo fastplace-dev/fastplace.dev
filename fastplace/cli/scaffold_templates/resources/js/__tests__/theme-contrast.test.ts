@@ -209,7 +209,9 @@ describe("theme contrast guard (WCAG 2.1 AA)", () => {
       const ring = tokenColor("--ring", t);
       const card = cardOf(t);
       const ringOpacity = 0.75; // keep in sync with focus-visible:ring-ring/75
-      expect(contrast(blend(ring, ringOpacity, surfaceOf(t)), surfaceOf(t))).toBeGreaterThanOrEqual(3);
+      expect(contrast(blend(ring, ringOpacity, surfaceOf(t)), surfaceOf(t))).toBeGreaterThanOrEqual(
+        3,
+      );
       expect(contrast(blend(ring, ringOpacity, card), card)).toBeGreaterThanOrEqual(3);
     });
   });
@@ -240,7 +242,9 @@ describe("theme contrast guard (WCAG 2.1 AA)", () => {
 
     it("light focus ring at /75 > the /50 audit state 1.84 (a11y1-G9 baseline)", () => {
       const ring = tokenColor("--ring", "light");
-      expect(contrast(blend(ring, 0.75, surfaceOf("light")), surfaceOf("light"))).toBeGreaterThan(1.84);
+      expect(contrast(blend(ring, 0.75, surfaceOf("light")), surfaceOf("light"))).toBeGreaterThan(
+        1.84,
+      );
     });
   });
 

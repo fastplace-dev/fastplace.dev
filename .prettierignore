@@ -13,6 +13,7 @@ package-lock.json
 
 # Agent worktrees (gitignored local state)
 .claude/
+.kilo/
 
 # Package build output
 packages/*/dist/

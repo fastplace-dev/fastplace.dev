@@ -79,10 +79,7 @@ function ProfilePage({ mustVerifyEmail }: { mustVerifyEmail: boolean }) {
                   </p>
 
                   {status === "verification-link-sent" && (
-                    <div
-                      role="status"
-                      className="text-success mt-2 text-sm font-medium"
-                    >
+                    <div role="status" className="text-success mt-2 text-sm font-medium">
                       A new verification link has been sent to your email address.
                     </div>
                   )}

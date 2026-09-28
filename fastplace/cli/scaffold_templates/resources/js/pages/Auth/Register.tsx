@@ -112,10 +112,7 @@ export default function Register() {
             </div>
 
             <div className="text-ink-muted text-center text-sm">
-              Already have an account?{" "}
-              <TextLink href="/login">
-                Log in
-              </TextLink>
+              Already have an account? <TextLink href="/login">Log in</TextLink>
             </div>
           </>
         )}

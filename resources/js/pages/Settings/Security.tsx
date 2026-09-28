@@ -72,10 +72,7 @@ function SecurityPage() {
                   aria-invalid={errors.current_password ? true : undefined}
                 />
 
-                <InputError
-                  id="current_password-error"
-                  message={errors.current_password?.[0]}
-                />
+                <InputError id="current_password-error" message={errors.current_password?.[0]} />
               </div>
 
               <div className="grid gap-2">
