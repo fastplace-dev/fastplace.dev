@@ -194,6 +194,21 @@ async def test_morph_to_many_filters_by_the_owner_type(seeded_through):
     assert by_name["helios"].members == []
 
 
+def test_morph_to_many_pins_the_selectin_join_path(blog, db_url):
+    """SQLAlchemy 2.1 auto-enables the omit_join selectin optimization for
+    many-to-many shapes whose secondary FKs cover the parent pk. That path
+    filters only by local/remote pairs and drops the owner-type
+    discriminator from the custom primaryjoin — members owned by other
+    types double-load. Pinning ``omit_join=False`` keeps the join-based
+    selectin (full primaryjoin) on every 2.x; on 2.0 it is behaviorally
+    identical."""
+    from sqlalchemy import inspect as sa_inspect
+
+    Project = blog[5]
+    rel = sa_inspect(Project).relationships["members"]
+    assert rel.omit_join is False
+
+
 async def test_morph_to_many_relation_loads_lazily(seeded_through):
     Project = seeded_through[5]
     project = await Project.query().where(Project.name == "apollo").first()

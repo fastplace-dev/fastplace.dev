@@ -244,12 +244,19 @@ class MorphToMany(RelationshipMarker):
             f"{self.through}.c.{self.type_field} == {type_name!r})"
         )
         secondaryjoin = f"{self.through}.c.{self.foreign_field} == foreign({self.target}.{_target_pk(self.target)})"
+        # SQLAlchemy 2.1 auto-enables the omit_join selectin optimization
+        # when the secondary's FKs cover the parent pk — that path filters
+        # by local/remote pairs only and drops the owner-type discriminator
+        # above, double-loading members owned by other types. False pins
+        # the join-based selectin, which applies the full primaryjoin on
+        # every 2.x (on 2.0 this is what the loader already chose).
         return super().build(
             primaryjoin=join,
             secondaryjoin=secondaryjoin,
             secondary=self.through,
             uselist=True,
             viewonly=True,
+            omit_join=False,
             **extra,
         )
 
