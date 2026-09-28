@@ -5,17 +5,17 @@
 ```python
 from fastplace.storage import disk
 
-disk().put("invoices/2026/first.pdf", pdf_bytes)   # parent dirs auto-created
+disk().put("invoices/2026/first.pdf", pdf_bytes)  # parent dirs auto-created
 pdf = await disk().get("invoices/2026/first.pdf")  # bytes; missing -> NotFoundError
-await disk().text("notes/readme.txt")              # str (UTF-8)
+await disk().text("notes/readme.txt")  # str (UTF-8)
 await disk().exists("invoices/2026/first.pdf")
 await disk().copy("invoices/2026/first.pdf", "archive/2026/first.pdf")
 await disk().move("inbox/a.pdf", "archive/a.pdf")  # source removed only after a successful copy
-await disk().size("invoices/2026/first.pdf")       # bytes
+await disk().size("invoices/2026/first.pdf")  # bytes
 await disk().last_modified("invoices/2026/first.pdf")  # unix seconds | None
-await disk().files("invoices", recursive=True)     # sorted disk-relative paths
-await disk().delete("invoices/2026/first.pdf")     # deleting absence is a no-op
-await disk().url("invoices/2026/first.pdf")        # "/storage/invoices/2026/first.pdf"
+await disk().files("invoices", recursive=True)  # sorted disk-relative paths
+await disk().delete("invoices/2026/first.pdf")  # deleting absence is a no-op
+await disk().url("invoices/2026/first.pdf")  # "/storage/invoices/2026/first.pdf"
 ```
 
 Every path is disk-relative and `/`-separated, and every operation is containment-checked before any filesystem call: `../` escapes, absolute paths, `C:` prefixes, backslashes, and symlinks pointing outside the root all raise `StoragePathError` — nothing is ever written outside the disk root.
@@ -59,7 +59,9 @@ The disk computes URLs; the app decides what it exposes. A different mount point
 ```python
 from fastplace.auth.signing import sign, verify
 
-digest, expires = sign(path, ttl=300)   # hand /download?path=..&expires=..&signature=.. to the client
+digest, expires = sign(
+    path, ttl=300
+)  # hand /download?path=..&expires=..&signature=.. to the client
 # on the download route: verify(path, signature, expires) before streaming
 ```
 
@@ -71,6 +73,7 @@ Subclass `Disk` and implement the primitives over a dict — the derived operati
 
 ```python
 from fastplace.storage import Disk
+
 
 class FakeDisk(Disk):
     def __init__(self) -> None:

@@ -29,8 +29,8 @@ Enroll it, and its lifecycle keeps the index current:
 ```python
 from fastplace.search import make_searchable, register_engine
 
-register_engine(MyEngine())          # the process-wide index engine
-make_searchable(Post)                # queue=True (production default)
+register_engine(MyEngine())  # the process-wide index engine
+make_searchable(Post)  # queue=True (production default)
 ```
 
 - `created` / `updated` / `restored` upsert the record; `deleted` removes it — a soft tombstone and `force_delete` alike (the record is serialized from the in-memory instance before the row goes).
@@ -53,6 +53,7 @@ An engine is any object with four async methods — subclassing is welcome, not 
 ```python
 from fastplace.search import SearchEngine
 
+
 class MyEngine(SearchEngine):
     async def update(self, records: list) -> int: ...
     async def delete(self, records: list) -> int: ...
@@ -69,6 +70,7 @@ Reference pseudocode for a hosted search engine that talks HTTP — the client s
 ```python
 import httpx
 from fastplace.search import SearchEngine, search_record
+
 
 class MeiliSearchEngine(SearchEngine):
     """REST adapter sketch — MEILI_URL / MEILI_KEY from config."""

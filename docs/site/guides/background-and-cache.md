@@ -85,7 +85,7 @@ useful to keep concurrent jobs from duplicating work:
 
 ```python
 async with cache().lock("rebuild:42", ttl=60):
-    report = await build_report(42)   # one runner at a time, per cache driver
+    report = await build_report(42)  # one runner at a time, per cache driver
     await cache().put("reports:42", report, ttl=600)
 ```
 

@@ -41,7 +41,7 @@ msg = (
     .add_cc("sales@example.com")
     .add_bcc("audit@example.com")
     .set_reply_to("support@example.com")
-    .attach(path="/tmp/label-42.pdf")             # or content=b"...", filename="label.pdf"
+    .attach(path="/tmp/label-42.pdf")  # or content=b"...", filename="label.pdf"
 )
 ```
 
@@ -62,16 +62,26 @@ per channel, and hand it to any notifiable:
 ```python
 from fastplace.notifications import Notification, Notifiable
 
+
 class OrderShipped(Notification):
-    def via(self, notifiable): return ["mail", "database"]
+    def via(self, notifiable):
+        return ["mail", "database"]
+
     def to_mail(self, notifiable):
         from fastplace.mail import MailMessage
-        return MailMessage(subject="Order shipped", text=f"Order #{notifiable.id} is on its way.", to=notifiable.email).attach(path=f"/tmp/label-{notifiable.id}.pdf")
+
+        return MailMessage(
+            subject="Order shipped",
+            text=f"Order #{notifiable.id} is on its way.",
+            to=notifiable.email,
+        ).attach(path=f"/tmp/label-{notifiable.id}.pdf")
+
     def to_database(self, notifiable):
         return {"title": "Order shipped", "order_id": str(notifiable.id)}
 
+
 # anywhere:
-await user.notify(OrderShipped())          # user has .email and .id (Notifiable mixin)
+await user.notify(OrderShipped())  # user has .email and .id (Notifiable mixin)
 await send([user_a, user_b], OrderShipped())
 ```
 

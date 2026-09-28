@@ -108,7 +108,7 @@ Batch insert-or-update runs inside one transaction on every backend
 ```python
 written = await Project.upsert(
     [{"slug": "alpha", "stars": 3}, {"slug": "beta", "stars": 1}],
-    unique_by=["slug"],            # or update=["stars"]
+    unique_by=["slug"],  # or update=["stars"]
 )
 ```
 
@@ -125,8 +125,8 @@ for bulk loads.
 Counters run in the database, then reload the instance:
 
 ```python
-await project.increment("stars")        # SET stars = stars + 1
-await project.decrement("credits", 3)   # plain arithmetic, no floor
+await project.increment("stars")  # SET stars = stars + 1
+await project.decrement("credits", 3)  # plain arithmetic, no floor
 ```
 
 The target must be a numeric column (`int`, `float`, `Decimal`) —
@@ -137,13 +137,13 @@ Large result sets stream through the query builder:
 
 ```python
 async for row in Project.query().order_by(Project.id).chunk(500):
-    ...   # OFFSET paging; you own the ORDER BY
+    ...  # OFFSET paging; you own the ORDER BY
 
 async for row in Project.query().chunk_by_id(500):
-    ...   # keyset paging — stable under concurrent writes
+    ...  # keyset paging — stable under concurrent writes
 
 async for row in Project.query().cursor():
-    ...   # server-side cursor where the driver has one
+    ...  # server-side cursor where the driver has one
 ```
 
 `chunk_by_id` is the recommended default: each page resumes after the
