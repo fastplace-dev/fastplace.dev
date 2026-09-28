@@ -153,6 +153,93 @@ def test_failed_job_store_is_a_singleton_until_reset():
 
 
 # ---------------------------------------------------------------------------
+# job_key — the aborted-scan dedupe column (q2-G2)
+# ---------------------------------------------------------------------------
+
+
+async def test_record_persists_the_job_key():
+    from fastplace.queue_failures import failed_job_store
+
+    job_id = await failed_job_store().record(
+        "billing.reconcile", {"invoice_id": 1}, "aborted: swept", job_key="abc"
+    )
+    row = await failed_job_store().get(job_id)
+    assert row.job_key == "abc"
+
+    plain_id = await failed_job_store().record("no_key", {}, "err")  # pre-column shape
+    assert (await failed_job_store().get(plain_id)).job_key is None
+
+
+async def test_record_once_dedupes_on_the_job_key():
+    """The crash-loss scan runs every 60s — without a job_key guard the same
+    ABORTED saq job would be re-recorded on every pass until its redis TTL
+    expires. record_once skips when the key already has a row."""
+    from fastplace.queue_failures import failed_job_store
+
+    store = failed_job_store()
+    first = await store.record_once("export.csv", {"batch": 1}, "aborted: swept", job_key="k1")
+    assert first is not None  # recorded
+
+    again = await store.record_once("export.csv", {"batch": 1}, "aborted: swept", job_key="k1")
+    assert again is None  # duplicate pass: skipped
+
+    rows = await store.list()
+    assert len(rows) == 1  # exactly one row for the aborted job
+
+    other = await store.record_once("export.csv", {"batch": 2}, "aborted: swept", job_key="k2")
+    assert other is not None  # a different job key is a different failure
+
+
+async def test_ensure_table_upgrades_a_legacy_table_without_job_key():
+    """Deployments that created the table before job_key existed must be
+    upgraded in place — ALTER under the same idempotent ensure_table()."""
+    from sqlalchemy import text
+
+    from fastplace.db import db
+    from fastplace.queue_failures import failed_job_store
+
+    # Hand-build the legacy shape (pre-job_key) exactly as it shipped.
+    async with db.manager.engine("default").begin() as conn:
+        await conn.execute(
+            text(
+                "CREATE TABLE _fastplace_failed_jobs ("
+                "id INTEGER PRIMARY KEY, name TEXT NOT NULL, kwargs JSON NOT NULL, "
+                "error TEXT NOT NULL, failed_at DATETIME NOT NULL)"
+            )
+        )
+
+    store = failed_job_store()
+    await store.ensure_table()  # must ALTER, not crash on the existing table
+    job_id = await store.record("legacy.job", {}, "aborted: swept", job_key="legacy-1")
+    row = await store.get(job_id)
+    assert row.job_key == "legacy-1"
+    # And the dedupe path works over the upgraded column.
+    assert await store.record_once("legacy.job", {}, "aborted: swept", job_key="legacy-1") is None
+
+
+def test_id_column_uses_sqlite_autoincrement():
+    """q1-G9: without AUTOINCREMENT, sqlite may reuse a deleted top rowid —
+    a retried-and-forgotten failure could resurface under a stale #id."""
+    from sqlalchemy import text
+
+    from fastplace.db import db
+    from fastplace.queue_failures import failed_job_store
+
+    async def _ddl() -> str:
+        await failed_job_store().ensure_table()
+        async with db.manager.engine("default").connect() as conn:
+            result = await conn.execute(
+                text("SELECT sql FROM sqlite_master WHERE name = '_fastplace_failed_jobs'")
+            )
+            return str(result.scalar_one())
+
+    import asyncio
+
+    ddl = asyncio.run(_ddl())
+    assert "AUTOINCREMENT" in ddl.upper()
+
+
+# ---------------------------------------------------------------------------
 # worker wiring — failures must land in the store from both drivers
 # ---------------------------------------------------------------------------
 

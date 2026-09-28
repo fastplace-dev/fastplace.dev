@@ -877,6 +877,52 @@ class SaqQueue:
         """
         return int(await self.queue.count("queued"))
 
+    async def active_depth(self) -> int:
+        """Jobs currently being processed (saq ``count("active")``).
+
+        Reported by ``queue:monitor`` beside the depth: a worker that died
+        mid-job leaves its jobs stuck ACTIVE — the visible crash symptom in
+        the window before saq's sweeper aborts them (~90s).
+        """
+        return int(await self.queue.count("active"))
+
+    async def aborted_jobs(self) -> list[Any]:
+        """Enumerate jobs saq left ABORTED — the crash-loss record.
+
+        A worker death mid-job ends with the sweeper aborting the job
+        (status ABORTED, error ``swept``) inside redis, where nothing human
+        browses. ``iter_jobs`` (a SCAN over job keys filtered by status) is
+        the enumeration primitive installed saq offers; ABORTED is terminal,
+        so the same job appears here on every pass until its TTL expires —
+        dedupe lives in :meth:`record_aborted_jobs`.
+        """
+        from saq.job import Status
+
+        return [job async for job in self.queue.iter_jobs(statuses=[Status.ABORTED])]
+
+    async def record_aborted_jobs(self) -> list[str]:
+        """Ledger every ABORTED job exactly once; returns the names recorded.
+
+        All aborted jobs are recorded — visibility over silence — the error
+        text distinguishes a swept crash-loss (``swept``) from an explicit
+        cancel. Deduping on the saq job key keeps repeated passes (and
+        several workers scanning concurrently) from double-ledgering one
+        job. Best-effort by design: a store outage logs and returns what it
+        managed, because this runs beside a live worker loop.
+        """
+        from fastplace.queue_failures import record_failure_once
+
+        recorded: list[str] = []
+        for job in await self.aborted_jobs():
+            error = str(getattr(job, "error", None) or "aborted")
+            job_key = str(getattr(job, "key", "") or "")
+            recorded_id = await record_failure_once(
+                str(job.function), dict(job.kwargs or {}), f"aborted: {error}", job_key
+            )
+            if recorded_id is not None:
+                recorded.append(str(job.function))
+        return recorded
+
     def build_worker(self, **kwargs: Any) -> Any:
         """Assemble a saq Worker over the registry (no network until start).
 

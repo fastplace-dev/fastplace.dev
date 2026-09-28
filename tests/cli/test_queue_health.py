@@ -204,3 +204,63 @@ def test_broken_schedule_fails(tmp_path, monkeypatch, park_project_modules):  # 
     out = _out(result)
     assert "FAIL" in out
     assert "schedule" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# aborted-job visibility (q2-G5) — crash-loss surfaces as its own WARN row
+# ---------------------------------------------------------------------------
+
+
+class _FakeAbortedDriver:
+    """The saq driver surface the aborted check reads: aborted_jobs()."""
+
+    def __init__(self, jobs: list) -> None:
+        self._jobs = jobs
+
+    async def aborted_jobs(self) -> list:
+        return self._jobs
+
+
+def test_aborted_check_passes_on_memory_driver(tmp_path, monkeypatch):
+    """Nothing to scan in-process — the row states that honestly."""
+    from fastplace.cli.queue import _check_aborted_jobs
+
+    _make_project(tmp_path, monkeypatch)
+    check = _check_aborted_jobs()
+    assert check.name == "aborted"
+    assert check.status == "pass"
+    assert "memory" in check.detail
+
+
+def test_aborted_check_warns_when_redis_holds_aborted_jobs(tmp_path, monkeypatch):
+    """q2-G5: jobs a crashed worker left ABORTED in redis are a WARN with the
+    queue:failed hint — silent crash-loss is the bug this row exists for."""
+    from fastplace.cli.queue import _check_aborted_jobs
+
+    _make_project(tmp_path, monkeypatch)
+    # The factory seam: the check resolves the driver through fastplace.queue's
+    # queue() — env stays memory so the redis check keeps skipping.
+    import fastplace.queue as queue_module
+
+    monkeypatch.setattr(queue_module, "queue", lambda: _FakeAbortedDriver(["a", "b"]))
+    check = _check_aborted_jobs()
+    assert check.status == "warn"
+    assert "2" in check.detail  # the count is the story
+    assert "queue:failed" in check.fix  # and where to see them
+
+
+def test_aborted_check_survives_an_unreachable_redis(tmp_path, monkeypatch):
+    """A scan failure is a WARN finding, never a crash of the doctor."""
+    from fastplace.cli.queue import _check_aborted_jobs
+
+    _make_project(tmp_path, monkeypatch)
+    import fastplace.queue as queue_module
+
+    class _BrokenDriver:
+        async def aborted_jobs(self):
+            raise RuntimeError("redis gone")
+
+    monkeypatch.setattr(queue_module, "queue", lambda: _BrokenDriver())
+    check = _check_aborted_jobs()
+    assert check.status == "warn"
+    assert "cannot" in check.detail.lower()

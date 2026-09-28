@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -160,11 +161,45 @@ def queue_work(
             f"queue '{escape(label)}')" + (" — burst mode" if burst else "")
         )
 
+        async def _scan_aborted() -> None:
+            """Companion scan — crash-loss visibility (q2-G2).
+
+            One pass at startup surfaces what the previous worker's death
+            cost immediately; a background task repeats it every 60s (the
+            sweeper aborts a dead worker's jobs ~90s after the crash, so a
+            single startup pass would miss mid-run deaths). Best-effort: a
+            failing scan is a warning line, never a reason to stop working.
+            """
+            try:
+                lost = await driver.record_aborted_jobs()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001 — the worker outranks the scan
+                console.print(f"[yellow]! aborted-job scan failed: {escape(str(exc))}")
+                return
+            if lost:
+                console.print(
+                    f"[yellow]! recorded {len(lost)} aborted job(s) — "
+                    "a worker died mid-job (see fastplace queue:failed):"
+                )
+                for lost_name in lost:
+                    console.print(f"[yellow]  · {escape(lost_name)}")
+
+        async def _companion_scan() -> None:
+            while True:
+                await asyncio.sleep(60)
+                await _scan_aborted()
+
         async def _run_saq_worker() -> None:
             # A sentinel already pending at start is honored at the first
             # job boundary (the worker's before_process hook consumes it).
+            await _scan_aborted()  # losses from the previous worker, now
+            companion = asyncio.create_task(_companion_scan())
             requested = await restart_requested_at() is not None
-            await worker.start()
+            try:
+                await worker.start()
+            finally:
+                companion.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await companion
             if not requested:
                 return
             # The restart contract's exit check: the hook must have consumed
@@ -480,25 +515,30 @@ def queue_monitor(
 
     driver_name = str(config("QUEUE_DRIVER", default="memory"))
 
-    async def _depth(name: str) -> int:
+    async def _probe(name: str) -> tuple[int, int]:
+        """(depth, active) for one queue — saq reports both; memory has no
+        cross-process concept of "running now", so active is honestly 0."""
         if driver_name == "saq":
-            return await SaqQueue(name=name).queue_depth()
-        return await queue().queue_depth()
+            driver = SaqQueue(name=name)
+            return await driver.queue_depth(), await driver.active_depth()
+        mem = queue()
+        return await mem.queue_depth(), 0
 
-    async def _check() -> list[tuple[str, int]]:
-        return [(name, await _depth(name)) for name in queues]
+    async def _check() -> list[tuple[str, int, int]]:
+        return [(name, *await _probe(name)) for name in queues]
 
     depths = asyncio.run(_check())
 
     table = Table(box=None, header_style="bold")
     table.add_column("queue", style="bold")
     table.add_column("depth", justify="right")
+    table.add_column("active", justify="right")
     table.add_column("max", justify="right")
-    for name, depth in depths:
-        table.add_row(name, str(depth), str(max_depth))
+    for name, depth, active in depths:
+        table.add_row(name, str(depth), str(active), str(max_depth))
     console.print(table)
 
-    breaches = [(name, depth) for name, depth in depths if depth > max_depth]
+    breaches = [(name, depth) for name, depth, _active in depths if depth > max_depth]
     for name, depth in breaches:
         console.print(f"[red]✗[/] {name} exceeds --max ({depth} > {max_depth})")
         try:
@@ -997,6 +1037,43 @@ def _check_defaults() -> Check:
     )
 
 
+def _check_aborted_jobs() -> Check:
+    """ABORTED jobs sitting in redis — crash-loss made visible (q2-G5).
+
+    Read-only on purpose: this row counts what the sweeper aborted, it does
+    not ledger anything (``queue:work``'s companion scan owns recording).
+    Memory driver has nothing to scan — the row states that honestly.
+    """
+    import asyncio
+
+    from fastplace.cli._doctor import Check
+    from fastplace.queue import queue
+
+    try:
+        driver = queue()
+    except Exception:  # noqa: BLE001 — the driver row already reports this
+        return Check("aborted", "pass", "not checked (driver unresolved)")
+    if not hasattr(driver, "aborted_jobs"):
+        return Check("aborted", "pass", "not used (driver is memory)")
+    try:
+        aborted = asyncio.run(driver.aborted_jobs())  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001 — unreachable redis is the finding
+        return Check(
+            "aborted",
+            "warn",
+            f"cannot scan aborted jobs: {type(exc).__name__}",
+            "check QUEUE_REDIS_URL and that redis is running",
+        )
+    if aborted:
+        return Check(
+            "aborted",
+            "warn",
+            f"{len(aborted)} aborted job(s) in redis — worker crash-loss",
+            "fastplace queue:failed (queue:work's scan records them)",
+        )
+    return Check("aborted", "pass", "0 aborted jobs")
+
+
 @queue_app.command("queue:health")
 def queue_health() -> None:
     """Queue stack diagnosis: driver, redis, depth, restart, failures, schedule."""
@@ -1021,6 +1098,7 @@ def queue_health() -> None:
             _check_depth,
             _check_restart_sentinel,
             _check_failed_jobs,
+            _check_aborted_jobs,
             _check_defaults,
             _schedule_check,
         ],

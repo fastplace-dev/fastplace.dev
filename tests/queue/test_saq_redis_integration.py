@@ -64,6 +64,11 @@ async def _purge(driver: SaqQueue) -> None:
         q.namespace(suffix)
         for suffix in ("queued", "active", "incomplete", "schedule", "sweep", "stats")
     ]
+    # ABORTED jobs leave the incomplete zset but stay at their keys until
+    # the TTL cleanup claims them — scan them out so every test's jobs die
+    # with it (never a neighbor's: the match is this queue's namespace).
+    async for job_key in redis.scan_iter(match=q.job_id("*")):
+        keys.append(job_key)
     tracked = [job_id if isinstance(job_id, str) else job_id.decode() for job_id in tracked]
     keys.extend(tracked)
     if keys:
@@ -187,5 +192,44 @@ async def test_failed_job_is_marked_failed_by_real_worker():
                 break
         else:
             pytest.fail("expected a FAILED it.boom job in redis")
+    finally:
+        await _purge(driver)
+
+
+async def test_aborted_scan_ledgers_a_swept_job_exactly_once():
+    """q2-G2 over the real broker: a job saq left ABORTED in redis — what a
+    dead worker's job looks like once the sweeper claims it — is ledgered by
+    the crash-loss scan exactly once, keyed by the saq job key."""
+    from fastplace.queue_failures import failed_job_store, reset_failed_job_store
+
+    reset_failed_job_store()
+    driver = SaqQueue(url=REDIS_URL, name=_namespace())
+
+    @Job(name="it.lost_midflight")
+    async def lost_midflight(payload: str):
+        return "never runs"
+
+    # Unique per run: the ledger may outlive redis (DB 11) across suite runs,
+    # and this test must count only its own row.
+    token = uuid.uuid4().hex[:8]
+
+    try:
+        handle = await driver.dispatch("it.lost_midflight", payload=token)
+        # Abort exactly as the sweeper does a dead worker's job: saq marks it
+        # ABORTING then finishes it ABORTED in redis with the sweep error.
+        await driver.queue.abort(handle, error="swept")
+
+        assert await driver.record_aborted_jobs() == ["it.lost_midflight"]
+
+        # A second pass — the 60s companion loop, or another worker scanning
+        # concurrently — re-observes the same ABORTED job; the job_key dedupe
+        # must keep it out of the ledger a second time.
+        assert await driver.record_aborted_jobs() == []
+
+        rows = await failed_job_store().list(limit=100)
+        mine = [row for row in rows if row.kwargs.get("payload") == token]
+        assert len(mine) == 1
+        assert "aborted: swept" in mine[0].error
+        assert mine[0].job_key == handle.key
     finally:
         await _purge(driver)

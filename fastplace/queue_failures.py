@@ -25,7 +25,9 @@ from sqlalchemy import (
     delete,
     insert,
     select,
+    text,
 )
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger("fastplace.queue")
 
@@ -36,7 +38,11 @@ logger = logging.getLogger("fastplace.queue")
 _failed_jobs_metadata = MetaData()
 
 #: The persisted ledger itself. ``kwargs`` keeps the dispatch payload so
-#: ``queue:retry`` can re-dispatch exactly what failed.
+#: ``queue:retry`` can re-dispatch exactly what failed. ``job_key`` carries
+#: the queue-side job identity (the saq Job key) so the aborted-job scan can
+#: dedupe — a NULL means the row came from a path with no such identity.
+#: ``sqlite_autoincrement`` keeps ids monotonic even after deletes, so a
+#: retried-and-forgotten failure never resurfaces under a recycled id.
 _failed_jobs_table = Table(
     "_fastplace_failed_jobs",
     _failed_jobs_metadata,
@@ -45,12 +51,45 @@ _failed_jobs_table = Table(
     Column("kwargs", JSON, nullable=False),
     Column("error", Text, nullable=False),
     Column("failed_at", DateTime, nullable=False, index=True),  # naive UTC
+    # Unique: two workers scanning the same ABORTED job must not both ledger
+    # it — the index makes the dedupe airtight at the database level.
+    Column("job_key", Text, nullable=True, index=True, unique=True),
+    sqlite_autoincrement=True,
 )
 
 
 def utcnow() -> datetime:
     """Naive UTC now — the convention every ``failed_at`` value follows."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+#: Index name the unique job_key index carries — the upgrade path checks for
+#: it by name (MySQL has no CREATE INDEX IF NOT EXISTS, so existence must be
+#: probed before issuing the statement).
+_JOB_KEY_INDEX = "ix__fastplace_failed_jobs_job_key"
+
+
+def _upgrade_legacy_table(sync_conn: Any) -> None:
+    """Bring a pre-``job_key`` table up to the current shape, in place.
+
+    Runs inside ensure_table's transaction on every first use: when the
+    column already exists (fresh create or prior upgrade) the inspector
+    finds it and nothing is issued. The ALTER is plain ANSI syntax the three
+    supported dialects share; NULLs are allowed, so legacy rows stay valid.
+    """
+    from sqlalchemy import inspect
+
+    inspector = inspect(sync_conn)
+    if not inspector.has_table(_failed_jobs_table.name):
+        return  # create_all just made the full-shape table — nothing legacy
+    columns = {column["name"] for column in inspector.get_columns(_failed_jobs_table.name)}
+    if "job_key" not in columns:
+        sync_conn.execute(text(f"ALTER TABLE {_failed_jobs_table.name} ADD COLUMN job_key TEXT"))
+    indexes = {index["name"] for index in inspector.get_indexes(_failed_jobs_table.name)}
+    if _JOB_KEY_INDEX not in indexes:
+        sync_conn.execute(
+            text(f"CREATE UNIQUE INDEX {_JOB_KEY_INDEX} ON {_failed_jobs_table.name} (job_key)")
+        )
 
 
 def format_error(exc: BaseException) -> str:
@@ -81,7 +120,15 @@ class FailedJobStore:
         return db.manager.engine("default")
 
     async def ensure_table(self) -> None:
-        """Create the table on first use (checkfirst — idempotent)."""
+        """Create the table on first use; upgrade a legacy table in place.
+
+        Fresh installs get the full shape from ``create_all(checkfirst=True)``.
+        A deployment whose table predates the ``job_key`` column is upgraded
+        under this same idempotent call — inspect, ``ALTER TABLE ADD COLUMN``,
+        create the index — so no migration step is owed. The column must be
+        nullable: legacy rows and failure paths without a queue-side identity
+        have nothing to store there.
+        """
         if self._ensured:
             return
 
@@ -89,21 +136,52 @@ class FailedJobStore:
             _failed_jobs_metadata.create_all(
                 sync_conn, tables=[_failed_jobs_table], checkfirst=True
             )
+            _upgrade_legacy_table(sync_conn)
 
         async with self._engine().begin() as conn:
             await conn.run_sync(create)
         self._ensured = True
 
-    async def record(self, name: str, kwargs: dict[str, Any], error: str) -> int:
-        """Persist one failure; returns the new record's id."""
+    async def record(
+        self, name: str, kwargs: dict[str, Any], error: str, job_key: str | None = None
+    ) -> int:
+        """Persist one failure; returns the new record's id.
+
+        ``job_key`` (optional) is the queue-side identity — the saq Job key —
+        used by :meth:`record_once` to dedupe repeated observations of the
+        same lost job.
+        """
         await self.ensure_table()
         async with self._engine().begin() as conn:
             result = await conn.execute(
                 insert(_failed_jobs_table).values(
-                    name=name, kwargs=kwargs, error=error, failed_at=utcnow()
+                    name=name, kwargs=kwargs, error=error, failed_at=utcnow(), job_key=job_key
                 )
             )
         return int(result.inserted_primary_key[0])
+
+    async def record_once(
+        self, name: str, kwargs: dict[str, Any], error: str, job_key: str
+    ) -> int | None:
+        """Record a failure exactly once per ``job_key``.
+
+        The aborted-job scan re-observes the same ABORTED job on every pass
+        until its redis TTL expires; without this guard each pass would
+        re-record it. Returns the new id, or ``None`` when the key already
+        has a row. A concurrent insert racing past the select lands on the
+        unique index and is treated as "already recorded" — the dedupe holds
+        under multiple workers.
+        """
+        await self.ensure_table()
+        stmt = select(_failed_jobs_table.c.id).where(_failed_jobs_table.c.job_key == job_key)
+        async with self._engine().connect() as conn:
+            existing = (await conn.execute(stmt)).first()
+        if existing is not None:
+            return None
+        try:
+            return await self.record(name, kwargs, error, job_key=job_key)
+        except IntegrityError:
+            return None  # a racing scan recorded it first — same conclusion
 
     async def list(self, offset: int = 0, limit: int = 50) -> list[Any]:
         """Newest-first page of failed-job rows."""
@@ -177,4 +255,20 @@ async def record_failure(name: str, kwargs: dict[str, Any], error: str) -> int |
         return await failed_job_store().record(name, kwargs, error)
     except Exception:  # noqa: BLE001 — isolation is the contract
         logger.warning("could not persist failed-job record for '%s'", name, exc_info=True)
+        return None
+
+
+async def record_failure_once(
+    name: str, kwargs: dict[str, Any], error: str, job_key: str
+) -> int | None:
+    """Best-effort deduped recording for the aborted-job scan.
+
+    Same isolation contract as :func:`record_failure` — the scan is a
+    companion, never a load-bearing wall: a store outage logs and the
+    worker keeps working (the job stays visible in redis either way).
+    """
+    try:
+        return await failed_job_store().record_once(name, kwargs, error, job_key)
+    except Exception:  # noqa: BLE001 — isolation is the contract
+        logger.warning("could not persist aborted-job record for '%s'", name, exc_info=True)
         return None
