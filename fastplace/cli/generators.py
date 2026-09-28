@@ -1240,9 +1240,7 @@ _COMPONENT_TEMPLATE = """import React from "react";
 // Tailwind utilities defined in resources/css/app.css.
 export function {name}({{ children }}) {{
   return (
-    <div className="border-line bg-surface-raised text-ink rounded-lg border p-4">
-      {{children}}
-    </div>
+    <div className="border-line bg-surface-raised text-ink rounded-lg border p-4">{{children}}</div>
   );
 }}
 """
