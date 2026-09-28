@@ -1,6 +1,6 @@
 {
   "name": "@fastplace/react",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "React bridge for Fastplace — server-driven SPA over the X-Fastplace-Request protocol",
   "homepage": "https://fastplace.dev",
   "bugs": {
@@ -30,6 +30,7 @@
   ],
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "test": "vitest run"
   },
   "peerDependencies": {

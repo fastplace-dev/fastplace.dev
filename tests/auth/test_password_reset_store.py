@@ -68,6 +68,6 @@ async def test_unknown_email_peek_pays_equal_work(monkeypatch):
         calls.append(1)
         return "spy-digest"
 
-    monkeypatch.setattr(passwords, "_dummy_digest", spy)
+    monkeypatch.setattr(passwords, "dummy_digest", spy)
     assert await token_store().peek("ghost@example.test", "some-token") is False
     assert calls == [1]

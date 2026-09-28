@@ -2194,6 +2194,19 @@ def _published_fastplace_dep() -> str:
         return "fastplace>=0.1.0"
 
 
+def _published_react_dep() -> str:
+    """The npm pin for ``@fastplace/react``, caret-pinned to the SAME
+    release as the Python floor — python and npm ship in lockstep, so the
+    pin derives from the running fastplace distribution rather than a
+    hand-maintained literal that drifts at the next release."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return f"^{version('fastplace')}"
+    except PackageNotFoundError:  # pragma: no cover — bare source-tree runs
+        return "^0.1.0"
+
+
 # One rewrite, shared by `new --auth` and `make:auth` (write_auth_surface):
 # the auth scaffold needs the webauthn extra (passkeys) and the queue extra
 # (the mail job listener), so the scaffolded dependency points at
@@ -2492,7 +2505,7 @@ def new_project(
     # nothing can resolve, so it falls back to the published registry spec.
     checkout = _framework_checkout()
     fastplace_dep = f"fastplace @ file://{checkout}" if checkout else _published_fastplace_dep()
-    react_dep = "^0.1.0"
+    react_dep = _published_react_dep()
     if checkout and (checkout / "packages/react/dist/fastplace-react.js").is_file():
         react_dep = f"file:{checkout / 'packages' / 'react'}"
 

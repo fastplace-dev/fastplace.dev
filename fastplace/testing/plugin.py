@@ -122,9 +122,9 @@ async def app(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, request: pytest.Fi
 
     middleware = None
     if (root / "config").is_dir():
-        from fastplace.http.kernel import _middleware_from_config
+        from fastplace.http.kernel import middleware_from_config
 
-        middleware = _middleware_from_config(root)
+        middleware = middleware_from_config(root)
     return get_app(
         routes=web_router,
         auth_routes=auth_router,

@@ -86,7 +86,7 @@ class TestMakeAuth:
         assert "session.clear()" in service
         assert "CSRF_SESSION_KEY" in service
         assert "regenerate()" in service
-        assert "_queue_remember_cookie(request, None)" in service
+        assert "queue_remember_cookie(request, None)" in service
         assert "await pat_store().revoke_all_for_user(user.id)" in service
 
     def test_rerun_never_clobbers(self, tmp_path, monkeypatch):

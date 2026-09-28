@@ -48,7 +48,7 @@ def throttle_seconds() -> int:
 _dummy: str | None = None
 
 
-def _dummy_digest() -> str:
+def dummy_digest() -> str:
     """A lazily-built scrypt digest for equal-work on unknown emails."""
     global _dummy
     if _dummy is None:
@@ -116,7 +116,7 @@ class PasswordResetTokenStore:
         if not self._live(row):
             # Equal work for unknown email / expired token: a miss pays the
             # same scrypt cost a hit does (timing parity, spec §6).
-            Hash.check(token, _dummy_digest())
+            Hash.check(token, dummy_digest())
             return False
         return bool(Hash.check(token, row._mapping["token_hash"]))
 
@@ -126,7 +126,7 @@ class PasswordResetTokenStore:
         row = await self._row_for(email)
         if not self._live(row) or not Hash.check(token, row._mapping["token_hash"]):
             # Equal work when nothing matched (timing parity).
-            Hash.check(token, _dummy_digest())
+            Hash.check(token, dummy_digest())
             return False
         async with self._engine().begin() as conn:
             result = await conn.execute(

@@ -160,7 +160,7 @@ class TestRegistrationAndMerge:
 
         import fastplace.auth.middleware as auth_mw
         from fastplace.http import render as render_fn
-        from fastplace.http.kernel import _middleware_from_config, get_app
+        from fastplace.http.kernel import get_app, middleware_from_config
         from fastplace.http.render import share
         from fastplace.http.router import Router
 
@@ -181,7 +181,7 @@ class TestRegistrationAndMerge:
         # exists when SharedAbilitiesMiddleware actually runs.
         app = get_app(
             routes=router,
-            middleware=_middleware_from_config(Path.cwd()),
+            middleware=middleware_from_config(Path.cwd()),
             config={"APP_ENV": "local", "APP_KEY": "authz-t5"},
         )
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)

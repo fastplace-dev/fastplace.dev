@@ -319,7 +319,7 @@ def test_new_dependency_carries_version_floor_when_installed(tmp_path, monkeypat
     """From a published install (no framework checkout on disk) the scaffolded
     app must pin a floor — ``fastplace[queue,webauthn]>=<version>`` — never a bare
     specifier: a bare dependency silently tracks future breaking releases,
-    and the npm side already caret-pins its published fallback (``^0.1.0``).
+    and the npm side caret-pins the same version (lockstep python/npm releases).
     The extras stay pinned so the passkey surface and the mail queue are importable as-is."""
     from fastplace.cli import generators
 
@@ -332,6 +332,23 @@ def test_new_dependency_carries_version_floor_when_installed(tmp_path, monkeypat
     # A bare specifier or a leaked local path is the regression.
     assert '"fastplace"' not in pyproject
     assert "file://" not in pyproject
+
+
+def test_new_react_pin_tracks_the_fastplace_version(tmp_path, monkeypatch):
+    """Pin symmetry (upg-G3): the npm caret pin derives from the running
+    fastplace distribution — python and npm release in lockstep, so a
+    scaffolded app can never mix a pip floor of one release with an npm
+    caret of another."""
+    import json
+    from importlib.metadata import version
+
+    from fastplace.cli import generators
+
+    monkeypatch.setattr(generators, "_framework_checkout", lambda: None)
+    _, root = _invoke(tmp_path, monkeypatch, "blog")
+
+    package_json = json.loads((root / "blog" / "package.json").read_text())
+    assert package_json["dependencies"]["@fastplace/react"] == f"^{version('fastplace')}"
 
 
 def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
@@ -360,8 +377,11 @@ def test_scaffolded_project_is_locally_installable(tmp_path, monkeypatch):
         assert '"fastplace[queue,webauthn]>=' in pyproject
     if from_source_checkout and dist_built:
         assert '"@fastplace/react": "file:' in package_json
-    else:
-        assert '"@fastplace/react": "^0.1.0"' in package_json
+    else:  # pragma: no cover — CI/dev always runs from the checkout
+        from importlib.metadata import version
+
+        pin = f'"@fastplace/react": "^{version("fastplace")}"'
+        assert pin in package_json
 
 
 def _invoke_with_input(tmp_path, monkeypatch, name: str, *args: str, input: str | None = None):
