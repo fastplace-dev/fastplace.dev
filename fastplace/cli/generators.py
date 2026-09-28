@@ -1382,7 +1382,13 @@ from fastplace.http import Controller, Request, render
 
 class HomeController(Controller):
     async def index(self, request: Request):
-        return render(request, component="Home/Index", props={{"appName": "{app_name}"}})
+        return render(
+            request,
+            component="Home/Index",
+            props={{"appName": "{app_name}"}},
+            title="Home",
+            canonical="/",
+        )
 '''
 
 _WEB_ROUTES_TEMPLATE = '''"""Web routes — bridge pages (controllers return render(...))."""
@@ -1411,8 +1417,11 @@ from fastplace.http import Controller, Request, render
 
 
 class AuthPageController(Controller):
+    # Auth pages are public but never index-worthy — every one ships noindex.
     async def login(self, request: Request):
-        return render(request, component="Auth/Login", props={})
+        return render(
+            request, component="Auth/Login", props={}, title="Log in", robots="noindex"
+        )
 
     async def register(self, request: Request):
         # The register page's client-side default is "minlength: 8;" — the
@@ -1421,10 +1430,18 @@ class AuthPageController(Controller):
             request,
             component="Auth/Register",
             props={"passwordRules": frontend_rules()},
+            title="Register",
+            robots="noindex",
         )
 
     async def forgot_password(self, request: Request):
-        return render(request, component="Auth/ForgotPassword", props={})
+        return render(
+            request,
+            component="Auth/ForgotPassword",
+            props={},
+            title="Forgot Password",
+            robots="noindex",
+        )
 
     async def reset_password(self, request: Request):
         # The email link lands on /reset-password/{token}?email=... — the
@@ -1437,16 +1454,36 @@ class AuthPageController(Controller):
                 "email": request.query("email", ""),
                 "passwordRules": frontend_rules(),
             },
+            title="Reset Password",
+            robots="noindex",
         )
 
     async def verify_email(self, request: Request):
-        return render(request, component="Auth/VerifyEmail", props={})
+        return render(
+            request,
+            component="Auth/VerifyEmail",
+            props={},
+            title="Verify Email",
+            robots="noindex",
+        )
 
     async def confirm_password(self, request: Request):
-        return render(request, component="Auth/ConfirmPassword", props={})
+        return render(
+            request,
+            component="Auth/ConfirmPassword",
+            props={},
+            title="Confirm Password",
+            robots="noindex",
+        )
 
     async def two_factor_challenge(self, request: Request):
-        return render(request, component="Auth/TwoFactorChallenge", props={})
+        return render(
+            request,
+            component="Auth/TwoFactorChallenge",
+            props={},
+            title="Two-Factor Challenge",
+            robots="noindex",
+        )
 '''
 
 _DASHBOARD_CONTROLLER_TEMPLATE = '''"""Dashboard page controller — the authenticated landing page."""
@@ -1459,7 +1496,9 @@ from fastplace.http import Controller, Request, render
 class DashboardController(Controller):
     async def index(self, request: Request):
         # Blank starter canvas — props arrive when the app grows real data.
-        return render(request, component="Dashboard/Index", props={})
+        return render(
+            request, component="Dashboard/Index", props={}, title="Dashboard", robots="noindex"
+        )
 '''
 
 _SETTINGS_PAGES_CONTROLLER_TEMPLATE = '''"""Account settings page controller — profile and security bridge pages."""
@@ -1472,7 +1511,13 @@ from fastplace.http import Controller, Request, render
 
 class SettingsPagesController(Controller):
     async def profile(self, request: Request):
-        return render(request, component="Settings/Profile", props={})
+        return render(
+            request,
+            component="Settings/Profile",
+            props={},
+            title="Profile",
+            robots="noindex",
+        )
 
     async def security(self, request: Request):
         from fastplace.config import config
@@ -1493,7 +1538,13 @@ class SettingsPagesController(Controller):
             from fastplace.auth.passkey_guard import passkey_guard
 
             props["passkeys"] = await passkey_guard().list_for(user)
-        return render(request, component="Settings/Security", props=props)
+        return render(
+            request,
+            component="Settings/Security",
+            props=props,
+            title="Security",
+            robots="noindex",
+        )
 '''
 
 _SETTINGS_APPEARANCE_CONTROLLER_TEMPLATE = '''"""Settings appearance controller — the appearance settings bridge page."""
@@ -1505,7 +1556,13 @@ from fastplace.http import Controller, Request, render
 
 class SettingsAppearanceController(Controller):
     async def index(self, request: Request):
-        return render(request, component="Settings/Appearance", props={})
+        return render(
+            request,
+            component="Settings/Appearance",
+            props={},
+            title="Appearance",
+            robots="noindex",
+        )
 '''
 
 #: The auth variant of routes/web.py — the guest auth pages, the blank
@@ -1871,6 +1928,12 @@ _INDEX_HTML_TEMPLATE = """\
     <script type="module" src="/resources/js/main.jsx"></script>
   </head>
   <body>
+    <noscript>
+      <div style="margin:24px auto;max-width:560px;padding:20px 24px;border:1px solid #3f3f46;border-radius:12px;background:#18181b;color:#fafafa;font-family:system-ui,sans-serif;font-size:14px;line-height:1.6">
+        <p style="margin:0 0 8px;font-weight:600">{app_name} — Home Index</p>
+        <p style="margin:0">This page needs JavaScript for the full interface. Forms still submit without it: posting a form reloads the page with the result.</p>
+      </div>
+    </noscript>
     <div
       id="fastplace"
       data-page='{{"component":"Home/Index","props":{{}},"url":"/","version":"v1"}}'

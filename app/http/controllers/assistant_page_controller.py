@@ -9,4 +9,10 @@ class AssistantPageController(Controller):
     async def index(self, request: Request):
         # The chat state lives client-side (useAIStream); the page payload
         # only needs the endpoint the hook posts to.
-        return render(request, component="Assistant/Chat", props={"endpoint": "/ai/assistant"})
+        return render(
+            request,
+            component="Assistant/Chat",
+            props={"endpoint": "/ai/assistant"},
+            title="Assistant",
+            robots="noindex",
+        )

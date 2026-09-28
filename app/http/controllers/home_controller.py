@@ -12,4 +12,12 @@ from fastplace.http import Controller, Request, render
 
 class HomeController(Controller):
     async def index(self, request: Request):
-        return render(request, component="Home/Index", props={})
+        return render(
+            request,
+            component="Home/Index",
+            props={},
+            title="Home",
+            description="Fastplace — an opinionated, full-stack, AI-native web framework "
+            "built on Python and React.",
+            canonical="/",
+        )

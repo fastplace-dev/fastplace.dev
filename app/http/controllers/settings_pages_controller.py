@@ -17,7 +17,13 @@ class SettingsPagesController(Controller):
     async def profile(self, request: Request):
         # Reads auth?.user as optional — the shared auth.user prop arrives
         # with the later auth phases.
-        return render(request, component="Settings/Profile", props={})
+        return render(
+            request,
+            component="Settings/Profile",
+            props={},
+            title="Profile",
+            robots="noindex",
+        )
 
     async def security(self, request: Request):
         # The security page has no client-side default for passwordRules
@@ -42,4 +48,10 @@ class SettingsPagesController(Controller):
             from fastplace.auth.passkey_guard import passkey_guard
 
             props["passkeys"] = await passkey_guard().list_for(user)
-        return render(request, component="Settings/Security", props=props)
+        return render(
+            request,
+            component="Settings/Security",
+            props=props,
+            title="Security",
+            robots="noindex",
+        )

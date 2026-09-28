@@ -33,12 +33,22 @@ class ProjectsController(Controller):
     async def index(self, request: Request):
         projects = await self.service.list_projects()
         props = {"projects": [p.model_dump(mode="json") for p in projects]}
-        return render(request, component="Projects/Index", props=props)
+        return render(
+            request,
+            component="Projects/Index",
+            props=props,
+            title="Projects",
+            robots="noindex",
+        )
 
     async def show(self, request: Request):
         detail = await self.service.project_detail(_int_id(request))
         return render(
-            request, component="Projects/Show", props={"project": detail.model_dump(mode="json")}
+            request,
+            component="Projects/Show",
+            props={"project": detail.model_dump(mode="json")},
+            title=f"Projects — {detail.name}",
+            robots="noindex",
         )
 
     async def store(self, request: Request):
