@@ -107,15 +107,15 @@ Instead, diff against a throwaway reference:
 ```bash
 # Emit a pristine copy of the CURRENT starter kit next to your project
 cd "$(dirname "$PWD")"
-fastplace new __upgrade_reference --auth --no-install
+fastplace new upgrade_reference --auth --no-install
 
 # See exactly what the framework would emit today vs. what you carry
 diff -ru --exclude=node_modules --exclude=.venv \
-    __upgrade_reference/app your-project/app
-diff -ru __upgrade_reference/config your-project/config
+    upgrade_reference/app your-project/app
+diff -ru upgrade_reference/config your-project/config
 
 # Then delete the reference — it exists only for the diff
-rm -rf __upgrade_reference
+rm -rf upgrade_reference
 ```
 
 Port only the changes you actually want, one file at a time, keeping your
