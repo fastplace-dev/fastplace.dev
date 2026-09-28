@@ -131,3 +131,16 @@ def test_post_with_data_and_csrf(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.stdout
     assert "200" in _out(result)
+
+
+def test_user_flag_authenticates_through_the_cookie_driver(tmp_path, monkeypatch):
+    """Cookie driver: store.write RETURNS the encrypted blob as the cookie
+    value — forging the raw session id would hand the app an undecryptable
+    cookie and --user would silently authenticate nobody."""
+    _make_project(tmp_path, monkeypatch)
+    (tmp_path / ".env").write_text(
+        "APP_ENV=local\nAPP_KEY=" + "k" * 48 + "\nSESSION_DRIVER=cookie\n"
+    )
+    result = runner.invoke(cli_app, ["http:request", "GET", "/me", "--user", "42"])
+    assert result.exit_code == 0, result.stdout
+    assert "42" in _out(result)  # route saw the forged user_id
