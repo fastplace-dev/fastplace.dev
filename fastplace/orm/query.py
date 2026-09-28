@@ -362,7 +362,10 @@ class QueryBuilder:
         state = ambient()
         if state is not None:
             result = await state.session.stream(stmt)
-            async for row in result.scalars():
+            # Annotated for SQLAlchemy 2.1, whose scalars() typing leaves the
+            # loop variable uninferrable to mypy ([var-annotated] on CI).
+            scalars: AsyncIterator[Any] = result.scalars()
+            async for row in scalars:
                 yield row
             return
         from fastplace.orm.manager import get_manager
@@ -379,7 +382,8 @@ class QueryBuilder:
         # close() discards the (empty) transaction either way.
         try:
             result = await session.stream(stmt)
-            async for row in result.scalars():
+            rows: AsyncIterator[Any] = result.scalars()
+            async for row in rows:
                 yield row
         finally:
             await session.close()
