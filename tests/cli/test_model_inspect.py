@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from _isolation import ensure_modules
 from typer.testing import CliRunner
 
 # Imported at collection time, before any test can evict them: the module
@@ -20,6 +19,7 @@ from typer.testing import CliRunner
 import app.modules.accounts.models  # noqa: F401
 import app.modules.projects.models  # noqa: F401
 from fastplace.cli import app as cli_app
+from tests.cli._isolation import ensure_modules
 
 # Rich colorizes when the environment forces color; strip codes before matching.
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")

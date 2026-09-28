@@ -71,8 +71,10 @@ class TestThrottleMiddlewareUnit:
     def test_bad_args_raise_configuration_error(self):
         from fastplace.errors import ConfigurationError
 
+        # A single non-numeric arg is a named-limiter reference (resolved
+        # lazily) — only a non-numeric PAIR still fails at construction.
         with pytest.raises(ConfigurationError):
-            ThrottleMiddleware("five")
+            ThrottleMiddleware("5", "sixty")
 
 
 class TestThrottleEndpoint:

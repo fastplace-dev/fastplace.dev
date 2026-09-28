@@ -6,13 +6,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-# Autouse fixture: clean db/model/module state per test (see _isolation.py) —
-# the vector-store registration test imports the scaffolded project's app.*.
-from _isolation import isolate_project_state  # noqa: F401
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+
+# Autouse fixture: clean db/model/module state per test (see _isolation.py) —
+# the vector-store registration test imports the scaffolded project's app.*.
+from tests.cli._isolation import isolate_project_state  # noqa: F401
 
 runner = CliRunner()
 

@@ -7,15 +7,17 @@ sort, and aggregation is pushed down to the database as SQL (never in-memory).
 from __future__ import annotations
 
 import inspect
+from collections.abc import AsyncIterator
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import joinedload, selectinload, with_loader_criteria
 from sqlalchemy.sql import Select
 
 from fastplace.orm.pagination import Paginator
 from fastplace.orm.scopes import is_scope
-from fastplace.orm.session import run_read
+from fastplace.orm.session import ambient, run_read
 
 EXCLUDE_DELETED = "exclude"
 ONLY_DELETED = "only"
@@ -268,3 +270,116 @@ class QueryBuilder:
         total = await self.count()
         items = await self.limit(per_page).offset((page - 1) * per_page).get()
         return Paginator(items, total=total, per_page=per_page, current_page=page)
+
+    # -- iteration ---------------------------------------------------------------
+    def chunk(self, size: int) -> AsyncIterator[Any]:
+        """Page through the query ``size`` rows at a time (OFFSET paging).
+
+        ``async for row in Task.query().order_by(Task.id).chunk(500):`` — the
+        memory ceiling is one page, not the table. Ordering is the caller's
+        duty: without a stable ORDER BY, page boundaries are undefined, and
+        under concurrent writes rows shift across offsets — skipped or
+        delivered twice. :meth:`chunk_by_id` is the recommended default for
+        exactly that reason. Pre-set limit/offset are overridden; chunking
+        owns the paging window.
+        """
+        if size <= 0:
+            raise ValueError("chunk size must be a positive integer")
+        return self._chunk(size)
+
+    async def _chunk(self, size: int) -> AsyncIterator[Any]:
+        offset = 0
+        while True:
+            stmt = self._statement().limit(size).offset(offset)
+            rows = list((await run_read(stmt)).scalars().all())
+            if not rows:
+                return
+            for row in rows:
+                yield row
+            if len(rows) < size:
+                return
+            offset += size
+
+    def chunk_by_id(self, size: int) -> AsyncIterator[Any]:
+        """Keyset paging on the integer primary key — stable under writes.
+
+        Each page resumes after the last key seen (``WHERE pk > last``), so a
+        row inserted mid-iteration shows up in a later page instead of
+        shifting every offset — offset paging's skipped/duplicated failure
+        mode. The recommended iteration primitive whenever the model has a
+        single integer primary key; TypeError otherwise. Statement ordering
+        is always the primary key ascending — caller-set ORDER BY is not
+        carried over, because keyset paging is only sound when the sort key
+        IS the pagination key.
+        """
+        if size <= 0:
+            raise ValueError("chunk size must be a positive integer")
+        mapper = sa_inspect(self.model)
+        pk_columns = mapper.primary_key
+        if len(pk_columns) != 1:
+            raise TypeError(
+                f"{self.model.__name__} needs a single-column primary key for chunk_by_id()"
+            )
+        if pk_columns[0].type.python_type is not int:
+            raise TypeError(
+                f"{self.model.__name__}'s primary key is not an integer — keyset "
+                "paging compares keys, so it rides an integer column"
+            )
+        return self._chunk_by_id(size, getattr(self.model, pk_columns[0].name))
+
+    async def _chunk_by_id(self, size: int, pk_attr: Any) -> AsyncIterator[Any]:
+        last: Any = None
+        while True:
+            stmt = select(self.model).where(*self._global_scope_criteria(), *self._wheres)
+            if last is not None:
+                stmt = stmt.where(pk_attr > last)
+            stmt = stmt.order_by(pk_attr).limit(size)
+            if self._eager:
+                stmt = stmt.options(*self._loaders())
+            rows = list((await run_read(stmt)).scalars().all())
+            if not rows:
+                return
+            for row in rows:
+                yield row
+            last = getattr(rows[-1], pk_attr.key)
+            if len(rows) < size:
+                return
+
+    async def cursor(self) -> AsyncIterator[Any]:
+        """Stream rows one at a time (server-side cursor where the driver has one).
+
+        ``stream_results`` asks the driver for cursor streaming: PostgreSQL
+        (asyncpg) honors it and the process never materializes the whole
+        result; SQLite (aiosqlite) has no server-side cursor and buffers the
+        full result — the call still works, just without the memory win.
+        Joins the ambient transaction, so the current scope's uncommitted
+        writes stream back. Standalone (no open scope), the cursor opens its
+        own read session and owns it outright — breaking out early closes it
+        from wherever the generator is finalized. Keep the iteration short:
+        the connection is held until the generator finishes.
+        """
+        stmt = self._statement().execution_options(stream_results=True)
+        state = ambient()
+        if state is not None:
+            result = await state.session.stream(stmt)
+            async for row in result.scalars():
+                yield row
+            return
+        from fastplace.orm.manager import get_manager
+        from fastplace.orm.session import reads_pinned_to_primary
+
+        manager = get_manager()
+        session = manager.session() if reads_pinned_to_primary() else manager.read_session()
+        # Standalone: own the session outright — never bind_session(). A
+        # ContextVar token held across the yield is reset in whichever task
+        # runs aclose() (the GC may finalize the generator in any context),
+        # where the reset crashes — and the crash skips session.close(),
+        # leaking the connection. A plain close() in finally is
+        # context-free. This stream is read-only: nothing to commit, and
+        # close() discards the (empty) transaction either way.
+        try:
+            result = await session.stream(stmt)
+            async for row in result.scalars():
+                yield row
+        finally:
+            await session.close()

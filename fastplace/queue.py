@@ -73,6 +73,7 @@ from typing import Any, Protocol
 
 from fastplace.config import config
 from fastplace.errors import ConfigurationError
+from fastplace.logging import job_context
 from fastplace.queue_failures import format_error, record_failure, utcnow
 
 logger = logging.getLogger("fastplace.queue")
@@ -492,9 +493,12 @@ class MemoryQueue:
         while True:
             attempts += 1
             try:
-                await asyncio.wait_for(
-                    registry[item.name].fn(**item.kwargs), timeout=envelope["timeout"]
-                )
+                # plat-G9 correlation: log records from inside the handler
+                # carry the job name as job_id, same as a saq worker does.
+                with job_context(item.name):
+                    await asyncio.wait_for(
+                        registry[item.name].fn(**item.kwargs), timeout=envelope["timeout"]
+                    )
                 if handle is not None:
                     handle.status = "completed"
                 return
@@ -795,12 +799,15 @@ def _adapt_sa_handler(fn: JobFn) -> JobFn:
     multiple values for argument``, and a no-kwarg job silently receives
     the ctx dict as its first declared parameter. The shim absorbs the
     positional and forwards only the dispatched kwargs. ``functools.wraps``
-    keeps the handler's name/doc visible in saq's logs.
+    keeps the handler's name/doc visible in saq's logs. It is also the one
+    seam every production job passes, so it scopes the job's log correlation
+    (``job_context``) — records from inside the handler carry its name.
     """
 
     @functools.wraps(fn)
     async def _wrapped(_ctx: dict[str, Any], **kwargs: Any) -> Any:
-        return await fn(**kwargs)
+        with job_context(str(_ctx.get("name") or fn.__name__)):
+            return await fn(**kwargs)
 
     return _wrapped  # type: ignore[return-value]
 

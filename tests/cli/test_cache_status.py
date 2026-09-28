@@ -7,10 +7,10 @@ import re
 import sys
 
 import pytest
-from _isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+from tests.cli._isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 
 runner = CliRunner()
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")

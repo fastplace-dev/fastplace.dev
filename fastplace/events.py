@@ -15,10 +15,26 @@ Models usually wire this through ``__dispatches__`` (see
 ``fastplace.orm.events.fire``): the payload is ``{"model": <class name>,
 "id": <primary key>}`` — always serializable, never the ORM instance.
 
+Listeners answer exact event names or ``fnmatch`` wildcard patterns —
+``listen("order.*", handler)`` answers the whole ``order.`` family. A name
+without a wildcard metacharacter (``*``, ``?``, ``[``) registers exactly;
+anything else registers as a pattern. Dispatch order is a contract: exact
+listeners in registration order first, then wildcard listeners in
+registration order. For grouped wiring, a :class:`Subscriber` returns its
+whole family's mapping from ``listening()`` and one ``subscribe(...)``
+call registers it through the same registry::
+
+    class BillingSubscriber(Subscriber):
+        def listening(self):
+            return {"invoice_created": self.record, "order.*": self.audit}
+
+    subscribe(BillingSubscriber())
+
 Queue bridging: when a ``@Job`` is registered under the event's name,
 ``dispatch`` also enqueues the payload for a worker (``to_queue=None`` — the
 auto default). ``to_queue=True`` requires the job; ``to_queue=False`` keeps
-the dispatch in-process only.
+the dispatch in-process only. The queue leg always keys on the exact event
+name — wildcards only widen who listens in-process.
 
 Ordering contract: inside ``db.transaction()`` the queue leg is *buffered on
 the transaction scope* and flushed only after the commit — a worker cannot
@@ -35,21 +51,30 @@ stays strict.
 
 from __future__ import annotations
 
+import fnmatch
 import inspect
 import logging
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
     "DomainEvent",
+    "Subscriber",
     "listen",
+    "subscribe",
     "dispatch",
     "registered_listeners",
     "reset_listeners",
 ]
 
 logger = logging.getLogger("fastplace.events")
+
+
+# fnmatch's metacharacters — a name carrying any of these registers as a
+# pattern instead of an exact listener.
+_WILDCARD_CHARS = frozenset("*?[")
 
 
 @dataclass(frozen=True)
@@ -60,27 +85,83 @@ class DomainEvent:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
-_listeners: dict[str, list[Callable[[DomainEvent], Any]]] = {}
+Listener = Callable[[DomainEvent], Any]
 
 
-def listen(name: str, handler: Callable[[DomainEvent], Any]) -> None:
-    """Register an in-process listener for an event name."""
-    _listeners.setdefault(name, []).append(handler)
+_listeners: dict[str, list[Listener]] = {}
+# Patterns in registration order, translated up front so dispatch pays a
+# regex match, not fnmatch's cache lookup, per wildcard listener.
+_wildcards: list[tuple[str, re.Pattern[str], Listener]] = []
+
+
+def listen(name: str, handler: Listener) -> None:
+    """Register an in-process listener for an event name or wildcard pattern.
+
+    ``order.created`` registers exactly; ``order.*`` registers as an
+    ``fnmatch`` pattern (``*`` crosses dots, ``?`` is one character). Exact
+    listeners always run before wildcards; a listener is part of the
+    operation, so its exceptions propagate to the dispatcher. Registrations
+    compose per pattern, not per callable: a handler matching several
+    patterns runs once per match, and the same callable registered twice
+    runs twice.
+    """
+    if not isinstance(name, str):
+        raise TypeError(f"event name must be a str, got {type(name).__name__}")
+    if _WILDCARD_CHARS & set(name):
+        _wildcards.append((name, re.compile(fnmatch.translate(name)), handler))
+    else:
+        _listeners.setdefault(name, []).append(handler)
+
+
+class Subscriber:
+    """Base class for grouped event handlers.
+
+    A subclass returns its wiring from :meth:`listening` — event name or
+    wildcard pattern -> bound method — and one ``subscribe(instance)`` call
+    registers the whole group through the same registry exact listeners use.
+    Plain object wiring, no metaclass: the app constructs the instance, so
+    tests and DI can hand-substitute a fake.
+    """
+
+    def listening(self) -> dict[str, Listener]:
+        """Map event names (or ``fnmatch`` patterns) to bound methods."""
+        return {}
+
+
+def subscribe(subscriber: Subscriber) -> None:
+    """Register every entry of ``subscriber.listening()`` via :func:`listen`.
+
+    Composition follows :func:`listen`: a handler matching several patterns
+    runs once per match, and a subscriber subscribed twice runs its
+    handlers twice.
+    """
+    mapping = subscriber.listening()
+    if not isinstance(mapping, Mapping):
+        raise TypeError(
+            f"{type(subscriber).__name__}.listening() must return a mapping of "
+            f"event name -> handler, got {type(mapping).__name__}"
+        )
+    for name, handler in mapping.items():
+        listen(name, handler)
 
 
 async def dispatch(event: DomainEvent, *, to_queue: bool | None = None) -> None:
     """Deliver ``event`` to listeners and (optionally) the queue.
 
-    Listener exceptions propagate — a listener is part of the operation, the
-    same contract lifecycle handlers already follow.
+    Exact-name listeners run first in registration order, then wildcard
+    listeners in registration order. Listener exceptions propagate — a
+    listener is part of the operation, the same contract lifecycle handlers
+    already follow.
     """
     ran_listener = False
     for handler in _listeners.get(event.name, []):
         ran_listener = True
-        if inspect.iscoroutinefunction(handler):
-            await handler(event)
-        else:
-            handler(event)
+        await _invoke(handler, event)
+    for _pattern, matcher, handler in _wildcards:
+        if not matcher.match(event.name):
+            continue
+        ran_listener = True
+        await _invoke(handler, event)
 
     if to_queue is False:
         return
@@ -107,6 +188,19 @@ async def dispatch(event: DomainEvent, *, to_queue: bool | None = None) -> None:
         return
 
     await _enqueue(event.name, event.payload, to_queue)
+
+
+async def _invoke(handler: Listener, event: DomainEvent) -> None:
+    """Run one listener; sync handlers run inline, awaitable results awaited.
+
+    The awaitable check is on the *result*, not on the callable: a listener
+    whose call returns an awaitable without itself being a coroutine
+    function (a callable object with ``async def __call__``, a Mock) would
+    otherwise silently never run.
+    """
+    result = handler(event)
+    if inspect.isawaitable(result):
+        await result
 
 
 async def _enqueue(name: str, payload: dict[str, Any], to_queue: bool | None) -> None:
@@ -136,26 +230,37 @@ def discard_deferred_domain_events(state: Any) -> None:
 
 
 def reset_listeners() -> None:
-    """Clear all listeners — test isolation."""
+    """Clear all listeners — exact, wildcard, and subscriber-registered."""
     _listeners.clear()
+    _wildcards.clear()
 
 
 def registered_listeners() -> dict[str, list[str]]:
     """A copy of the listener registry: event name -> sorted handler names.
 
-    Handler names are ``module.qualname`` where Python knows them, so the
-    CLI (and tooling) can show which callable answers an event without
-    touching the private registry or holding live references.
+    Exact registrations key on the event name; wildcard registrations key on
+    their pattern — every pattern carries at least one wildcard
+    metacharacter, which is the marker (``"order.*"`` is a pattern,
+    ``"order_created"`` is a name). Handler names are ``module.qualname``
+    where Python knows them, so the CLI (and tooling) can show which
+    callable answers an event without touching the private registry or
+    holding live references.
     """
 
-    def _name(handler: Callable[[DomainEvent], Any]) -> str:
+    def _name(handler: Listener) -> str:
         qualname = getattr(handler, "__qualname__", None)
         if qualname is None:
             return repr(handler)
         module = getattr(handler, "__module__", "") or "?"
         return f"{module}.{qualname}"
 
-    return {
+    registry: dict[str, list[str]] = {
         name: sorted(_name(handler) for handler in handlers)
         for name, handlers in _listeners.items()
     }
+
+    patterns: dict[str, list[str]] = {}
+    for pattern, _matcher, handler in _wildcards:
+        patterns.setdefault(pattern, []).append(_name(handler))
+    registry.update({pattern: sorted(handlers) for pattern, handlers in sorted(patterns.items())})
+    return registry
