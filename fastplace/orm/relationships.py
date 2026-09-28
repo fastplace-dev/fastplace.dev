@@ -151,6 +151,109 @@ class MorphOne(MorphMany):
     _uselist = False
 
 
+class HasManyThrough(RelationshipMarker):
+    """``has_many_through`` — walk an intermediate table to its far side.
+
+    ``through=`` names the pivot/intermediate TABLE; its two foreign keys
+    (one back to this owner, one forward to the target) define the walk, so
+    the relationship is a read-only query (``viewonly=True``). Writes go to
+    the intermediate model directly.
+    """
+
+    _kind = "has_many_through"
+    _uselist = True
+
+    def __init__(
+        self,
+        target: str,
+        *,
+        through: str,
+        backref: str | None = None,
+        back_populates: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(target, backref=backref, back_populates=back_populates, extra=extra)
+        self.through = through
+
+    def build(self, **extra: Any) -> Any:
+        return super().build(uselist=self._uselist, viewonly=True, secondary=self.through, **extra)
+
+
+class HasOneThrough(HasManyThrough):
+    """``has_one_through`` — the single-row shape of :class:`HasManyThrough`.
+
+    The intermediate table is expected to hold exactly one row per owner.
+    """
+
+    _kind = "has_one_through"
+    _uselist = False
+
+
+class MorphToMany(RelationshipMarker):
+    """``morph_to_many`` — many-to-many across a polymorphic pivot.
+
+    The pivot carries the owner's id (``id_field``), the target's id
+    (``foreign_field``), and the owner's type string (``type_field``). The
+    primaryjoin pairs the owner's primary key with ``id_field`` *and* pins
+    ``type_field`` to the owner's morph type — its table name, or the
+    ``type_name=`` alias chosen at declaration (the same string the owner
+    side writes into the pivot; register it in ``morph_map`` so the reverse
+    lookup resolves).
+
+    READ-ONLY (``viewonly=True``): the type string is part of the join, so
+    an append cannot infer it — create pivot rows explicitly.
+    """
+
+    _kind = "morph_to_many"
+
+    def __init__(
+        self,
+        target: str,
+        *,
+        through: str,
+        type_field: str,
+        id_field: str,
+        foreign_field: str,
+        type_name: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(target, extra=extra)
+        self.through = through
+        self.type_field = type_field
+        self.id_field = id_field
+        self.foreign_field = foreign_field
+        self.type_name = type_name
+
+    def build(self, **extra: Any) -> Any:
+        # Same machinery-injected extras as the other morph shapes (see
+        # MorphMany.build) — popped unconditionally so nothing leaks through.
+        owner = extra.pop("_morph_owner", None)
+        resolved_type = extra.pop("_morph_type_name", None)
+        owner_pk = extra.pop("_morph_pk", "id")
+        type_name = self.type_name or resolved_type
+        if owner is None or type_name is None:
+            raise ValueError(
+                "morph_to_many is built by the model machinery — "
+                "declare it as a class attribute, not inline"
+            )
+        # The pivot is usually an unmapped Table: string expressions reach
+        # its columns through ``<table>.c.<col>`` (the eval namespace for
+        # relationship strings resolves Table names from the metadata).
+        join = (
+            f"and_({owner}.{owner_pk} == foreign({self.through}.c.{self.id_field}), "
+            f"{self.through}.c.{self.type_field} == {type_name!r})"
+        )
+        secondaryjoin = f"{self.through}.c.{self.foreign_field} == foreign({self.target}.id)"
+        return super().build(
+            primaryjoin=join,
+            secondaryjoin=secondaryjoin,
+            secondary=self.through,
+            uselist=True,
+            viewonly=True,
+            **extra,
+        )
+
+
 class MorphTo:
     """``morph_to`` — the child side of a polymorphic pair.
 
@@ -248,6 +351,53 @@ def morph_one(
 
 def morph_to(type_field: str, id_field: str) -> MorphTo:
     return MorphTo(type_field, id_field)
+
+
+def has_many_through(
+    target: str,
+    *,
+    through: str,
+    backref: str | None = None,
+    back_populates: str | None = None,
+    **kwargs: Any,
+) -> RelationshipMarker:
+    return HasManyThrough(
+        target, through=through, backref=backref, back_populates=back_populates, extra=kwargs
+    )
+
+
+def has_one_through(
+    target: str,
+    *,
+    through: str,
+    backref: str | None = None,
+    back_populates: str | None = None,
+    **kwargs: Any,
+) -> RelationshipMarker:
+    return HasOneThrough(
+        target, through=through, backref=backref, back_populates=back_populates, extra=kwargs
+    )
+
+
+def morph_to_many(
+    target: str,
+    *,
+    through: str,
+    type_field: str,
+    id_field: str,
+    foreign_field: str,
+    type_name: str | None = None,
+    **kwargs: Any,
+) -> RelationshipMarker:
+    return MorphToMany(
+        target,
+        through=through,
+        type_field=type_field,
+        id_field=id_field,
+        foreign_field=foreign_field,
+        type_name=type_name,
+        extra=kwargs,
+    )
 
 
 #: morph type string → model class. Keys must equal the values the owner

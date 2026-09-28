@@ -28,7 +28,13 @@ from fastplace.orm.fields import (
     resolve_annotation,
 )
 from fastplace.orm.query import QueryBuilder
-from fastplace.orm.relationships import MorphMany, MorphOne, MorphTo, RelationshipMarker
+from fastplace.orm.relationships import (
+    MorphMany,
+    MorphOne,
+    MorphTo,
+    MorphToMany,
+    RelationshipMarker,
+)
 from fastplace.orm.scopes import SoftDeleteScope, scope
 from fastplace.orm.types import PortableDateTime
 
@@ -911,7 +917,7 @@ def _transform_declarative_fields(cls: type) -> None:
             continue
 
         extras: dict[str, Any] = dict(marker.extra or {})
-        if isinstance(marker, (MorphMany, MorphOne)):
+        if isinstance(marker, (MorphMany, MorphOne, MorphToMany)):
             # The join needs to know its owner side; the default type string
             # is the owner's table name. The owner's pk column is passed too —
             # owners are not guaranteed an ``id`` primary key.
@@ -930,7 +936,13 @@ def _transform_declarative_fields(cls: type) -> None:
                     marker.backref, remote_side=f"{cls.__name__}.{pk_name}"
                 )
         setattr(cls, name, marker.build(**extras))
-        kind_many = marker.__class__.__name__ in ("HasMany", "ManyToMany", "MorphMany")
+        kind_many = marker.__class__.__name__ in (
+            "HasMany",
+            "HasManyThrough",
+            "ManyToMany",
+            "MorphMany",
+            "MorphToMany",
+        )
         _mapped_rel: Any = Mapped
         resolved_annotations[name] = _mapped_rel[list[Any]] if kind_many else _mapped_rel[Any]
 
