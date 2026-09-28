@@ -91,6 +91,21 @@ def test_dunder_version_matches_pyproject():
     assert __version__ == pyproject["project"]["version"]
 
 
+def test_tenancy_rides_the_framework_release_train():
+    """CI exercises fastplace-tenancy solely against the same commit's
+    fastplace, so the published combination doctrine ("tested combinations
+    only") means tenancy must release at the framework's version with its
+    dependency floor on that exact release. The package sat at 0.1.0 through
+    the 0.2.0 release; this contract keeps it on the train from here on."""
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    tenancy = tomllib.loads((ROOT / "packages" / "tenancy" / "pyproject.toml").read_text())
+    version = pyproject["project"]["version"]
+    assert tenancy["project"]["version"] == version
+    assert tenancy["project"]["dependencies"] == [f"fastplace>={version}"]
+
+
 def test_pyproject_license_uses_pep639_spdx_form():
     """The ``license = { text = ... }`` TOML table is deprecated (setuptools
     warns it stops being supported); PEP 639 wants the SPDX string plus an
