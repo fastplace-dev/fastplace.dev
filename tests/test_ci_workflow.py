@@ -95,6 +95,33 @@ def test_e2e_job_runs_playwright_after_tests(ci):
     assert "npx playwright test" in _run_steps(ci, "e2e")
 
 
+def test_release_smoke_job_boots_a_scaffold_from_the_built_wheel(ci):
+    """upg-G1: the release gate — build the wheel, install it into a clean
+    venv, then scaffold, boot, and test an app from THAT artifact. Catches a
+    wheel the starter kit cannot boot from before it reaches PyPI, not after
+    (the 0.1.0 gap: broken published kits discovered by users)."""
+    jobs = ci["jobs"]
+    assert "release-smoke" in jobs
+    assert jobs["release-smoke"]["needs"] == ["boundary", "backend"]
+    script = _run_steps(ci, "release-smoke")
+    for needle in (
+        "python -m build",
+        "twine check",
+        "python -m venv /tmp/smoke",
+        "dist/fastplace-*.whl",  # installs the BUILT wheel, never the checkout
+        "fastplace new demo --auth --no-install",
+        "from asgi import app",
+        'assert "/tmp/smoke" in str(p)',  # fastplace resolves from the venv
+        "pytest",
+    ):
+        assert needle in script, needle
+    # The app's own deps (email-validator for the auth scaffold's EmailStr,
+    # the queue/webauthn extras) must be installed BEFORE the boot assert —
+    # a boot ahead of the editable install crashes on the first EmailStr
+    # model import, a state no real user ever runs.
+    assert script.index("pip install -e") < script.index("from asgi import app")
+
+
 def test_no_untrusted_event_text_flows_into_run_scripts(ci):
     """Run steps must interpolate only our own env — never event fields
     (titles, bodies, branch names) that could inject shell text."""
