@@ -286,10 +286,27 @@ class QueryBuilder:
 
         per_page = max(1, per_page)
         columns = _cursor_columns(self.model, self._orders)
+        # The keyset is only deterministic if the SQL sort IS the keyset:
+        # with no explicit order the derived pk sort is applied; with an
+        # explicit order the pk joins as the tiebreaker whenever it is not
+        # already a sort criterion — otherwise equal-valued rows interleave
+        # across pages arbitrarily and cursors skip/duplicate them.
+        pk_attr = self.model._pk_attr()
+        pk_key = getattr(pk_attr, "key", None) or getattr(pk_attr, "name", None)
+        if pk_key and pk_key not in _order_keys(self._orders):
+            self.order_by(pk_attr)
         if after:
             values = decode_cursor(after)
             if len(values) != len(columns):
                 raise ConfigurationError("cursor does not match the sort order")
+            # Cursor JSON keeps non-native values as str (json default=str);
+            # coerce them back to the column's python_type before binding —
+            # asyncpg and typed sqlite rejects reject str-vs-datetime/UUID/
+            # Decimal comparisons outright, killing every page after the first.
+            values = [
+                _coerce_keyset_value(self.model.__table__.columns[key].type, value)
+                for (key, _), value in zip(columns, values, strict=True)
+            ]
         else:
             values = []
         # Lexicographic keyset: position i matches rows strictly after the
@@ -314,6 +331,70 @@ class QueryBuilder:
             else None
         )
         return CursorPaginator(items, next_cursor=next_cursor, has_more=has_more)
+
+
+def _order_keys(orders: list[Any]) -> list[str | None]:
+    """Attribute keys referenced by the current sort criteria."""
+    from sqlalchemy.sql.elements import UnaryExpression
+
+    keys: list[str | None] = []
+    for criterion in orders:
+        element: Any = criterion
+        if isinstance(criterion, UnaryExpression):
+            element = criterion.element
+        keys.append(getattr(element, "key", None) or getattr(element, "name", None))
+    return keys
+
+
+def _python_type_of(sa_type: Any) -> Any:
+    """The column's python type, unwrapping TypeDecorator impls — None when
+    the type chain offers no python type (values pass through untouched)."""
+    seen: set[int] = set()
+    current: Any = sa_type
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            return current.python_type
+        except (NotImplementedError, AttributeError):
+            pass
+        current = getattr(current, "impl_instance", None) or getattr(current, "impl", None)
+    return None
+
+
+def _coerce_keyset_value(sa_type: Any, value: Any) -> Any:
+    """Coerce a decoded cursor value back to the sort column's python type.
+
+    ``encode_cursor`` serializes with ``json(..., default=str)``, so
+    datetime/UUID/Decimal keyset values come back as str; binding that str
+    against the typed column breaks every page after the first. Malformed
+    cursor strings raise ConfigurationError — the documented contract keeps
+    a bad cursor loud instead of a silent first-page restart.
+    """
+    import datetime
+    import uuid
+    from decimal import Decimal
+
+    from fastplace.errors import ConfigurationError
+
+    if value is None:
+        return value
+    python_type = _python_type_of(sa_type)
+    if python_type is None:
+        return value
+    if isinstance(value, python_type):
+        return value
+    try:
+        if python_type is datetime.datetime:
+            return datetime.datetime.fromisoformat(value)
+        if python_type is datetime.date:
+            return datetime.date.fromisoformat(value)
+        if python_type is uuid.UUID:
+            return uuid.UUID(value)
+        if python_type is Decimal:
+            return Decimal(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("cursor_paginate received a malformed cursor") from exc
+    return value
 
 
 def _cursor_columns(model: Any, orders: list[Any]) -> list[tuple[str, bool]]:
