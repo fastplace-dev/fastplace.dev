@@ -288,7 +288,9 @@ class TestLifecycleMarks:
 
         await _confirmed_client(client)
         user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
-        user.two_factor_accepted_step = (int(datetime.datetime.now(datetime.UTC).timestamp()) // 30) + 50
+        user.two_factor_accepted_step = (
+            int(datetime.datetime.now(datetime.UTC).timestamp()) // 30
+        ) + 50
         await user.save()
 
         await client.post("/user/two-factor-authentication")

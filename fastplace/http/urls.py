@@ -80,8 +80,9 @@ def signed_url(
     value from the request). Routes accept these links by adding
     ``middleware=["signed"]`` — see :class:`SignedMiddleware`.
     """
-    from fastplace.auth.signing import DEFAULT_TTL, sign
     from urllib.parse import urlencode
+
+    from fastplace.auth.signing import DEFAULT_TTL, sign
 
     encoded = urlencode(list((params or {}).items()))
     canonical = _canonical(path, encoded)
@@ -110,8 +111,10 @@ class SignedMiddleware(Middleware):
         path, _, raw_query = request.full_path.partition("?")
         signature = request.query("signature")
         expires = request.query("expires")
-        if not signature or not expires or not verify(
-            _canonical(path, raw_query), signature, expires
+        if (
+            not signature
+            or not expires
+            or not verify(_canonical(path, raw_query), signature, expires)
         ):
             raise AuthorizationError()
         return await call_next(request)

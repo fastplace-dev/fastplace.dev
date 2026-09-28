@@ -141,7 +141,5 @@ async def test_non_ascii_signature_answers_403_not_500():
     app = get_app(routes=router)
     expires = int(time.time()) + 600
     async with _client(app) as client:
-        response = await client.get(
-            f"/download/report?signature=%C3%BC%C3%BC&expires={expires}"
-        )
+        response = await client.get(f"/download/report?signature=%C3%BC%C3%BC&expires={expires}")
     assert response.status_code == 403
