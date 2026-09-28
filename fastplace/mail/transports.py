@@ -1,7 +1,10 @@
 """Mail transports — built-ins (log, memory, smtp) plus the public registry.
 
 Third-party drivers plug in with ``register_transport(name, async sender)``
-and run via ``MAIL_DRIVER=<name>``.
+and run via ``MAIL_DRIVER=<name>``. Richness is a transport concern: the
+smtp driver builds the MIME tree (text/html alternative pair, attachment
+parts), while the log driver records attachment names and sizes only — the
+log is a debugging surface, never a delivery channel.
 """
 
 from __future__ import annotations
@@ -9,12 +12,13 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
 from fastplace.config import config
 from fastplace.errors import ConfigurationError
-from fastplace.mail.message import MailMessage
+from fastplace.mail.message import Attachment, MailMessage
 
 #: Log-driver destination (cwd-relative — `fastplace run dev` writes repo-root).
 MAIL_LOG_PATH = Path("storage/logs/mail.log")
@@ -33,8 +37,26 @@ def clear_mail_outbox() -> None:
     _outbox.clear()
 
 
+def _attachment_log_entry(attachment: Attachment) -> dict[str, str | int | None]:
+    """Names + sizes only — file bytes never land in the log (log hygiene)."""
+    if attachment.content is not None:
+        size: int | None = len(attachment.content)
+    elif attachment.path is not None:
+        try:
+            size = Path(attachment.path).stat().st_size
+        except OSError:
+            size = None  # a missing file must not break local dev logging
+    else:
+        size = None
+    return {"filename": attachment.filename, "size": size}
+
+
 async def send_via_log(message: MailMessage) -> None:
-    """Append one JSON line per message to storage/logs/mail.log."""
+    """Append one JSON line per message to storage/logs/mail.log.
+
+    Attachments log as names + sizes only; cc/bcc/reply_to ride along for
+    local visibility of the full envelope.
+    """
     MAIL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(
         {
@@ -44,6 +66,10 @@ async def send_via_log(message: MailMessage) -> None:
             "html": message.html,
             "from_address": message.from_address,
             "from_name": message.from_name,
+            "cc": message.cc,
+            "bcc": message.bcc,
+            "reply_to": message.reply_to,
+            "attachments": [_attachment_log_entry(a) for a in message.attachments],
         },
         ensure_ascii=False,
     )
@@ -56,8 +82,33 @@ async def send_via_memory(message: MailMessage) -> None:
     _outbox.append(message)
 
 
+def _add_attachment(letter: EmailMessage, attachment: Attachment) -> None:
+    """Append one MIME part — text/* needs str data (the email API requires it).
+
+    A hand-set mime without a subtype falls back to application/octet-stream
+    rather than tripping the content manager on an empty subtype.
+    """
+    maintype, _, subtype = attachment.resolved_mime().partition("/")
+    if not subtype:
+        maintype, subtype = "application", "octet-stream"
+    data = attachment.load_content()
+    if maintype == "text":
+        letter.add_attachment(
+            data.decode("utf-8", "replace"), subtype=subtype, filename=attachment.filename
+        )
+    else:
+        letter.add_attachment(
+            data, maintype=maintype, subtype=subtype, filename=attachment.filename
+        )
+
+
 async def send_via_smtp(message: MailMessage) -> None:
-    """Deliver through aiosmtplib (`pip install 'fastplace[mail]'`)."""
+    """Deliver through aiosmtplib (`pip install 'fastplace[mail]'`).
+
+    Rich messages build the standard MIME tree: text + html as the
+    alternative pair, attachments as sibling parts under a mixed root.
+    Plain messages keep the simple single-part form.
+    """
     try:
         import aiosmtplib
     except ImportError as exc:  # pragma: no cover - environment-dependent
@@ -65,7 +116,6 @@ async def send_via_smtp(message: MailMessage) -> None:
             "MAIL_DRIVER=smtp requires aiosmtplib — pip install 'fastplace[mail]'"
         ) from exc
 
-    from email.message import EmailMessage
     from email.utils import formataddr
 
     letter = EmailMessage()
@@ -75,9 +125,19 @@ async def send_via_smtp(message: MailMessage) -> None:
     letter["From"] = formataddr((message.from_name or "", address))
     letter["To"] = message.to
     letter["Subject"] = message.subject
+    if message.cc:
+        letter["Cc"] = ", ".join(message.cc)
+    if message.bcc:
+        # aiosmtplib reads the Bcc header for envelope recipients and strips
+        # it before sending — set it, never pre-strip it.
+        letter["Bcc"] = ", ".join(message.bcc)
+    if message.reply_to:
+        letter["Reply-To"] = message.reply_to
     letter.set_content(message.text)
     if message.html:
         letter.add_alternative(message.html, subtype="html")
+    for attachment in message.attachments:
+        _add_attachment(letter, attachment)
 
     encryption = str(config("MAIL_ENCRYPTION", default="none") or "none")
     await aiosmtplib.send(

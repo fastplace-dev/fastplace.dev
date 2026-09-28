@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 
 from fastplace.config import config
-from fastplace.mail.message import MailMessage, message_as_dict, message_from_dict
+from fastplace.mail.message import Attachment, MailMessage, message_as_dict, message_from_dict
 from fastplace.mail.transports import (
     clear_mail_outbox,
     mail_outbox,
@@ -25,6 +25,7 @@ from fastplace.mail.transports import (
 )
 
 __all__ = [
+    "Attachment",
     "Mail",
     "MailMessage",
     "clear_mail_outbox",
