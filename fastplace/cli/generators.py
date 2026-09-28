@@ -897,13 +897,29 @@ def make_policy(
     )
 
 
-_TEST_TEMPLATE = '''"""{name} test."""
+_UNIT_TEST_TEMPLATE = '''"""{name} test — pure unit, no app boot needed."""
 
 from __future__ import annotations
 
 
-async def test_{snake}() -> None:
+def test_{snake}() -> None:
     assert True
+'''
+
+
+_FEATURE_TEST_TEMPLATE = '''"""{name} feature test — drives the real app through the test client.
+
+The ``client`` fixture lives in tests/conftest.py (created by this command
+if the project lacks one) and boots the actual routers over a throwaway
+database.
+"""
+
+from __future__ import annotations
+
+
+async def test_{snake}(client) -> None:
+    response = await client.get("/")
+    response.assert_ok()
 '''
 
 
@@ -911,20 +927,81 @@ async def test_{snake}() -> None:
 def make_test(
     name: str = typer.Argument(..., help="Test subject name in PascalCase"),
     feature: bool = typer.Option(
-        False, "--feature", help="Scaffold under tests/http/ instead of tests/unit/."
+        False, "--feature", help="Scaffold under tests/feature/ with the app client."
     ),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
-    """Create a test stub under tests/unit/ (or tests/http/ with --feature)."""
+    """Create a test stub under tests/unit/ (or tests/feature/ with --feature).
+
+    A plain project gets the test bootstrap too: pyproject.toml gains the
+    pytest tooling block, and a scaffold-shaped project (routes/web.py plus
+    the accounts model) also gets tests/conftest.py — written once, never
+    overwriting an existing one. On other shapes the plugin's own fixtures
+    keep working instead of being shadowed by imports that cannot resolve.
+    """
     root = _project_root()
     clean = _clean_name(name, "test")
-    folder = "http" if feature else "unit"
+    # `InvoiceTest` names the test, not the subject — the file is
+    # test_invoice.py either way, so the Test suffix never doubles up.
+    subject = clean
+    for suffix in ("_tests", "_test"):
+        if subject.endswith(suffix) and len(subject) > len(suffix):
+            subject = subject[: -len(suffix)]
+            break
+    folder = "feature" if feature else "unit"
+    template = _FEATURE_TEST_TEMPLATE if feature else _UNIT_TEST_TEMPLATE
+    _ensure_test_conftest(root)
     _write(
-        root / "tests" / folder / f"test_{clean}.py",
-        _TEST_TEMPLATE.format(name=name.strip(), snake=clean),
+        root / "tests" / folder / f"test_{subject}.py",
+        template.format(name=name.strip(), snake=subject),
         root,
         force=force,
     )
+
+
+def _ensure_test_conftest(root: Path) -> None:
+    """Write tests/conftest.py once and pytest tooling into pyproject.toml.
+
+    The conftest template imports routes.web and the accounts model, so it
+    only fits a scaffold-shaped project — dropped anywhere else it would
+    shadow the fastplace plugin's working fixtures with import errors.
+    Non-scaffold projects keep the plugin defaults; the pytest tooling still
+    lands either way, and a hand-written bootstrap is never touched.
+    """
+    from fastplace.cli.auth_scaffold import _TESTS_CONFTEST_TEMPLATE, _augment_pyproject
+
+    if not (root / "pyproject.toml").is_file():
+        # Minimal project table only — _augment_pyproject appends the full
+        # pytest tooling tail right after, so one code path owns that block.
+        # The directory name goes through the same slugifier `fastplace new`
+        # uses: "My App" must not become an invalid PEP 621 project name.
+        (root / "pyproject.toml").write_text(
+            _PYPROJECT_BOOTSTRAP_TEMPLATE.format(slug=_slugify_project(root.name) or "app")
+        )
+    _augment_pyproject(root)
+    if not _has_scaffold_shape(root):
+        return
+    conftest = root / "tests" / "conftest.py"
+    if conftest.is_file():
+        return
+    conftest.parent.mkdir(parents=True, exist_ok=True)
+    conftest.write_text(_TESTS_CONFTEST_TEMPLATE)
+
+
+def _has_scaffold_shape(root: Path) -> bool:
+    """Every module the emitted conftest imports must actually exist."""
+    needed = (
+        root / "routes" / "web.py",
+        root / "app" / "modules" / "accounts" / "models" / "user.py",
+    )
+    return all(path.is_file() for path in needed)
+
+
+_PYPROJECT_BOOTSTRAP_TEMPLATE = """[project]
+name = "{slug}"
+version = "0.1.0"
+description = "A Fastplace application."
+"""
 
 
 _SCOPE_TEMPLATE = '''"""{name} scope — composable query filters ({module} module)."""

@@ -1419,7 +1419,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import httpx
 import pytest
 
 # The project root (this file lives in tests/) — app.* and routes.* import
@@ -1458,15 +1457,30 @@ def _fresh_app_modules():
 
 
 @pytest.fixture(autouse=True)
-def _fresh_singletons(monkeypatch):
+def _fresh_singletons(monkeypatch, tmp_path):
     """Fresh auth/mail/cache state + a fixed signing key for every test."""
+    import os
+
     from fastplace.auth.passwords import reset_token_store
     from fastplace.auth.remember import reset_remember_store
     from fastplace.cache import reset_cache
     from fastplace.events import reset_listeners
     from fastplace.http.render import reset_shared_props
     from fastplace.mail import clear_mail_outbox
+    from fastplace.orm.capabilities import driver_from_url
     from fastplace.queue import reset_registry
+
+    # Defensive session pin (paired with the fastplace pytest plugin): with
+    # the plugin active the session already runs on a throwaway database;
+    # this re-asserts the pin around every test, so a mutated environment —
+    # or an older fastplace without the plugin — still cannot reach the
+    # developer's real database. Only an explicit FASTPLACE_TEST_DATABASE_URL
+    # (e.g. a disposable postgres in CI) redirects the pin.
+    test_url = os.environ.get("FASTPLACE_TEST_DATABASE_URL") or (
+        f"sqlite+aiosqlite:///{tmp_path}/test.db"
+    )
+    monkeypatch.setenv("DATABASE_URL", test_url)
+    monkeypatch.setenv("DATABASE_DRIVER", driver_from_url(test_url))
 
     monkeypatch.setenv("APP_KEY", "test-app-key-not-for-production-use")
     monkeypatch.setenv("MAIL_DRIVER", "memory")
@@ -1488,10 +1502,18 @@ def _fresh_singletons(monkeypatch):
 
 
 @pytest.fixture()
-async def app(monkeypatch, tmp_path):
+async def app(monkeypatch):
     """The full application over a fresh database — real routers, real middleware."""
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/test.db")
-    monkeypatch.setenv("DATABASE_DRIVER", "sqlite")
+    import os
+
+    from fastplace.orm.capabilities import driver_from_url
+
+    # _fresh_singletons already pinned the environment (an explicit
+    # FASTPLACE_TEST_DATABASE_URL or the throwaway sqlite). HTTP tests must
+    # land on that same database — re-pinning a hard-coded sqlite here would
+    # silently override the env redirect and break the CI postgres story.
+    url = os.environ["DATABASE_URL"]
+    monkeypatch.setenv("DATABASE_DRIVER", driver_from_url(url))
 
     from app.modules.accounts.models.user import User  # noqa: F401 — registers the table
     from fastplace.db import db
@@ -1521,8 +1543,16 @@ async def app(monkeypatch, tmp_path):
 @pytest.fixture()
 async def client(app):
     """Browser-playing HTTP client: session + CSRF token rotation included."""
+    # httpx is a dev-extra dependency — imported here, not at module level,
+    # so the conftest still loads on projects that have not installed it.
+    import httpx
+
+    from fastplace.testing.client import TestClient
+
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    # TestClient is a drop-in httpx.AsyncClient whose responses carry the
+    # fluent assertions (assert_ok, assert_see, ...) the docs document.
+    async with TestClient(transport=transport, base_url="http://test") as client:
         token: list[str | None] = [None]
 
         async def attach_csrf(request: httpx.Request) -> None:
@@ -1789,9 +1819,11 @@ AUTH_PACKAGE_MARKERS: tuple[str, ...] = (
 def _augment_pyproject(root: Path) -> None:
     """Add test tooling, the dev extra, and lint config to pyproject.toml.
 
-    Idempotent and guarded: a pyproject without a dependencies array gains
-    only the email-validator line; one without the pytest block gains the
-    whole tooling tail; anything already present is left untouched.
+    Idempotent and guarded: a pyproject WITH a dependencies array gains the
+    email-validator line when it lacks one; each tooling table is appended
+    only when the project does not already declare it; an unparseable
+    pyproject is left untouched — a duplicated TOML table makes pip, uv,
+    and mypy all refuse the whole project.
     """
     path = root / "pyproject.toml"
     if not path.is_file():
@@ -1803,13 +1835,45 @@ def _augment_pyproject(root: Path) -> None:
             'dependencies = [\n    "email-validator>=2.0",',
             1,
         )
-    if "[tool.pytest.ini_options]" not in content:
-        content = content.rstrip("\n") + "\n" + _PYPROJECT_TOOLING_TEMPLATE
+    content = _append_missing_tooling_tables(content)
     path.write_text(content)
 
 
-_PYPROJECT_TOOLING_TEMPLATE = """
-[project.optional-dependencies]
+def _append_missing_tooling_tables(content: str) -> str:
+    """Append only the tooling tables the pyproject does not already declare.
+
+    tomllib decides what exists — string matching alone can't tell a real
+    table from a mention inside a comment, and appending a table that is
+    already declared corrupts the file for every TOML consumer.
+    """
+    import tomllib
+
+    try:
+        existing = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return content
+    blocks = [block for keys, block in _PYPROJECT_TOOLING_BLOCKS if _table_missing(existing, keys)]
+    if not blocks:
+        return content
+    return content.rstrip("\n") + "\n" + "\n".join(blocks)
+
+
+def _table_missing(existing: dict, keys: tuple[str, ...]) -> bool:
+    node: object = existing
+    for key in keys:
+        if not isinstance(node, dict) or key not in node:
+            return True
+        node = node[key]
+    return False
+
+
+# One block per TOML table the tooling tail contributes — appended
+# individually so a project that already has, say, [tool.ruff] never ends
+# up with the same table declared twice.
+_PYPROJECT_TOOLING_BLOCKS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("project", "optional-dependencies"),
+        """[project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -1820,23 +1884,32 @@ dev = [
 mysql = [
     "asyncmy>=0.2.9",
     "cryptography>=42",
-]
-
-[tool.pytest.ini_options]
+]""",
+    ),
+    (
+        ("tool", "pytest", "ini_options"),
+        """[tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
-
-[tool.ruff]
+testpaths = ["tests"]""",
+    ),
+    (
+        ("tool", "ruff"),
+        """[tool.ruff]
 line-length = 100
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
-
-[tool.mypy]
+target-version = "py312\"""",
+    ),
+    (
+        ("tool", "ruff", "lint"),
+        """[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]""",
+    ),
+    (
+        ("tool", "mypy"),
+        """[tool.mypy]
 python_version = "3.12"
-check_untyped_defs = true
-"""
+check_untyped_defs = true""",
+    ),
+)
 
 
 def _augment_env_files(root: Path) -> None:
