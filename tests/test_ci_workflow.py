@@ -62,6 +62,24 @@ def test_backend_job_enables_pgvector_and_runs_pytest(ci):
     assert "pytest" in script
 
 
+def test_backend_job_builds_the_react_package_before_pytest(ci):
+    """test_new_build scaffolds a real app and runs npm install. From the
+    checkout, the scaffold pins @fastplace/react as file: only when
+    packages/react/dist exists (it is gitignored build output); without a
+    build the pin falls back to a registry range that lags the bump in
+    flight — the ETARGET publish race. Building the package first keeps the
+    job hermetic: it always exercises the code under test, never the
+    registry's newest tag."""
+    steps = ci["jobs"]["backend"]["steps"]
+    uses = [str(step.get("uses", "")) for step in steps]
+    assert any(u.startswith("actions/setup-node@") for u in uses)
+    script = _run_steps(ci, "backend")
+    assert "npm install -g npm@11.19.1" in script  # lockfile is npm-11-generated
+    assert "npm ci" in script
+    assert "npm run build -w packages/react" in script
+    assert script.index("npm run build -w packages/react") < script.index("python -m pytest")
+
+
 def test_quality_job_runs_ruff_and_mypy(ci):
     script = _run_steps(ci, "quality")
     assert "ruff check ." in script
