@@ -8,6 +8,9 @@ into the cookie value itself (stateless — nothing lives server-side).
 from __future__ import annotations
 
 import json
+import os
+import time
+from pathlib import Path
 
 import pytest
 
@@ -87,6 +90,81 @@ async def test_file_store_gc_sweeps_only_stale_rows(file_store, clock):
     assert removed == 1
     assert await file_store.read("e" * 64) is None
     assert await file_store.read("f" * 64) is not None
+
+
+def _spy_loads(store, parsed: list[str]):
+    real = store._safe_load
+
+    def spy(path):
+        parsed.append(Path(path).name)
+        return real(path)
+
+    return spy
+
+
+async def test_gc_prefilter_never_parses_in_window_files(tmp_path, monkeypatch):
+    # The sweep's stat prefilter is armed on the real wall clock (an
+    # injected fake clock outruns mtimes, so there the full scan runs) —
+    # in-window files must be skipped by stat alone, never read+parsed.
+    from fastplace.http.session.file_store import FileSessionStore
+
+    store = FileSessionStore(root=tmp_path / "sessions")
+    await store.write("a" * 64, {"user_id": 1})
+    await store.write("b" * 64, {"user_id": 1})
+    back = time.time() - 99_999  # far past the default window
+    path_b = tmp_path / "sessions" / f"{'b' * 64}.json"
+    record = json.loads(path_b.read_text())
+    record["last_activity"] = int(back)  # genuinely stale, not just an old mtime
+    path_b.write_text(json.dumps(record))
+    os.utime(path_b, (back, back))
+
+    parsed: list[str] = []
+    monkeypatch.setattr(store, "_safe_load", _spy_loads(store, parsed))
+
+    removed = await store.gc(lifetime=7200)
+
+    assert removed == 1
+    assert await store.read("a" * 64) is not None
+    assert parsed == [f"{'b' * 64}.json"]  # the fresh file was never read
+
+
+async def test_gc_sweeps_corrupt_files_that_can_never_expire(tmp_path):
+    # A torn/unparseable file carries no expirable last_activity — gc must
+    # collect it instead of hoarding it forever.
+    from fastplace.http.session.file_store import FileSessionStore
+
+    root = tmp_path / "sessions"
+    store = FileSessionStore(root=root)
+    torn = root / f"{'c' * 64}.json"
+    torn.write_text("{torn")  # invalid JSON under a valid session-id name
+    back = time.time() - 99_999
+    os.utime(torn, (back, back))
+
+    removed = await store.gc(lifetime=7200)
+
+    assert removed == 0  # not a stale SESSION — but the fossil is gone
+    assert not torn.exists()
+
+
+async def test_gc_sweeps_stale_tmp_orphans_but_leaves_fresh_ones(tmp_path):
+    # A worker killed between the tmp write and the replace leaves a
+    # plaintext payload dot-file no *.json sweep would ever see. gc must
+    # unlink them past a grace window — never a live writer's fresh tmp.
+    from fastplace.http.session.file_store import FileSessionStore
+
+    root = tmp_path / "sessions"
+    store = FileSessionStore(root=root)
+    orphan = root / f".{'a' * 64}.{os.getpid()}.deadbeefcafe.tmp"
+    orphan.write_text('{"payload": {"user_id": 1}}')
+    fresh = root / f".{'b' * 64}.{os.getpid()}.feedfacebeef.tmp"
+    fresh.write_text("{}")
+    back = time.time() - 3600
+    os.utime(orphan, (back, back))
+
+    await store.gc(lifetime=7200)
+
+    assert not orphan.exists()
+    assert fresh.exists()
 
 
 async def test_file_store_rejects_unsafe_session_ids(file_store, tmp_path):

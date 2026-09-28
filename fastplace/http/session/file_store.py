@@ -15,6 +15,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -24,6 +25,9 @@ from fastplace.http.session.base import StoredSession, session_lifetime
 #: A cookie value is attacker-controlled; anything outside this shape must
 #: never reach the filesystem (path traversal, odd encodings).
 _SAFE_ID = re.compile(r"^[a-f0-9]{32,128}$")
+
+#: A tmp file younger than this belongs to a live writer — gc never touches it.
+_TMP_GRACE = 600
 
 DEFAULT_ROOT = Path("storage") / "framework" / "sessions"
 
@@ -170,14 +174,53 @@ class FileSessionStore:
         return await asyncio.to_thread(self._gc_sync, self._clock() - window)
 
     def _gc_sync(self, threshold: float) -> int:
-        stale = [
-            path
-            for path in self._root.glob("*.json")
-            if (record := self._safe_load(path)) is not None
-            and int(record.get("last_activity", 0)) < threshold
-        ]
-        for path in stale:
-            path.unlink(missing_ok=True)
+        # Stat prefilter: a file's mtime and its record's last_activity are
+        # written in the same operation, so files inside the window cannot
+        # be stale — the sweep pays a directory-cached stat for them instead
+        # of a full read+parse (the read+parse holds the GIL, so at tens of
+        # thousands of files a full scan stalls the worker). The prefilter
+        # is only sound when the store's clock IS the wall clock; an
+        # injected offset makes mtime meaningless and disarms it.
+        skew = self._clock() - time.time()
+        trust_mtime = abs(skew) <= 1.0
+        stale: list[Path] = []
+        fossil: list[Path] = []  # unparseable — payload expiry can never free it
+        with os.scandir(self._root) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                path = Path(entry.path)
+                try:
+                    if trust_mtime and entry.stat().st_mtime >= threshold - 1:
+                        continue  # written inside the window — provably fresh
+                except OSError:
+                    continue
+                if _SAFE_ID.match(entry.name[: -len(".json")]) is None:
+                    fossil.append(path)
+                    continue
+                record = self._safe_load(path)
+                if record is None:
+                    fossil.append(path)
+                elif int(record.get("last_activity", 0)) < threshold:
+                    stale.append(path)
+        for path in (*stale, *fossil):
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+        # Crash orphans: a worker killed between the tmp write and the
+        # replace leaves a plaintext payload dot-file no *.json sweep would
+        # ever see. Mtime grace — not pid matching — because a shared
+        # directory makes the pid unreliable; os.replace removes the tmp on
+        # success, so anything older than the grace is dead weight. Tmp
+        # mtimes are real-epoch by nature, so age them against the wall
+        # clock regardless of the store's injected clock.
+        for tmp in self._root.glob(".*.tmp"):
+            try:
+                if time.time() - tmp.stat().st_mtime <= _TMP_GRACE:
+                    continue
+            except OSError:
+                continue
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
         return len(stale)
 
     def _safe_load(self, path: Path) -> dict[str, Any] | None:
