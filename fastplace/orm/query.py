@@ -286,6 +286,19 @@ class QueryBuilder:
 
         per_page = max(1, per_page)
         columns = _cursor_columns(self.model, self._orders)
+        # A NULL keyset anchor bricks the walk: the keyset would build a
+        # `column < None` predicate (SQLAlchemy rejects it outright) and
+        # every page after the boundary 500s. NULL placement also differs
+        # per backend, so a portable keyset over NULL rows cannot be
+        # promised — refuse nullable sort columns loudly instead.
+        for key, _ in columns:
+            if self.model.__table__.columns[key].nullable:
+                raise ConfigurationError(
+                    f"cursor_paginate cannot keyset-sort the nullable column {key!r} — "
+                    "a NULL row would brick every later page; filter NULLs out or "
+                    "declare the column NOT NULL"
+                )
+        fingerprint = _sort_fingerprint(columns)
         # The keyset is only deterministic if the SQL sort IS the keyset:
         # with no explicit order the derived pk sort is applied; with an
         # explicit order the pk joins as the tiebreaker whenever it is not
@@ -296,7 +309,7 @@ class QueryBuilder:
         if pk_key and pk_key not in _order_keys(self._orders):
             self.order_by(pk_attr)
         if after:
-            values = decode_cursor(after)
+            values = decode_cursor(after, fingerprint)
             if len(values) != len(columns):
                 raise ConfigurationError("cursor does not match the sort order")
             # Cursor JSON keeps non-native values as str (json default=str);
@@ -326,7 +339,7 @@ class QueryBuilder:
         has_more = len(rows) > per_page
         items = rows[:per_page]
         next_cursor = (
-            encode_cursor([getattr(items[-1], key) for key, _ in columns])
+            encode_cursor([getattr(items[-1], key) for key, _ in columns], fingerprint)
             if has_more and items
             else None
         )
@@ -397,6 +410,16 @@ def _coerce_keyset_value(sa_type: Any, value: Any) -> Any:
     return value
 
 
+def _sort_fingerprint(columns: list[tuple[str, bool]]) -> str:
+    """A short digest of the keyset sort — binds cursors to the order_by
+    that minted them, so a replay under a changed sort is a loud rejection
+    instead of silently duplicated or truncated pages."""
+    import hashlib
+
+    shape = "|".join(f"{key}:{'desc' if is_desc else 'asc'}" for key, is_desc in columns)
+    return hashlib.sha256(shape.encode("utf-8")).hexdigest()[:12]
+
+
 def _cursor_columns(model: Any, orders: list[Any]) -> list[tuple[str, bool]]:
     """``(attribute key, is_desc)`` pairs describing the keyset sort.
 
@@ -418,7 +441,10 @@ def _cursor_columns(model: Any, orders: list[Any]) -> list[tuple[str, bool]]:
             element = criterion.element
             is_desc = criterion.modifier is desc_op
         key = getattr(element, "key", None) or getattr(element, "name", None)
-        if key is None:
+        # A Function like func.length(col) carries the SQL function name as
+        # .name, so a truthy key alone does not prove a column — requiring a
+        # real column keeps the guard from misfiring as an AttributeError.
+        if key is None or key not in model.__table__.columns:
             raise ConfigurationError(
                 "cursor_paginate needs plain column order_by (col, col.desc())"
             )

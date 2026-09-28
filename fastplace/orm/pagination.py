@@ -90,20 +90,31 @@ class CursorPaginator:
         return {"items": items, "next_cursor": self.next_cursor, "has_more": self.has_more}
 
 
-def encode_cursor(values: list[Any]) -> str:
-    """Pack keyset values into an opaque, URL-safe token."""
-    raw = json.dumps(values, separators=(",", ":"), default=str).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii")
+def encode_cursor(values: list[Any], fingerprint: str | None = None) -> str:
+    """Pack keyset values into an opaque, URL-safe token.
+
+    ``fingerprint`` (when given) binds the token to the sort that minted it
+    — a cursor replayed under a changed ``order_by`` is rejected on decode
+    instead of silently duplicating or truncating the walk.
+    """
+    raw = json.dumps({"f": fingerprint, "v": values}, separators=(",", ":"), default=str)
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-def decode_cursor(cursor: str) -> list[Any]:
+def decode_cursor(cursor: str, fingerprint: str | None = None) -> list[Any]:
     """Unpack an opaque token; anything unreadable is a configuration error,
-    never a silent first-page restart (that would loop clients forever)."""
+    never a silent first-page restart (that would loop clients forever).
+
+    A ``fingerprint`` mismatch (cursor minted under a different sort) is the
+    same loud error, not a best-effort page.
+    """
     try:
         raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
-        values = json.loads(raw)
+        payload = json.loads(raw)
     except (binascii.Error, UnicodeEncodeError, ValueError, json.JSONDecodeError):
         raise ConfigurationError("cursor_paginate received a malformed cursor") from None
-    if not isinstance(values, list):
+    if not isinstance(payload, dict) or not isinstance(payload.get("v"), list):
         raise ConfigurationError("cursor_paginate received a malformed cursor")
-    return values
+    if fingerprint is not None and payload.get("f") != fingerprint:
+        raise ConfigurationError("cursor does not match the sort order")
+    return list(payload["v"])

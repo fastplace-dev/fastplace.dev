@@ -24,6 +24,7 @@ def Task():  # noqa: N802
         id: int = Field(primary_key=True)
         title: str
         priority: int = 0
+        note: str | None = None
 
     return Task
 
@@ -220,3 +221,62 @@ async def test_datetime_sorted_walk_pages_through_every_row(Task, db_url):
     assert len(seen) == 7
     assert len({row.id for row in seen}) == 7
     assert [row.title for row in seen] == [f"t-{i}" for i in range(6, -1, -1)]
+
+
+async def test_nullable_sort_column_is_rejected_loudly(Task, db_url):
+    """A NULL keyset anchor bricks the walk — every later page dies on the
+    un-handleable ``column < None`` predicate. cursor_paginate refuses
+    nullable sort columns up front instead, with the column named."""
+    await db.create_all()
+    row = Task(title="no-note", priority=1)
+    await row.save()
+
+    with pytest.raises(ConfigurationError, match="note"):
+        await Task.query().order_by(Task.note, Task.id).cursor_paginate(per_page=2)
+
+
+async def test_expression_order_by_is_a_configuration_error(seeded):
+    """``func.length(col)`` carries the SQL function name as ``.name``; the
+    documented contract is a loud ConfigurationError at the guard, not an
+    AttributeError at cursor encoding time."""
+    from sqlalchemy import func
+
+    with pytest.raises(ConfigurationError, match="plain column"):
+        await (
+            seeded.query()
+            .order_by(func.length(seeded.title), seeded.id)
+            .cursor_paginate(per_page=3)
+        )
+
+
+async def test_cursor_minted_under_a_different_sort_is_rejected(seeded):
+    """A cursor is bound to the sort that minted it — replaying it under a
+    changed order_by (client toggles the direction, stale cache) errors
+    loudly instead of silently duplicating or truncating the walk."""
+    first = await seeded.query().order_by(seeded.priority, seeded.id).cursor_paginate(per_page=4)
+    assert first.next_cursor
+    with pytest.raises(ConfigurationError, match="sort order"):
+        await (
+            seeded.query()
+            .order_by(seeded.priority.desc(), seeded.id)
+            .cursor_paginate(per_page=4, after=first.next_cursor)
+        )
+
+
+async def test_cursor_from_the_same_sort_still_validates(seeded):
+    """The fingerprint must not break the normal walk: same sort, full
+    pagination, every row exactly once."""
+    seen = []
+    cursor = None
+    while True:
+        page = await (
+            seeded.query()
+            .order_by(seeded.priority, seeded.id)
+            .cursor_paginate(per_page=3, after=cursor)
+        )
+        seen.extend(page.items)
+        if not page.has_more:
+            break
+        cursor = page.next_cursor
+    assert len(seen) == 10
+    assert len({row.id for row in seen}) == 10
