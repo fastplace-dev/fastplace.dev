@@ -337,6 +337,11 @@ def _route_middleware_registry(
             module = importlib.import_module(module_path)
             entry = getattr(module, class_name)
         registry[name] = entry
+    # Built-in opt-in alias (app overrides always win): signed download /
+    # unsubscribe-style links validate themselves via middleware=["signed"].
+    from fastplace.http.urls import SignedMiddleware
+
+    registry.setdefault("signed", SignedMiddleware)
     return registry
 
 
