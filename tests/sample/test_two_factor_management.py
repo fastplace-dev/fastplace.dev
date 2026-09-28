@@ -272,6 +272,54 @@ class TestFeatureFlag:
             reset_config()
 
 
+class TestLifecycleMarks:
+    """The accepted-step high-water mark must track the secret's lifecycle.
+
+    A stale mark can only ever block (TOTP steps are epoch-ordered), but a
+    mark carried ACROSS a secret rotation lets a future-window acceptance
+    from the old setup reject the new secret's first real codes for up to
+    one window — enable() must reset it, disable() must wipe it.
+    """
+
+    async def test_enable_resets_a_stale_accepted_step(self, client):
+        import datetime
+
+        from app.modules.accounts.repositories.user_repository import UserRepository
+
+        await _confirmed_client(client)
+        user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        user.two_factor_accepted_step = (int(datetime.datetime.now(datetime.UTC).timestamp()) // 30) + 50
+        await user.save()
+
+        await client.post("/user/two-factor-authentication")
+        refreshed = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        assert refreshed.two_factor_secret is not None  # pending setup live
+        assert refreshed.two_factor_accepted_step is None
+
+    async def test_disable_wipes_the_accepted_step(self, client):
+        import pyotp
+
+        from app.modules.accounts.repositories.user_repository import UserRepository
+
+        await _confirmed_client(client)
+        await client.post("/user/two-factor-authentication")
+        user = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        code = pyotp.TOTP(decrypt(user.two_factor_secret)).now()
+        confirmed = await client.post(
+            "/user/confirmed-two-factor-authentication", json={"code": code}
+        )
+        assert confirmed.status_code == 200
+        marked = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        assert marked.two_factor_accepted_step is not None
+
+        response = await client.delete(
+            "/user/two-factor-authentication", headers={"X-Fastplace-Request": "true"}
+        )
+        assert response.status_code == 200
+        wiped = await UserRepository().find_by_email(REGISTER_PAYLOAD["email"])
+        assert wiped.two_factor_accepted_step is None
+
+
 class TestEnableRevokesRememberCookies:
     async def test_enabling_two_factor_revokes_existing_remember_cookies(self, client):
         # A cookie issued before 2FA existed must not outlive enablement —

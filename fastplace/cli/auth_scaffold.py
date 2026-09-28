@@ -33,7 +33,12 @@ class User(Model):
     # Never serialized into page props or JSON responses — to_dict() honors
     # __hidden__, so credential material cannot leak through render(). The
     # two-factor columns are encrypted at rest AND hidden from serialization.
-    __hidden__ = {"password_hash", "two_factor_secret", "two_factor_recovery_codes"}
+    __hidden__ = {
+        "password_hash",
+        "two_factor_secret",
+        "two_factor_recovery_codes",
+        "two_factor_accepted_step",
+    }
     __fillable__ = {"name", "email", "password_hash", "email_verified_at"}
 
     id: int = Field(primary_key=True)
@@ -47,6 +52,11 @@ class User(Model):
     two_factor_secret: str | None = Field(text=True, default=None)
     two_factor_recovery_codes: str | None = Field(text=True, default=None)
     two_factor_confirmed_at: datetime.datetime | None = None
+    # Last TOTP timestep accepted for this user — the single-use high-water
+    # mark. A plain counter, not credential material: it never needs the
+    # encryption the secret/codes columns carry, but it stays out of
+    # serialized payloads alongside them.
+    two_factor_accepted_step: int | None = None
 
     # Admin grant — set only by explicit service/CLI code, never fillable:
     # mass assignment must never escalate privileges (OWASP).
@@ -204,10 +214,11 @@ from urllib.parse import quote
 from app.modules.accounts.repositories.user_repository import UserRepository
 from app.modules.accounts.services.mail_views import reset_password_email_html
 from app.modules.accounts.services.password_policy import min_password_length
-from fastplace.auth.guards import SESSION_STORE_SCOPE
+from fastplace.auth.guards import SESSION_STORE_SCOPE, _queue_remember_cookie
 from fastplace.auth.hashing import Hash
 from fastplace.auth.passwords import _dummy_digest, throttle_seconds, token_store
 from fastplace.auth.remember import remember_store
+from fastplace.auth.tokens import pat_store
 from fastplace.errors import ValidationError
 from fastplace.events import DomainEvent, dispatch
 from fastplace.http import build_absolute_url
@@ -282,9 +293,29 @@ class PasswordResetService:
 
         await user.update(password_hash=Hash.make(password))
         await remember_store().revoke_all_for_user(user.id)
+        await pat_store().revoke_all_for_user(user.id)  # spec §6: reset kills tokens too
         store = request.scope.get(SESSION_STORE_SCOPE)
         if store is not None:
             await store.destroy_for_user(user.id)  # every session — no except_session_id
+        # The performing browser must not stay logged in either: its live
+        # session would be rewritten by the response-time persist (the flash
+        # marks it dirty) and resurrect the auth state destroy_for_user just
+        # killed. Drop the payload and mint a fresh id — logout semantics
+        # that still let the one-shot flash ride the new anonymous row. The
+        # CSRF token rotates with the boundary (the _authenticate_session
+        # precedent) so the next unsafe request validates against what the
+        # response advertises, not against a token the clear just erased.
+        import secrets as _secrets
+
+        from fastplace.auth.middleware import CSRF_SESSION_KEY
+
+        session = request.session
+        session.clear()
+        session[CSRF_SESSION_KEY] = _secrets.token_urlsafe(32)
+        regenerate = getattr(session, "regenerate", None)
+        if callable(regenerate):
+            regenerate()
+        _queue_remember_cookie(request, None)  # revoked server-side; clear it client-side
         await dispatch(DomainEvent("PasswordReset", {"user_id": user.id, "email": user.email}))
 '''
 _REGISTRATION_SERVICE_TEMPLATE = '''"""Account registration — validation, creation, the Registered event."""
@@ -363,7 +394,11 @@ from typing import Any
 from app.modules.accounts.repositories.user_repository import UserRepository
 from fastplace.auth.encryption import decrypt, encrypt
 from fastplace.auth.guards import TWO_FACTOR_CHALLENGE_KEY, TWO_FACTOR_REMEMBER_KEY, guard
-from fastplace.auth.two_factor import generate_recovery_codes, generate_secret, verify_code
+from fastplace.auth.two_factor import (
+    generate_recovery_codes,
+    generate_secret,
+    verify_code_step,
+)
 from fastplace.errors import ValidationError
 
 
@@ -388,7 +423,13 @@ class TwoFactorService:
 
         ok = False
         if code:
-            ok = verify_code(decrypt(user.two_factor_secret), code)
+            step = verify_code_step(decrypt(user.two_factor_secret), code)
+            # Single-use: a TOTP code is refused once its step has been
+            # accepted — the same code cannot complete two challenges.
+            ok = step is not None and step > (user.two_factor_accepted_step or -1)
+            if ok:
+                user.two_factor_accepted_step = step
+                await user.save()
         elif recovery_code and user.two_factor_recovery_codes:
             stored = json.loads(decrypt(user.two_factor_recovery_codes))
             match = next((c for c in stored if hmac.compare_digest(c, recovery_code)), None)
@@ -425,30 +466,49 @@ class TwoFactorService:
         user.two_factor_secret = encrypt(generate_secret())
         user.two_factor_recovery_codes = encrypt(json.dumps(generate_recovery_codes()))
         user.two_factor_confirmed_at = None
+        # The mark belongs to the OLD secret; carrying it across a rotation
+        # could reject the new secret's first real codes (a future-window
+        # acceptance from the previous setup outlives it otherwise).
+        user.two_factor_accepted_step = None
         await user.save()
+        # Cookies issued before 2FA existed must not outlive the setup —
+        # they would ride straight past the challenge being added (the
+        # logout_other_devices precedent).
+        from fastplace.auth.remember import remember_store
+
+        await remember_store().revoke_all_for_user(user.id)
 
     async def confirm(self, request: Any, code: str) -> None:
         """Complete the setup: a valid TOTP code stamps confirmed_at.
 
         The flag check runs before any code verdict, and an absent/invalid
-        code shares the one frozen 422 (verify_code rejects an empty string).
+        code shares the one frozen 422 (verify_code_step rejects an empty string).
         """
         self._require_enabled()
         import datetime
 
         user = request.user
-        if not user.two_factor_secret or not verify_code(decrypt(user.two_factor_secret), code):
+        step = (
+            verify_code_step(decrypt(user.two_factor_secret), code)
+            if user.two_factor_secret
+            else None
+        )
+        if step is None or step <= (user.two_factor_accepted_step or -1):
             raise self._invalid()
+        # Confirming consumes the code too: the setup code must not go on to
+        # complete the next login's challenge.
+        user.two_factor_accepted_step = step
         user.two_factor_confirmed_at = datetime.datetime.now(datetime.UTC)
         await user.save()
 
     async def disable(self, request: Any) -> None:
-        """Wipe all three columns."""
+        """Wipe every two-factor column."""
         self._require_enabled()
         user = request.user
         user.two_factor_secret = None
         user.two_factor_recovery_codes = None
         user.two_factor_confirmed_at = None
+        user.two_factor_accepted_step = None
         await user.save()
 
     async def is_enabled(self, request: Any) -> bool:
