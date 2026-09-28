@@ -8,6 +8,7 @@ Application code imports ``fastplace.http`` and never ``fastapi`` directly.
 from __future__ import annotations
 
 import importlib
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -19,9 +20,10 @@ from starlette.staticfiles import StaticFiles
 
 from fastplace.errors import ConfigurationError, FastplaceError
 from fastplace.http import lifecycle
+from fastplace.http.compression import CompressionMiddleware
 from fastplace.http.maintenance import MaintenanceMiddleware
 from fastplace.http.middleware import Middleware, wrap_middleware
-from fastplace.http.response import Json, Response
+from fastplace.http.response import Html, Json, Response
 from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware
 from fastplace.http.websocket import websocket_adapter
 
@@ -131,6 +133,7 @@ def get_app(
         redoc_url=None,
     )
     app.state.fastplace_root = str(project_root or cfg.root)
+    root = Path(project_root or cfg.root or Path.cwd())
     _mount_routes(
         app,
         routes=routes,
@@ -141,6 +144,9 @@ def get_app(
     )
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
+    # Compression sits outside the security headers so it sees the final
+    # header set; pure ASGI, streaming-safe (see fastplace/http/compression.py).
+    app.add_middleware(CompressionMiddleware)
     app.add_middleware(_QueryTrackerMiddleware)
     _install_session_middleware(app, cfg, app_env=app_env)
     # Added last -> outermost (add_middleware inserts at index 0). A down
@@ -148,9 +154,9 @@ def get_app(
     # bridge/React surface is reached.
     app.add_middleware(
         MaintenanceMiddleware,
-        root=str(project_root or cfg.root or Path.cwd()),
+        root=str(root),
     )
-    _install_error_handlers(app, debug=debug)
+    _install_error_handlers(app, debug=debug, root=root)
     return app
 
 
@@ -419,7 +425,26 @@ def _wants_redirect_back(request: Any) -> bool:
     return wants_redirect_back(request)
 
 
-def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
+def _error_page_override(
+    root: Path, status_code: int, headers: dict[str, str] | None
+) -> Html | None:
+    """The app's own branded page for this status, if one ships.
+
+    ``public/errors/404.html`` (any status) replaces the framework page
+    verbatim — the plain-file contract mirrors static hosting conventions.
+    """
+    page = root / "public" / "errors" / f"{status_code}.html"
+    try:
+        if page.is_file():
+            return Html(page.read_text(encoding="utf-8"), status_code=status_code, headers=headers)
+    except (OSError, ValueError):
+        # Unreadable file or bad encoding (UnicodeDecodeError is a
+        # ValueError) — fall back to the framework page.
+        return None
+    return None
+
+
+def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
     from fastapi.exceptions import RequestValidationError
 
     @app.exception_handler(FastplaceError)
@@ -440,6 +465,19 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
         retry_after = getattr(exc, "retry_after", None)
         if retry_after is not None:
             headers["Retry-After"] = str(retry_after)
+        from fastplace.http.error_pages import http_error_page, wants_html
+
+        # Validation keeps the 422 JSON envelope on every path — it is
+        # form data for the bridge/API and the no-JS redirect-back flow,
+        # not an error page. Other domain errors (403, 429, …) share the
+        # browser contract: app override first, framework page after.
+        if wants_html(request) and not isinstance(exc, ValidationError):
+            override = _error_page_override(root, exc.status_code, headers)
+            if override is not None:
+                return override
+            return http_error_page(
+                request, exc.status_code, exc.message, debug=debug, headers=headers
+            )
         return Json(payload, status_code=exc.status_code, headers=headers)
 
     @app.exception_handler(RequestValidationError)
@@ -455,7 +493,19 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Any, exc: HTTPException) -> Response:
-        return Json({"message": str(exc.detail)}, status_code=exc.status_code)
+        from fastplace.http.error_pages import http_error_page, wants_html
+
+        # Headers carried by the exception (Retry-After on 429, the CSRF
+        # retry hint on 419, WWW-Authenticate on 401) survive both paths.
+        headers = dict(exc.headers) if exc.headers else None
+        if wants_html(request):
+            override = _error_page_override(root, exc.status_code, headers)
+            if override is not None:
+                return override
+            return http_error_page(
+                request, exc.status_code, str(exc.detail), debug=debug, headers=headers
+            )
+        return Json({"message": str(exc.detail)}, status_code=exc.status_code, headers=headers)
 
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Any, exc: Exception) -> Response:
@@ -467,7 +517,12 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
 
         # Browser navigations get a styled page (rich in debug, generic in
         # production); API clients and the SPA bridge keep the JSON contract.
+        # The app's own 500.html override wins in both modes — a branded
+        # error page is not debug output.
         if wants_html(request):
+            override = _error_page_override(root, 500, None)
+            if override is not None:
+                return override
             if debug:
                 return debug_error_page(request, exc)
             return production_error_page(request)
@@ -485,6 +540,45 @@ def _install_error_handlers(app: FastAPI, *, debug: bool) -> None:
         return Json(payload, status_code=500)
 
 
+class CachedStaticFiles(StaticFiles):
+    """Static files with the serve cache policy (serve-G5).
+
+    Vite emits content-hashed filenames under ``assets/`` — those are
+    immutable, so browsers may cache them for a year. Everything else
+    (manifest.json, robots.txt, un-hashed files) can change between
+    deploys and gets a short revalidation window. Only successful file
+    responses pass through here; 404s raise before a header is set.
+
+    ``immutable_prefix`` scopes the year-long policy: the build mount
+    hashes its ``assets/`` output, but the public-root mount serves Vite's
+    ``publicDir`` files un-hashed, so it passes ``None`` and everything
+    there revalidates after 5 minutes.
+    """
+
+    IMMUTABLE = "public, max-age=31536000, immutable"
+    SHORT = "public, max-age=300"
+
+    def __init__(self, *args: Any, immutable_prefix: str | None = "assets", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # StaticFiles realpaths the directory when serving; without the
+        # matching resolve here, a symlinked project root makes every
+        # relative path fail the prefix check (all SHORT, no IMMUTABLE).
+        if self.directory is not None:
+            self.directory = Path(self.directory).resolve()
+        self.immutable_prefix = immutable_prefix
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        response = super().file_response(*args, **kwargs)
+        full_path = args[0] if args else kwargs.get("full_path", "")
+        relative = str(full_path).removeprefix(str(self.directory) + os.sep)
+        prefix = self.immutable_prefix
+        immutable = prefix is not None and (
+            relative.startswith(f"{prefix}{os.sep}") or relative == prefix
+        )
+        response.headers["Cache-Control"] = self.IMMUTABLE if immutable else self.SHORT
+        return response
+
+
 def _install_static_mounts(app: FastAPI, root: Path) -> None:
     # A fresh clone ships no public/ at all (nothing under it is tracked),
     # and the first `vite build` can land after the server has already
@@ -500,9 +594,15 @@ def _install_static_mounts(app: FastAPI, root: Path) -> None:
         # only what already exists and let absent paths 404 cleanly.
         pass
     if build_dir.is_dir():
-        app.mount("/build", StaticFiles(directory=str(build_dir)), name="build")
+        app.mount("/build", CachedStaticFiles(directory=str(build_dir)), name="build")
     if public_dir.is_dir():
-        app.mount("/", StaticFiles(directory=str(public_dir), check_dir=False), name="public")
+        app.mount(
+            "/",
+            # Public-root files (favicon, robots.txt, Vite publicDir copies)
+            # are un-hashed: never immutable, always revalidate quickly.
+            CachedStaticFiles(directory=str(public_dir), check_dir=False, immutable_prefix=None),
+            name="public",
+        )
 
 
 def _register_db_lifecycle(root: Path) -> None:
@@ -520,7 +620,11 @@ def _register_db_lifecycle(root: Path) -> None:
         await _drain_memory_queue_on_shutdown()
         from fastplace.db import db
 
-        await db.dispose()
+        # Dispose without resetting the registry: db.dispose() follows the
+        # clean await with reset_manager(), which — running inside the live
+        # shutdown loop — logged a misleading "dropped without disposal"
+        # warning on every graceful stop.
+        await db.manager.dispose()
 
 
 async def _drain_memory_queue_on_shutdown() -> None:
