@@ -4,6 +4,43 @@ All notable changes to the Fastplace framework are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-28
+
+The post-audit hardening release: every fix wave from the full-framework
+parity audit is merged, and the release pipeline now gates publishes on a
+boot-smoke of the built artifact. Python and npm packages move in lockstep —
+`fastplace`, `@fastplace/react`, and `@fastplace/ai-react` all ship `0.2.0`
+and are only supported as a matched set.
+
+### Upgrade notes
+
+Apps coming from 0.1.x have a verified three-step path (add
+`email-validator`, `fastplace make:auth`, paste the `ROUTE_MIDDLEWARE`
+registry into `config/app.py`) — see the Upgrading guide on the docs site.
+
+### Added
+
+- `fastplace new <name> --auth` starter kit with registration, email
+  verification, login, password reset, two-factor TOTP with recovery codes,
+  and a settings surface — the first registered account becomes the admin.
+- Release-smoke CI job: builds the wheel, installs it into a clean venv, and
+  scaffolds, boots, and tests an app from the built artifact before it can
+  reach PyPI.
+- Scaffolded apps derive their `@fastplace/react` / `@fastplace/ai-react`
+  pins from the installed `fastplace` version, keeping the bridge matched
+  without manual bookkeeping; a lockstep test pins all three manifests to
+  one version.
+- Upgrading guide (docs site) with the scaffold-ownership statement, the
+  user-code drift procedure, and the python/npm compatibility matrix.
+
+### Fixed
+
+- Public scaffold APIs replace framework internals previously copied into
+  generated projects; scaffold output runs against the public surface only.
+- `npm publish` of the frontend packages rebuilds from source
+  (`prepublishOnly`), so a stale `dist/` can no longer ship the previous
+  release's bundle under a new version number.
+
 ## [0.1.0] - 2026-09-26
 
 Initial public release of Fastplace — an opinionated, full-stack, AI-native web framework built on Python and React, shipped as a single-deployable modular monolith with strictly bounded internal modules. This release comprises the complete HTTP runtime, the Fastplace ORM with four database backends, the server-driven SPA bridge and Unified API, six phases of authentication and authorization, the SAQ + Redis task queue with scheduling, the native AI engine, the full `fastplace` CLI, and the first-party frontend and tenancy packages. The suite stands at 2141 tests, and the ORM compatibility matrix is verified live on SQLite, PostgreSQL + pgvector, MySQL/MariaDB, and MongoDB.

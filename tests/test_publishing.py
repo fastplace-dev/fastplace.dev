@@ -38,6 +38,7 @@ SITE_PAGES = {
     "guides/app-testing.md",
     "guides/testing.md",
     "guides/deployment.md",
+    "guides/upgrading.md",
     "guides/versioning.md",
     "api/overview.md",
 }

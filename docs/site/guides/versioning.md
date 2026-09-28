@@ -19,3 +19,6 @@ changelog before bumping.
 - The migration layout — `database/migrations/` as Alembic-managed state.
 
 Anything not listed above is internal and may change in any release.
+
+For the step-by-step procedure of moving an app between releases — including
+the python/npm lockstep matrix — see [Upgrading](./upgrading.md).
