@@ -243,7 +243,7 @@ class MorphToMany(RelationshipMarker):
             f"and_({owner}.{owner_pk} == foreign({self.through}.c.{self.id_field}), "
             f"{self.through}.c.{self.type_field} == {type_name!r})"
         )
-        secondaryjoin = f"{self.through}.c.{self.foreign_field} == foreign({self.target}.id)"
+        secondaryjoin = f"{self.through}.c.{self.foreign_field} == foreign({self.target}.{_target_pk(self.target)})"
         return super().build(
             primaryjoin=join,
             secondaryjoin=secondaryjoin,
@@ -252,6 +252,25 @@ class MorphToMany(RelationshipMarker):
             viewonly=True,
             **extra,
         )
+
+
+def _target_pk(target: str) -> str:
+    """The target model's primary-key column name, resolved through the
+    mapper registry — natural-key targets may not use ``id``. Falls back to
+    ``id`` when the target is not (yet) registered, preserving lazy/forward
+    references that SQLAlchemy resolves at configure time."""
+    from sqlalchemy import exc as sa_exc
+    from sqlalchemy import inspect as sa_inspect
+
+    from fastplace.orm.model import Model
+
+    target_cls = Model.registry._class_registry.get(target)
+    if isinstance(target_cls, type):
+        try:
+            return sa_inspect(target_cls).primary_key[0].name
+        except sa_exc.ArgumentError:  # NoInspectionAvailable — not yet mapped
+            pass
+    return "id"
 
 
 class MorphTo:

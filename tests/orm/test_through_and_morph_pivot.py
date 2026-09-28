@@ -199,3 +199,64 @@ async def test_morph_to_many_relation_loads_lazily(seeded_through):
     project = await Project.query().where(Project.name == "apollo").first()
     members = await project.relation("members")
     assert sorted(u.name for u in members) == ["kim", "lin"]
+
+
+async def test_morph_to_many_resolves_a_non_id_target_pk(db_url):
+    """The owner side joins on its machinery-resolved pk; the target side
+    must too. A target declaring a non-id primary key used to hardcode
+    ``.id`` into the secondaryjoin and break mapper configuration with an
+    opaque SQLAlchemy AttributeError."""
+    from sqlalchemy import Column, ForeignKey, Integer, String, Table
+
+    from fastplace.orm.model import Model as _Model
+
+    Table(
+        "natural_taggables",
+        _Model.metadata,
+        Column("id", Integer, primary_key=True),
+        Column("post_id", Integer, ForeignKey("natural_posts.id", ondelete="CASCADE")),
+        Column("tag_type", String, nullable=False),
+        Column("tag_code", String, ForeignKey("natural_tags.code", ondelete="CASCADE")),
+    )
+
+    class NaturalTag(Model):
+        __tablename__ = "natural_tags"
+
+        code: str = Field(primary_key=True)
+        label: str
+
+    class NaturalPost(Model):
+        __tablename__ = "natural_posts"
+
+        id: int = Field(primary_key=True)
+        title: str
+
+        tags: list[NaturalTag] = morph_to_many(
+            "NaturalTag",
+            through="natural_taggables",
+            type_field="tag_type",
+            id_field="post_id",
+            foreign_field="tag_code",
+            type_name="natural_posts",
+        )
+
+    await db.create_all()
+    # natural-key pks are guarded from mass assignment — set them directly
+    hot = NaturalTag(label="hot take")
+    hot.code = "hot"
+    await hot.save()
+    cold = NaturalTag(label="cold take")
+    cold.code = "cold"
+    await cold.save()
+    post = await NaturalPost.create(title="p1")
+    pivot = Model.metadata.tables["natural_taggables"]
+    async with db.manager.engine("default").begin() as conn:
+        await conn.execute(
+            pivot.insert(),
+            [
+                {"post_id": post.id, "tag_type": "natural_posts", "tag_code": "hot"},
+                {"post_id": post.id, "tag_type": "natural_posts", "tag_code": "cold"},
+            ],
+        )
+    loaded = await NaturalPost.query().with_("tags").first()
+    assert sorted(t.code for t in loaded.tags) == ["cold", "hot"]
