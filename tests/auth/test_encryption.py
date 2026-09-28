@@ -24,6 +24,17 @@ class TestEncryptDecrypt:
         # Fresh nonce per encryption — equal plaintexts must not collide.
         assert encrypt("same") != encrypt("same")
 
+    def test_hkdf_info_domains_do_not_interchange(self):
+        """Session cookies and 2FA material share APP_KEY but never the derived
+        key — a token minted under one domain must fail the other's decrypt."""
+        session_token = encrypt('{"payload":{}}', info="session")
+        two_fa_token = encrypt("JBSWY3DPEHPK3PXP")
+        with pytest.raises(ValueError):
+            decrypt(session_token, info="two_factor")
+        with pytest.raises(ValueError):
+            decrypt(two_fa_token, info="session")
+        assert decrypt(session_token, info="session") == '{"payload":{}}'
+
     def test_round_trips_a_recovery_code_json_array(self):
         payload = '["ABCDE-FGHJK", "JKLMN-PQRST"]'
         assert decrypt(encrypt(payload)) == payload

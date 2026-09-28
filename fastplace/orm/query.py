@@ -15,7 +15,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import joinedload, selectinload, with_loader_criteria
 from sqlalchemy.sql import Select
 
-from fastplace.orm.pagination import Paginator
+from fastplace.orm.pagination import CursorPaginator, Paginator
 from fastplace.orm.scopes import is_scope
 from fastplace.orm.session import ambient, run_read
 
@@ -383,3 +383,193 @@ class QueryBuilder:
                 yield row
         finally:
             await session.close()
+
+    async def cursor_paginate(
+        self, per_page: int = 20, after: str | None = None
+    ) -> CursorPaginator:
+        """Keyset pagination — stable under concurrent writes, no COUNT query.
+
+        The current sort criteria become a lexicographic keyset against the
+        cursor values (the primary key joins as the deterministic tiebreaker);
+        ``after`` is the previous page's opaque ``next_cursor``. Relational
+        models only — Mongo document queries paginate by page number.
+        """
+        from sqlalchemy import and_, or_
+
+        from fastplace.errors import ConfigurationError
+        from fastplace.orm.pagination import decode_cursor, encode_cursor
+
+        per_page = max(1, per_page)
+        columns = _cursor_columns(self.model, self._orders)
+        # A NULL keyset anchor bricks the walk: the keyset would build a
+        # `column < None` predicate (SQLAlchemy rejects it outright) and
+        # every page after the boundary 500s. NULL placement also differs
+        # per backend, so a portable keyset over NULL rows cannot be
+        # promised — refuse nullable sort columns loudly instead.
+        for key, _ in columns:
+            if self.model.__table__.columns[key].nullable:
+                raise ConfigurationError(
+                    f"cursor_paginate cannot keyset-sort the nullable column {key!r} — "
+                    "a NULL row would brick every later page; filter NULLs out or "
+                    "declare the column NOT NULL"
+                )
+        fingerprint = _sort_fingerprint(columns)
+        # The keyset is only deterministic if the SQL sort IS the keyset:
+        # with no explicit order the derived pk sort is applied; with an
+        # explicit order the pk joins as the tiebreaker whenever it is not
+        # already a sort criterion — otherwise equal-valued rows interleave
+        # across pages arbitrarily and cursors skip/duplicate them.
+        pk_attr = self.model._pk_attr()
+        pk_key = getattr(pk_attr, "key", None) or getattr(pk_attr, "name", None)
+        if pk_key and pk_key not in _order_keys(self._orders):
+            self.order_by(pk_attr)
+        if after:
+            values = decode_cursor(after, fingerprint)
+            if len(values) != len(columns):
+                raise ConfigurationError("cursor does not match the sort order")
+            # Cursor JSON keeps non-native values as str (json default=str);
+            # coerce them back to the column's python_type before binding —
+            # asyncpg and typed sqlite rejects reject str-vs-datetime/UUID/
+            # Decimal comparisons outright, killing every page after the first.
+            values = [
+                _coerce_keyset_value(self.model.__table__.columns[key].type, value)
+                for (key, _), value in zip(columns, values, strict=True)
+            ]
+        else:
+            values = []
+        # Lexicographic keyset: position i matches rows strictly after the
+        # cursor where every earlier sort column is equal. Row-value tuple
+        # comparison is avoided deliberately — MySQL support is uneven. The
+        # OR chain goes in as ONE criterion (where() ANDs its arguments).
+        keyset: Any = None
+        if values:
+            for index, ((key, is_desc), value) in enumerate(zip(columns, values, strict=True)):
+                column = getattr(self.model, key)
+                clause = column < value if is_desc else column > value
+                for (prev_key, _), prev_value in zip(columns[:index], values[:index], strict=True):
+                    clause = and_(clause, getattr(self.model, prev_key) == prev_value)
+                keyset = or_(keyset, clause) if keyset is not None else clause
+        query = self.where(keyset) if keyset is not None else self
+        rows = await query.limit(per_page + 1).get()
+        has_more = len(rows) > per_page
+        items = rows[:per_page]
+        next_cursor = (
+            encode_cursor([getattr(items[-1], key) for key, _ in columns], fingerprint)
+            if has_more and items
+            else None
+        )
+        return CursorPaginator(items, next_cursor=next_cursor, has_more=has_more)
+
+
+def _order_keys(orders: list[Any]) -> list[str | None]:
+    """Attribute keys referenced by the current sort criteria."""
+    from sqlalchemy.sql.elements import UnaryExpression
+
+    keys: list[str | None] = []
+    for criterion in orders:
+        element: Any = criterion
+        if isinstance(criterion, UnaryExpression):
+            element = criterion.element
+        keys.append(getattr(element, "key", None) or getattr(element, "name", None))
+    return keys
+
+
+def _python_type_of(sa_type: Any) -> Any:
+    """The column's python type, unwrapping TypeDecorator impls — None when
+    the type chain offers no python type (values pass through untouched)."""
+    seen: set[int] = set()
+    current: Any = sa_type
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            return current.python_type
+        except (NotImplementedError, AttributeError):
+            pass
+        current = getattr(current, "impl_instance", None) or getattr(current, "impl", None)
+    return None
+
+
+def _coerce_keyset_value(sa_type: Any, value: Any) -> Any:
+    """Coerce a decoded cursor value back to the sort column's python type.
+
+    ``encode_cursor`` serializes with ``json(..., default=str)``, so
+    datetime/UUID/Decimal keyset values come back as str; binding that str
+    against the typed column breaks every page after the first. Malformed
+    cursor strings raise ConfigurationError — the documented contract keeps
+    a bad cursor loud instead of a silent first-page restart.
+    """
+    import datetime
+    import uuid
+    from decimal import Decimal
+
+    from fastplace.errors import ConfigurationError
+
+    if value is None:
+        return value
+    python_type = _python_type_of(sa_type)
+    if python_type is None:
+        return value
+    if isinstance(value, python_type):
+        return value
+    try:
+        if python_type is datetime.datetime:
+            return datetime.datetime.fromisoformat(value)
+        if python_type is datetime.date:
+            return datetime.date.fromisoformat(value)
+        if python_type is uuid.UUID:
+            return uuid.UUID(value)
+        if python_type is Decimal:
+            return Decimal(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("cursor_paginate received a malformed cursor") from exc
+    return value
+
+
+def _sort_fingerprint(columns: list[tuple[str, bool]]) -> str:
+    """A short digest of the keyset sort — binds cursors to the order_by
+    that minted them, so a replay under a changed sort is a loud rejection
+    instead of silently duplicated or truncated pages."""
+    import hashlib
+
+    shape = "|".join(f"{key}:{'desc' if is_desc else 'asc'}" for key, is_desc in columns)
+    return hashlib.sha256(shape.encode("utf-8")).hexdigest()[:12]
+
+
+def _cursor_columns(model: Any, orders: list[Any]) -> list[tuple[str, bool]]:
+    """``(attribute key, is_desc)`` pairs describing the keyset sort.
+
+    Every order criterion must be a bare column (optionally wrapped in
+    ``.asc()``/``.desc()``) — anything else cannot be encoded into a cursor.
+    Without an explicit order the primary key (ascending) sorts alone.
+    """
+    from sqlalchemy.sql.elements import UnaryExpression
+    from sqlalchemy.sql.operators import desc_op
+
+    from fastplace.errors import ConfigurationError
+
+    columns: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for criterion in orders:
+        element: Any = criterion
+        is_desc = False
+        if isinstance(criterion, UnaryExpression):
+            element = criterion.element
+            is_desc = criterion.modifier is desc_op
+        key = getattr(element, "key", None) or getattr(element, "name", None)
+        # A Function like func.length(col) carries the SQL function name as
+        # .name, so a truthy key alone does not prove a column — requiring a
+        # real column keeps the guard from misfiring as an AttributeError.
+        if key is None or key not in model.__table__.columns:
+            raise ConfigurationError(
+                "cursor_paginate needs plain column order_by (col, col.desc())"
+            )
+        if key not in seen:
+            columns.append((key, is_desc))
+            seen.add(key)
+    pk = model._pk_attr()
+    # _pk_attr() returns the mapped attribute object; keyset columns need
+    # its string key for cursor encoding and getattr access.
+    pk_key = getattr(pk, "key", None) or getattr(pk, "name", None) or str(pk)
+    if pk_key not in seen:
+        columns.append((pk_key, False))
+    return columns

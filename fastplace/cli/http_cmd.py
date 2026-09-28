@@ -437,8 +437,12 @@ async def _forge_session(app: Any, user_id: int | str) -> tuple[str, str]:
     sid = secrets.token_hex(32)
     csrf_token = secrets.token_urlsafe(32)
     payload = {"user_id": user_id, "_token": csrf_token}
-    await store.write(sid, payload, user_id=user_id)
-    return f"{cookie_name}={sid}", csrf_token
+    # The cookie driver's write() RETURNS the encrypted blob — that blob, not
+    # the raw sid, is the cookie value (the str | None write contract). Forging
+    # the sid would give the app an undecryptable cookie and authenticate
+    # nobody.
+    value = await store.write(sid, payload, user_id=user_id)
+    return f"{cookie_name}={value or sid}", csrf_token
 
 
 async def _resolve_user(identifier: str) -> int:

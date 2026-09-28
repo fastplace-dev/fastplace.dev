@@ -25,7 +25,7 @@ from fastplace.http.compression import CompressionMiddleware
 from fastplace.http.maintenance import MaintenanceMiddleware
 from fastplace.http.middleware import Middleware, wrap_middleware
 from fastplace.http.response import Html, Json, Response
-from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware
+from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware, route_bindings
 from fastplace.http.websocket import websocket_adapter
 from fastplace.logging.middleware import RequestIdMiddleware
 
@@ -146,6 +146,11 @@ def get_app(
     )
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
+    # Request-scoped locale: ?locale= -> Accept-Language -> LOCALE default,
+    # resolved once per request so trans() agrees across the whole response.
+    from fastplace.i18n import LocaleMiddleware
+
+    app.add_middleware(LocaleMiddleware)
     # Compression sits outside the security headers so it sees the final
     # header set; pure ASGI, streaming-safe (see fastplace/http/compression.py).
     app.add_middleware(CompressionMiddleware)
@@ -401,6 +406,11 @@ def _route_middleware_registry(
             module = importlib.import_module(module_path)
             entry = getattr(module, class_name)
         registry[name] = entry
+    # Built-in opt-in alias (app overrides always win): signed download /
+    # unsubscribe-style links validate themselves via middleware=["signed"].
+    from fastplace.http.urls import SignedMiddleware
+
+    registry.setdefault("signed", SignedMiddleware)
     return registry
 
 
@@ -413,6 +423,13 @@ def _mount_routes(
     ai_routes: Router | None,
     route_middleware: dict[str, Any] | None = None,
 ) -> None:
+    # Route/config optimization caches (audit sweep-G14) were measured and
+    # rejected: registration costs ~0.2 ms per route (dominated by FastAPI's
+    # own route-object construction, which a build-time manifest cannot
+    # skip) and config() reads are memoized (~0.5 µs). Realistic apps pay
+    # tens of ms once per worker — a persisted manifest would trade that
+    # for cache-invalidation and drift risk. Revisit only if boot profiling
+    # ever shows route registration as a real cost.
     api = APIRouter()
     if routes:
         _register_router(api, routes, route_middleware=route_middleware)
@@ -438,7 +455,11 @@ def _register_router(
         chain = tuple(resolve_route_middleware(registry, alias) for alias in route.middleware)
         target.add_api_route(
             prefix + route.path,
-            endpoint_adapter(route.handler, chain),
+            endpoint_adapter(
+                route.handler,
+                chain,
+                route_bindings(route.handler, prefix + route.path),
+            ),
             methods=[route.method],
             name=route.name or getattr(route.handler, "__name__", None) or "endpoint",
         )

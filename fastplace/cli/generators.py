@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -1853,6 +1854,11 @@ CACHE_DRIVER=memory
 #   DATABASE_URL=mysql://user:pass@localhost:3306/{slug}
 DATABASE_URL=sqlite+aiosqlite:///./database.sqlite3
 
+# i18n — default locale; LOCALES lists every lang/<locale>.json the app serves
+# (comma-separated). Requests pick one via ?locale= or Accept-Language.
+LOCALE=en
+LOCALES=en
+
 # Bridge + assets (dev)
 VITE_DEV_URL=http://localhost:5173
 """
@@ -2536,6 +2542,10 @@ def new_project(
         (Path("config/auth.py"), _CONFIG_AUTH_TEMPLATE),
         (Path("public/.gitkeep"), ""),
         (Path("storage/.gitkeep"), ""),
+        (
+            Path("lang/en.json"),
+            json.dumps({"messages": {"welcome": f"Welcome to {app_name}"}}, indent=2) + "\n",
+        ),
         (Path(".env"), env),
         (Path(".env.example"), env_example),
         (Path(".gitignore"), _GITIGNORE_TEMPLATE),

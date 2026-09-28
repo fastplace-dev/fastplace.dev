@@ -70,6 +70,13 @@ class PortableDateTime(TypeDecorator):
     impl = DateTime
     cache_ok = True
 
+    @property
+    def python_type(self) -> type[datetime.datetime]:
+        # TypeDecorator does not derive python_type from impl — without this
+        # every reflection-style consumer (cursor keyset coercion) sees
+        # NotImplementedError and falls back to treating values as opaque.
+        return datetime.datetime
+
     def load_dialect_impl(self, dialect: Any) -> Any:
         return dialect.type_descriptor(DateTime(timezone=True))
 

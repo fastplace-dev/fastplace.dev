@@ -86,6 +86,10 @@ class TwoFactorService:
         user.two_factor_secret = encrypt(generate_secret())
         user.two_factor_recovery_codes = encrypt(json.dumps(generate_recovery_codes()))
         user.two_factor_confirmed_at = None
+        # The mark belongs to the OLD secret; carrying it across a rotation
+        # could reject the new secret's first real codes (a future-window
+        # acceptance from the previous setup outlives it otherwise).
+        user.two_factor_accepted_step = None
         await user.save()
         # Cookies issued before 2FA existed must not outlive the setup —
         # they would ride straight past the challenge being added (the
@@ -118,12 +122,13 @@ class TwoFactorService:
         await user.save()
 
     async def disable(self, request: Any) -> None:
-        """Wipe all three columns."""
+        """Wipe every two-factor column."""
         self._require_enabled()
         user = request.user
         user.two_factor_secret = None
         user.two_factor_recovery_codes = None
         user.two_factor_confirmed_at = None
+        user.two_factor_accepted_step = None
         await user.save()
 
     async def regenerate_recovery_codes(self, request: Any) -> list[str]:

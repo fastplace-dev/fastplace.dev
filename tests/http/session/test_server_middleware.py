@@ -192,3 +192,58 @@ async def test_consuming_the_last_key_destroys_the_row_and_expires_the_cookie():
         stored = await store.read(new_id)
         assert stored is not None
         assert stored.payload["flag"] == "on"
+
+
+async def test_oversize_cookie_write_degrades_to_skipped_persist():
+    """A store that rejects the write (cookie payload over the browser limit)
+    must not 500 a response whose handler already succeeded — the write is
+    skipped, the previous cookie stays valid, the error lands in the logs."""
+    from fastplace.errors import ConfigurationError
+    from fastplace.http.session.memory import MemorySessionStore
+
+    class VolatileStore(MemorySessionStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reject = False
+
+        async def write(self, session_id, payload, *, user_id=None):
+            if self.reject:
+                raise ConfigurationError("cookie session payload exceeds the browser limit")
+            return await super().write(session_id, payload, user_id=user_id)
+
+    store = VolatileStore()
+    async with build_client(store, actions={"/set": "set"}) as client:
+        first = await client.get("/set")
+        good_cookie = first.cookies["fastplace_session"]
+        assert await store.read(good_cookie) is not None
+
+        store.reject = True
+
+        status: list[int] = []
+        cookie_headers: list[bytes] = []
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                status.append(message["status"])
+                for name, value in message.get("headers", []):
+                    if name == b"set-cookie":
+                        cookie_headers.append(value)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/set",
+            "headers": [(b"cookie", f"fastplace_session={good_cookie}".encode())],
+            "query_string": b"",
+        }
+        client_app = client._transport.app
+        await client_app(scope, receive, send)
+
+        assert status == [200], f"expected a normal 200, got {status}"
+        assert cookie_headers == [], "no fresh cookie should be issued for a skipped write"
+        # The previous cookie still loads — the session reverted, not vanished.
+        stored = await store.read(good_cookie)
+        assert stored is not None and stored.payload.get("flag") == "on"

@@ -153,6 +153,15 @@ def auth_sessions(user_id: int) -> None:
         )
         return
 
+    if driver == "cookie":
+        console.print(
+            "[dim]session driver 'cookie' is stateless — the payload lives in each "
+            "browser's encrypted cookie, so there is nothing server-side to "
+            "enumerate (auth:logout-everywhere cannot revoke these either; rotate "
+            "APP_KEY to invalidate every outstanding cookie session)[/]"
+        )
+        return
+
     async def _run() -> list:
         from typing import cast
 

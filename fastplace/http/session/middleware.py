@@ -11,6 +11,7 @@ from typing import Any
 
 from starlette.datastructures import Headers
 
+from fastplace.errors import ConfigurationError
 from fastplace.http.session.base import SessionStore
 
 logger = logging.getLogger("fastplace.session")
@@ -205,8 +206,27 @@ class ServerSessionMiddleware:
         previous_id = session._previous_id
         payload = dict(session)
         # EC2: attribute the row to its user — the payload key is the
-        # SessionGuard's SESSION_KEY ("user_id").
-        await self.store.write(session_id, payload, user_id=payload.get("user_id"))
+        # SessionGuard's SESSION_KEY ("user_id"). A stateless store returns
+        # the encrypted blob the cookie must carry; server-side stores
+        # return None and the minted opaque ID stays. A rejected write
+        # (cookie payload over the browser limit) must NOT 500: the handler
+        # already ran, its side effects are real — skip the persist and let
+        # the previous cookie stand (the session reverts, it does not die).
+        try:
+            cookie_value = await self.store.write(
+                session_id, payload, user_id=payload.get("user_id")
+            )
+        except ConfigurationError:
+            logger.error(
+                "session write rejected by %s — payload likely exceeds the ~4KB "
+                "browser cookie limit; this request's session mutation was "
+                "dropped, keep large data server-side (SESSION_DRIVER=database "
+                "or file)",
+                type(self.store).__name__,
+                exc_info=True,
+            )
+            return
+        session_id = cookie_value or session_id
         if previous_id and previous_id != session_id:
             await self.store.destroy(previous_id)  # regenerate() cleanup
         session.mark_persisted(session_id, dict(session), last_activity=now)

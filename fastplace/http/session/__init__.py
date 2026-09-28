@@ -4,7 +4,9 @@ from collections.abc import Callable
 from typing import Any
 
 from fastplace.http.session.base import SessionStore, StoredSession, session_lifetime
+from fastplace.http.session.cookie_store import CookieSessionStore
 from fastplace.http.session.database import DatabaseSessionStore
+from fastplace.http.session.file_store import FileSessionStore
 from fastplace.http.session.memory import MemorySessionStore
 from fastplace.http.session.redis_store import RedisSessionStore
 
@@ -13,8 +15,10 @@ __all__ = [
     "StoredSession",
     "session_lifetime",
     "MemorySessionStore",
+    "FileSessionStore",
     "DatabaseSessionStore",
     "RedisSessionStore",
+    "CookieSessionStore",
     "session_store",
     "resolve_session_driver",
 ]
@@ -62,6 +66,15 @@ def session_store(config_get: Callable[[str, Any], Any] | None = None) -> Sessio
         from fastplace.http.session.redis_store import RedisSessionStore
 
         return RedisSessionStore()
+    if driver == "file":
+        from fastplace.http.session.file_store import FileSessionStore
+
+        return FileSessionStore()
+    if driver == "cookie":
+        from fastplace.http.session.cookie_store import CookieSessionStore
+
+        return CookieSessionStore()
     raise ConfigurationError(
-        f"unknown SESSION_DRIVER {driver!r} — expected 'database', 'redis', or 'memory'"
+        f"unknown SESSION_DRIVER {driver!r} — expected 'database', 'redis', "
+        "'memory', 'file', or 'cookie'"
     )
