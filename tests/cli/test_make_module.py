@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import re
 
-# Autouse: clean db/model/module state per test (see _isolation.py) — the
-# -m path runs migration autogenerate against app.* models.
-from _isolation import isolate_project_state  # noqa: F401
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+
+# Autouse: clean db/model/module state per test (see _isolation.py) — the
+# -m path runs migration autogenerate against app.* models.
+from tests.cli._isolation import isolate_project_state  # noqa: F401
 
 runner = CliRunner()
 

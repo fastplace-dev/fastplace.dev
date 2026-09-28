@@ -35,7 +35,13 @@ class KnowledgeController(Controller):
             "q": query,
             "items": [self._resource(item) for item in items],
         }
-        return render(request, component="Knowledge/Index", props=props)
+        return render(
+            request,
+            component="Knowledge/Index",
+            props=props,
+            title="Knowledge",
+            robots="noindex",
+        )
 
     @staticmethod
     def _resource(item: KnowledgeItemResource) -> dict:

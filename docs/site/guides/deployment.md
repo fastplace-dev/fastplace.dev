@@ -216,8 +216,33 @@ task skips, except those marked `.even_in_maintenance()`.
 - Query stats ride the request tracker and surface in the kernel debug
   payload (debug env only — production 500s stay `{"message": "Server
   error."}`, exactly).
-- Logs land under `storage/logs/` — ship them to your aggregator of
-  choice.
+
+### Logging
+
+The kernel boots the logging channels at startup — `storage/logs/` is
+real with zero configuration. Every line carries correlation ids:
+`request_id` (the `X-Request-ID` the app accepts or mints per request and
+echoes on the response) and `job_id` (the queue job name, on both the
+memory and saq drivers). Ship the file to your aggregator of choice and
+trace one request across app, queue and error lines by its id. Unhandled
+errors stay a generic 500 on the wire — the traceback lands here instead,
+carrying the same `request_id`.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LOG_CHANNEL` | `single` | `single` (rotating file), `daily` (midnight-rotated file), `stderr`, `null`, or `stack` |
+| `LOG_LEVEL` | `INFO` | Root and `fastplace` logger level (`DEBUG`…`CRITICAL`) |
+| `LOG_STACK` | `single,daily,stderr` | Comma-separated channels written when `LOG_CHANNEL=stack` |
+| `LOG_MAX_BYTES` | `10485760` | `single`: rotate the file at this size |
+| `LOG_BACKUP_COUNT` | `5` | `single`: rotated files kept |
+| `LOG_DAILY_DAYS` | `7` | `daily`: dated files kept |
+
+`single` writes `storage/logs/fastplace.log` (10 MB × 5 backups); `daily`
+writes `fastplace-YYYY-MM-DD.log` and prunes past `LOG_DAILY_DAYS` at
+midnight. Note for `serve`'s multi-worker mode: each worker process rolls
+its own rotation — size-based rotation is safe (workers rotate
+independently and backups still cap total disk), but prefer the `daily`
+channel across many workers so retention stays predictable.
 
 ## Security posture at serve time
 

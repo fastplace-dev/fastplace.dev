@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -60,6 +61,7 @@ _HTML_SHELL = """<!DOCTYPE html>
     {assets}
 </head>
 <body>
+    {noscript}
     <div id="fastplace" data-page="{page}"></div>
 </body>
 </html>"""
@@ -138,8 +140,23 @@ def render(
     props: Any = None,
     status: int = 200,
     headers: dict[str, str] | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    canonical: str | None = None,
+    image: str | None = None,
+    robots: str | None = None,
+    og: dict[str, str] | None = None,
+    head_tags: list[str] | None = None,
 ) -> Response:
-    """Return the bridge response for a hydrated React page."""
+    """Return the bridge response for a hydrated React page.
+
+    The head keyword arguments (title, description, canonical, image,
+    robots, og, head_tags) shape the initial HTML document only — crawlers
+    and link unfurlers read the head without executing JavaScript, so every
+    tag must already be present server-side. Bridge (JSON) responses ignore
+    them. URLs are absolutized against ``APP_URL`` config, never the
+    request's Host header.
+    """
     payload = page_payload(request, component, props)
     csrf_token = _session_csrf_token(request)
 
@@ -153,19 +170,32 @@ def render(
             },
         )
 
+    page_title = title if title is not None else _title_for(component)
     document = _HTML_SHELL.format(
-        title=_title_for(component),
+        title=html.escape(page_title),
         assets=_assets(request),
         page=html.escape(json.dumps(payload, ensure_ascii=False), quote=True),
+        noscript=_noscript_block(page_title),
+    )
+
+    injection = "".join(
+        f"    {tag}\n"
+        for tag in _head_extra_tags(
+            page_title=page_title,
+            description=description,
+            canonical=canonical,
+            image=image,
+            robots=robots,
+            og=og,
+            head_tags=head_tags,
+        )
     )
     if csrf_token:
         # The React bridge reads this tag and echoes the token back on
         # unsafe-method visits (X-Fastplace-CSRF-Token).
-        document = document.replace(
-            "</head>",
-            f'    <meta name="csrf-token" content="{html.escape(csrf_token)}">\n</head>',
-            1,
-        )
+        injection += f'    <meta name="csrf-token" content="{html.escape(csrf_token)}">\n'
+    if injection:
+        document = document.replace("</head>", injection + "</head>", 1)
     return Html(
         document,
         status_code=status,
@@ -176,9 +206,121 @@ def render(
     )
 
 
+def _head_extra_tags(
+    *,
+    page_title: str,
+    description: str | None,
+    canonical: str | None,
+    image: str | None,
+    robots: str | None,
+    og: dict[str, str] | None,
+    head_tags: list[str] | None,
+) -> list[str]:
+    """Head tags derived from the render() keyword surface.
+
+    Order: description, robots, canonical, then the Open Graph block and
+    twitter:card, then the caller's raw ``head_tags``. The csrf-token meta
+    is appended after all of these by render().
+    """
+    og = og or {}
+    tags: list[str] = []
+
+    if description:
+        tags.append(f'<meta name="description" content="{html.escape(description)}">')
+    if robots:
+        tags.append(f'<meta name="robots" content="{html.escape(robots)}">')
+
+    canonical_url = _absolute_url(canonical)
+    if canonical and canonical_url:
+        tags.append(f'<link rel="canonical" href="{html.escape(canonical_url)}">')
+
+    # Open Graph. og:title/og:type/og:site_name always emit (a share card
+    # needs the minimum); the rest only when a value resolves. og:url must
+    # carry the same value as the canonical link.
+    og_title = og.get("title", page_title)
+    og_type = og.get("type", "website")
+    site_name = str(og.get("site_name") or _app_name())
+    og_description = og.get("description", description)
+    og_url = _absolute_url(og.get("url") or canonical)
+    og_image = _absolute_url(og.get("image") or image)
+
+    tags.append(f'<meta property="og:title" content="{html.escape(og_title)}">')
+    tags.append(f'<meta property="og:type" content="{html.escape(og_type)}">')
+    tags.append(f'<meta property="og:site_name" content="{html.escape(site_name)}">')
+    if og_description:
+        tags.append(f'<meta property="og:description" content="{html.escape(og_description)}">')
+    if og_url:
+        tags.append(f'<meta property="og:url" content="{html.escape(og_url)}">')
+    if og_image:
+        tags.append(f'<meta property="og:image" content="{html.escape(og_image)}">')
+    card = "summary_large_image" if og_image else "summary"
+    tags.append(f'<meta name="twitter:card" content="{card}">')
+
+    # Unknown og keys pass through escaped (og:locale, og:video, ...) —
+    # sorted so output is deterministic.
+    known = {"title", "description", "image", "url", "type", "site_name"}
+    for key in sorted(og):
+        if key not in known:
+            tags.append(f'<meta property="og:{html.escape(key)}" content="{html.escape(og[key])}">')
+
+    if head_tags:
+        # Trusted developer markup, appended verbatim.
+        tags.extend(head_tags)
+    return tags
+
+
+def _absolute_url(value: str | None) -> str | None:
+    """Absolutize ``value`` against APP_URL; pass absolute URLs through.
+
+    Relative URLs without a resolvable base are dropped (fail safe) — the
+    canonical base comes from config, never from the request's Host header,
+    which an attacker can poison.
+    """
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value
+    from fastplace.config import config
+
+    base = str(config("APP_URL", default="") or "")
+    if not base:
+        return None
+    return f"{base.rstrip('/')}/{value.lstrip('/')}"
+
+
+def _app_name() -> str:
+    from fastplace.config import config
+
+    return str(config("APP_NAME", default="Fastplace") or "Fastplace")
+
+
+def _noscript_block(page_title: str) -> str:
+    """The unconditional no-JS fallback card rendered before the mount div.
+
+    Inline styles only — Tailwind never sees this template, so its classes
+    would be purged from the production stylesheet. The card uses a fixed
+    dark palette readable against both theme backgrounds.
+    """
+    return (
+        "<noscript>\n"
+        '  <div style="margin:24px auto;max-width:560px;padding:20px 24px;'
+        "border:1px solid #3f3f46;border-radius:12px;background:#18181b;color:#fafafa;"
+        'font-family:system-ui,sans-serif;font-size:14px;line-height:1.6">\n'
+        f'    <p style="margin:0 0 8px;font-weight:600">'
+        f"{html.escape(_app_name())} — {html.escape(page_title)}</p>\n"
+        '    <p style="margin:0">This page needs JavaScript for the full interface. '
+        "Forms still submit without it: posting a form reloads the page with the "
+        "result.</p>\n"
+        "  </div>\n"
+        "</noscript>"
+    )
+
+
 def _title_for(component: str) -> str:
     tail = component.rsplit("/", 1)[-1]
     words = tail.replace("-", " ").replace("_", " ")
+    # Split camelCase boundaries so "ForgotPassword" reads as two words.
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", words)
     return words.strip().title() or "Fastplace"
 
 

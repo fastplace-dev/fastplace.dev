@@ -215,6 +215,23 @@ class TestEmittedTestTree:
         assert "db.create_all" in content
         assert (scaffolded / "tests/feature/test_auth_flow.py").is_file()
 
+    def test_conftest_client_yields_fluent_test_responses(self, scaffolded):
+        """The docs promise fluent assertions on scaffolded apps too — the
+        emitted client must be the framework's TestClient, not a raw
+        httpx.AsyncClient whose responses lack assert_ok/assert_see."""
+        content = (scaffolded / "tests/conftest.py").read_text()
+        assert "from fastplace.testing.client import TestClient" in content
+        assert "TestClient(transport=" in content
+        assert "httpx.AsyncClient(" not in content
+
+    def test_app_fixture_honors_the_pinned_test_database(self, scaffolded):
+        """FASTPLACE_TEST_DATABASE_URL must reach HTTP tests too — the docs
+        promise a disposable postgres for the whole suite in CI, and an app
+        fixture that hard-codes its own sqlite silently overrides it."""
+        content = (scaffolded / "tests/conftest.py").read_text()
+        assert 'os.environ.get("FASTPLACE_TEST_DATABASE_URL")' in content
+        assert "driver_from_url" in content
+
     def test_pyproject_gains_test_tooling_and_dev_extra(self, scaffolded):
         pyproject = (scaffolded / "pyproject.toml").read_text()
         assert "[tool.pytest.ini_options]" in pyproject

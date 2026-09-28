@@ -58,6 +58,37 @@ class TestMakeAuth:
         routes = (tmp_path / "routes/auth.py").read_text()
         assert '"/login"' in routes
 
+    def test_generated_two_factor_enforces_single_use_totp(self, tmp_path, monkeypatch):
+        """tfa-G2: the scaffold must ship the single-use TOTP contract, not the
+        stateless verifier — a replayed code must not complete two challenges."""
+        result = _invoke(tmp_path, monkeypatch, "--no-migration")
+        assert result.exit_code == 0, result.output
+        service = (tmp_path / "app/modules/accounts/services/two_factor_service.py").read_text()
+        assert "verify_code_step(" in service  # the step-returning primitive
+        assert "verify_code(" not in service  # the stateless one must be gone
+        assert "user.two_factor_accepted_step = step" in service
+        model = (tmp_path / "app/modules/accounts/models/user.py").read_text()
+        assert "two_factor_accepted_step: int | None = None" in model
+        assert '"two_factor_accepted_step"' in model  # hidden from serialization
+        # Rotation resets the mark; teardown wipes it with the rest.
+        assert "user.two_factor_accepted_step = None" in service
+
+    def test_generated_password_reset_does_not_resurrect_the_reset_session(
+        self, tmp_path, monkeypatch
+    ):
+        """tfa-G4: the reset device's dirty session must not be re-persisted by
+        the response-time writer after destroy_for_user — the template ships
+        the clear + CSRF rotation + id-regeneration logout block."""
+        result = _invoke(tmp_path, monkeypatch, "--no-migration")
+        assert result.exit_code == 0, result.output
+        service = (tmp_path / "app/modules/accounts/services/password_reset_service.py").read_text()
+        assert "await store.destroy_for_user(user.id)" in service
+        assert "session.clear()" in service
+        assert "CSRF_SESSION_KEY" in service
+        assert "regenerate()" in service
+        assert "_queue_remember_cookie(request, None)" in service
+        assert "await pat_store().revoke_all_for_user(user.id)" in service
+
     def test_rerun_never_clobbers(self, tmp_path, monkeypatch):
         result = _invoke(tmp_path, monkeypatch, "--no-migration")
         assert result.exit_code == 0, result.output

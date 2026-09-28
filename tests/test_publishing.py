@@ -35,6 +35,7 @@ SITE_PAGES = {
     "guides/ai.md",
     "guides/tenancy.md",
     "guides/background-and-cache.md",
+    "guides/app-testing.md",
     "guides/testing.md",
     "guides/deployment.md",
     "guides/versioning.md",

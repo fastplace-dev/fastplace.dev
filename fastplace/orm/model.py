@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import ForeignKey, Integer, func, inspect, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import Select
@@ -28,7 +29,13 @@ from fastplace.orm.fields import (
     resolve_annotation,
 )
 from fastplace.orm.query import QueryBuilder
-from fastplace.orm.relationships import MorphMany, MorphOne, MorphTo, RelationshipMarker
+from fastplace.orm.relationships import (
+    MorphMany,
+    MorphOne,
+    MorphTo,
+    MorphToMany,
+    RelationshipMarker,
+)
 from fastplace.orm.scopes import SoftDeleteScope, scope
 from fastplace.orm.types import PortableDateTime
 
@@ -215,6 +222,92 @@ class Model(AsyncAttrs, DeclarativeBase):
         return found
 
     # ------------------------------------------------------------------
+    # locate-or-write persistence helpers
+    # ------------------------------------------------------------------
+    @classmethod
+    async def first_or_create(cls, defaults: dict[str, Any] | None = None, **attrs: Any) -> Any:
+        """First row matching ``attrs``, else a new one with ``defaults`` filled in.
+
+        Locate attributes never write; ``defaults`` only appear on the create
+        path, so re-running the call never overwrites a found row. Empty
+        ``attrs`` matches any row — the call degenerates to first()/create().
+        The INSERT rides a savepoint: a concurrent writer that claims the
+        unique key between the locate and the insert rolls back just that
+        statement, the winner's row is re-fetched, and the enclosing
+        transaction survives the race.
+        """
+        return await cls._first_or_write(dict(defaults or {}), attrs, update_found=False)
+
+    @classmethod
+    async def update_or_create(cls, defaults: dict[str, Any] | None = None, **attrs: Any) -> Any:
+        """First row matching ``attrs`` — updated with ``defaults`` — else a new one.
+
+        Same locate/race machinery as :meth:`first_or_create`; the difference
+        is the found path, where ``defaults`` are written through the same
+        guard rules as :meth:`update`. Unlike :meth:`first_or_create`, empty
+        ``attrs`` raise ValueError: a match-all lookup that then WRITES would
+        rewrite an arbitrary row.
+        """
+        return await cls._first_or_write(dict(defaults or {}), attrs, update_found=True)
+
+    @classmethod
+    async def _first_or_write(
+        cls, defaults: dict[str, Any], attrs: dict[str, Any], *, update_found: bool
+    ) -> Any:
+        """Shared locate-or-write engine; races resolve to the winner's row.
+
+        Everything runs in the ambient scope via ``run_write``: inside an
+        open ``db.transaction()`` the insert is a savepoint on that
+        transaction (a race rollback cannot sink the enclosing unit of
+        work); standalone, a savepoint on a short-lived session. The
+        savepoint matters because a failed flush poisons its transaction on
+        every backend — only a savepoint boundary lets the follow-up SELECT
+        run on the same connection and see the winner's (possibly
+        uncommitted) row.
+        """
+        from fastplace.orm.session import run_write
+
+        if update_found and not attrs:
+            raise ValueError(
+                f"{cls.__name__}.update_or_create() needs at least one locate "
+                "attribute — empty attrs would match an arbitrary row and "
+                "rewrite it with defaults"
+            )
+        values = {**defaults, **attrs}
+        criteria = [getattr(cls, key) == value for key, value in attrs.items()]
+        found = await cls.query().where(*criteria).first()
+        if found is not None:
+            if update_found and defaults:
+                await found.update(**defaults)
+            return found
+
+        async def action(session: Any) -> Any:
+            instance = cls(**cls._mass_assignable(values))
+            await fire(instance, "creating")
+            try:
+                # The add happens INSIDE the savepoint: begin_nested() takes
+                # a snapshot that flushes pending objects first, so an add
+                # before it would push the INSERT outside the savepoint — the
+                # constraint error would poison the ambient transaction
+                # instead of the race catching it.
+                async with session.begin_nested():
+                    session.add(instance)
+                    await session.flush()
+            except IntegrityError:
+                concurrent = await cls.query().where(*criteria).first()
+                if concurrent is None:
+                    # Not a race — a genuine constraint violation (a
+                    # tombstoned row still owns the key, say): surface it.
+                    raise
+                if update_found and defaults:
+                    await concurrent.update(**defaults)
+                return concurrent
+            await fire(instance, "created")
+            return instance
+
+        return await run_write(action)
+
+    # ------------------------------------------------------------------
     # core conventional scopes (blueprint Query Scopes table)
     # ------------------------------------------------------------------
     @scope
@@ -286,6 +379,97 @@ class Model(AsyncAttrs, DeclarativeBase):
         instance = cls(**cls._mass_assignable(values))
         await instance.save()
         return instance
+
+    @classmethod
+    async def upsert(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        unique_by: list[str],
+        update: list[str] | None = None,
+    ) -> int:
+        """Insert-or-update a batch against the ``unique_by`` keys — portably.
+
+        Every row is one UPDATE by its key with an INSERT fallback, all inside
+        a single transaction: no dialect-specific ``ON CONFLICT`` grammar, so
+        sqlite, PostgreSQL, and MySQL behave identically. The cost is honest —
+        up to two statements per missed row — right for hundreds of rows,
+        wrong for bulk loads of hundreds of thousands; reach for the SQLAlchemy
+        escape hatch and a dialect-native upsert at that volume.
+
+        Rows pass the same mass-assignment guard as :meth:`create` (a primary
+        key in ``unique_by`` needs ``__fillable__`` to list it), lifecycle
+        events do not fire, and soft-deleted rows match by physical key: the
+        UPDATE repairs the row, the tombstone stays — the key is never freed
+        by a lookup. ``update`` (default: every non-unique column) narrows the
+        columns written on a match. The return value counts rows written,
+        matched-identical included: MySQL-style drivers report changed rows,
+        so a zero-rowcount UPDATE is confirmed with a SELECT before the
+        INSERT fires — a values-identical row must never double-insert. Two
+        edges are MySQL-style too: a later row repeating a key from earlier
+        in the batch updates the row that row inserted (last row wins), and
+        the match/write runs on the physical key — global scopes (soft
+        delete, tenancy) are query-side, so they neither hide a row from
+        ``upsert`` nor constrain what it writes. Partition multi-tenant data
+        by putting the tenant column in ``unique_by``; never rely on a scope
+        to scope a batch write.
+        """
+        if not rows:
+            return 0
+        from sqlalchemy import update as sa_update
+
+        from fastplace.orm.session import run_write
+
+        unique_keys = list(unique_by)
+        unique_set = set(unique_keys)
+
+        async def action(session: Any) -> int:
+            written = 0
+            for raw_row in rows:
+                for key in unique_keys:
+                    if key not in raw_row:
+                        raise ValueError(f"upsert row {raw_row!r} is missing unique key {key!r}")
+                row = cls._mass_assignable(raw_row)
+                criteria = [getattr(cls, key) == row[key] for key in unique_keys]
+                payload_keys = (
+                    list(update)
+                    if update is not None
+                    else [key for key in row if key not in unique_set]
+                )
+                if update is not None:
+                    missing = [key for key in payload_keys if key not in row]
+                    if missing:
+                        raise ValueError(
+                            f"upsert row {raw_row!r} is missing update columns {missing}"
+                        )
+                if payload_keys:
+                    result = await session.execute(
+                        sa_update(cls)
+                        .where(*criteria)
+                        .values({key: row[key] for key in payload_keys})
+                    )
+                    if int(result.rowcount or 0) > 0:
+                        written += 1
+                        continue
+                # Changed-rows semantics (MySQL): a values-identical row
+                # reports 0 above, and a payload-free row (unique keys only)
+                # never reaches the UPDATE at all. Confirm existence before
+                # inserting either way.
+                existing = await session.execute(select(cls).where(*criteria).limit(1))
+                if existing.scalars().first() is not None:
+                    written += 1
+                    continue
+                session.add(cls(**row))
+                # autoflush=False: the INSERT stays pending until flushed —
+                # without this, a later row with the same key misses it (its
+                # UPDATE and confirm-SELECT both see nothing) and the batch
+                # dies on the unique constraint at the final flush.
+                await session.flush()
+                written += 1
+            await session.flush()
+            return written
+
+        return await run_write(action)
 
     @classmethod
     def _pk_attr(cls) -> Any:
@@ -435,6 +619,52 @@ class Model(AsyncAttrs, DeclarativeBase):
         for key, value in type(self)._mass_assignable(values).items():
             setattr(self, key, value)
         return await self.save()
+
+    async def increment(self, column: str, amount: int | float = 1) -> Model:
+        """``SET col = col + amount`` at the database, then reload the instance.
+
+        The arithmetic runs in one UPDATE so a read-modify-write through the
+        instance can never lose a concurrent writer's bump. Plain arithmetic,
+        no floor: counters may go negative. Fires no lifecycle events — a
+        column bump is not a save(). Numeric columns only: SQL arithmetic on
+        a text column silently corrupts it, so a non-numeric target raises
+        TypeError instead of writing garbage.
+        """
+        return await self._bump(column, amount)
+
+    async def decrement(self, column: str, amount: int | float = 1) -> Model:
+        """Inverse of :meth:`increment` — ``SET col = col - amount``."""
+        return await self._bump(column, -amount)
+
+    async def _bump(self, column: str, signed: int | float) -> Model:
+        from sqlalchemy import update as sa_update
+
+        from fastplace.orm.session import run_write
+
+        model = type(self)
+        if inspect(self).transient or inspect(self).pending:
+            raise ValueError(
+                f"{model.__name__}.{column} needs a persisted row — "
+                "save() before increment/decrement"
+            )
+        column_attr = getattr(model, column)  # AttributeError on a typo'd column
+        python_type = inspect(model).columns[column].type.python_type
+        if python_type not in (int, float, Decimal):
+            raise TypeError(
+                f"{model.__name__}.{column} is a {python_type.__name__} column — "
+                "increment/decrement needs a numeric column (int, float, or Decimal)"
+            )
+        pk_name = inspect(model).primary_key[0].name
+
+        async def action(session: Any) -> None:
+            await session.execute(
+                sa_update(model)
+                .where(getattr(model, pk_name) == getattr(self, pk_name))
+                .values({column: column_attr + signed})
+            )
+
+        await run_write(action)
+        return await self.refresh()
 
     async def delete(self) -> Model:
         """Soft-delete: stamp ``deleted_at`` and hide from default queries."""
@@ -911,7 +1141,7 @@ def _transform_declarative_fields(cls: type) -> None:
             continue
 
         extras: dict[str, Any] = dict(marker.extra or {})
-        if isinstance(marker, (MorphMany, MorphOne)):
+        if isinstance(marker, (MorphMany, MorphOne, MorphToMany)):
             # The join needs to know its owner side; the default type string
             # is the owner's table name. The owner's pk column is passed too —
             # owners are not guaranteed an ``id`` primary key.
@@ -930,7 +1160,13 @@ def _transform_declarative_fields(cls: type) -> None:
                     marker.backref, remote_side=f"{cls.__name__}.{pk_name}"
                 )
         setattr(cls, name, marker.build(**extras))
-        kind_many = marker.__class__.__name__ in ("HasMany", "ManyToMany", "MorphMany")
+        kind_many = marker.__class__.__name__ in (
+            "HasMany",
+            "HasManyThrough",
+            "ManyToMany",
+            "MorphMany",
+            "MorphToMany",
+        )
         _mapped_rel: Any = Mapped
         resolved_annotations[name] = _mapped_rel[list[Any]] if kind_many else _mapped_rel[Any]
 

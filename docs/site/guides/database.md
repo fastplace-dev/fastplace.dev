@@ -81,6 +81,79 @@ await Project.only_deleted().get()  # ONLY deleted rows
 columns — are guarded by the framework itself; `create()` stamps them
 from context, payloads cannot forge them.
 
+## Persistence helpers
+
+The day-to-day writes live on the model. Both locate-or-write helpers
+locate by keyword attributes, and a race with a concurrent writer never
+creates a duplicate:
+
+```python
+user = await User.first_or_create(
+    {"name": "fallback"}, email="a@x.com"
+)  # found rows keep their name
+user = await User.update_or_create(
+    {"name": "new name"}, email="a@x.com"
+)  # found rows get the defaults applied
+```
+
+A writer that claims the unique key between the lookup and the insert
+is detected via the constraint, rolled back to a savepoint, and the
+winner's row is returned — exactly one row lands. `update_or_create`
+requires at least one locate attribute: with none, it would match an
+arbitrary row and rewrite it, so the call is refused.
+
+Batch insert-or-update runs inside one transaction on every backend
+(no dialect-specific grammar):
+
+```python
+written = await Project.upsert(
+    [{"slug": "alpha", "stars": 3}, {"slug": "beta", "stars": 1}],
+    unique_by=["slug"],  # or update=["stars"]
+)
+```
+
+Rows pass the same mass-assignment guard as `create()`. Soft-deleted
+rows match by physical key — the update repairs the row, the tombstone
+stays. A key repeated later in the batch updates the row the earlier
+entry inserted (last row wins). The match/write runs on the physical
+key: global scopes (soft delete, tenancy) are query-side and neither
+hide rows from `upsert` nor constrain what it writes — partition
+multi-tenant data by putting the tenant column in `unique_by`. Costs
+up to two statements per missed row: right for hundreds of rows, not
+for bulk loads.
+
+Counters run in the database, then reload the instance:
+
+```python
+await project.increment("stars")  # SET stars = stars + 1
+await project.decrement("credits", 3)  # plain arithmetic, no floor
+```
+
+The target must be a numeric column (`int`, `float`, `Decimal`) —
+arithmetic on a text column silently corrupts it, so anything else
+raises `TypeError` before a write.
+
+Large result sets stream through the query builder:
+
+```python
+async for row in Project.query().order_by(Project.id).chunk(500):
+    ...  # OFFSET paging; you own the ORDER BY
+
+async for row in Project.query().chunk_by_id(500):
+    ...  # keyset paging — stable under concurrent writes
+
+async for row in Project.query().cursor():
+    ...  # server-side cursor where the driver has one
+```
+
+`chunk_by_id` is the recommended default: each page resumes after the
+last primary key, so a row inserted mid-iteration appears in a later
+page instead of shifting every offset. `cursor()` streams one row at a
+time (PostgreSQL honors `stream_results`; SQLite buffers). Inside an
+open transaction the stream joins it; standalone, the cursor owns its
+own read session and closing it early — `break` — releases that
+connection, wherever the generator is finalized.
+
 ## Migrations
 
 ```bash

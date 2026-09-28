@@ -871,7 +871,14 @@ export function Form({
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const collected = serializeForm(new FormData(event.currentTarget));
+    const form = event.currentTarget;
+    const collected = serializeForm(new FormData(form));
+    // The auto-injected token rides the X-Fastplace-CSRF-Token header; it
+    // stays out of the JSON body (native no-JS posts still carry it — the
+    // input remains in the DOM).
+    if (form.querySelector('input[data-fastplace-csrf][name="_token"]')) {
+      delete collected._token;
+    }
     setProcessing(true);
     try {
       const outcome = await submitBridge(
@@ -898,9 +905,10 @@ export function Form({
     }
   };
 
+  // The DOM element always posts natively (the only verb HTML knows);
+  // the real verb rides on the bridge request.
+  const noJsToken = csrfToken();
   return (
-    // The DOM element always posts natively (the only verb HTML knows);
-    // the real verb rides on the bridge request.
     <form
       ref={formRef}
       action={action}
@@ -909,6 +917,13 @@ export function Form({
       data-slot="form"
       {...rest}
     >
+      {noJsToken ? (
+        // Without JavaScript the browser posts this form natively; the
+        // session token must ride along as a field. First child, so a
+        // developer-rendered duplicate resolves to it (first value wins
+        // server-side). Excluded from the bridge JSON body at submit time.
+        <input type="hidden" name="_token" value={noJsToken} data-fastplace-csrf />
+      ) : null}
       {typeof children === "function"
         ? (children as (state: FormRenderState) => React.ReactNode)({
             processing,

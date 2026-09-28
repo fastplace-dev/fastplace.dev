@@ -1,4 +1,10 @@
-"""Auth notification emails — text-only, both carry the link plus expiry note."""
+"""Auth notification emails — text-only, both carry the link plus expiry note.
+
+These two builders predate the general notification system and stay as-is
+(auth callsites depend on them byte-for-byte). For anything new — channel
+routing, in-app rows, attachments — build a
+:class:`fastplace.notifications.Notification` subclass instead.
+"""
 
 from __future__ import annotations
 

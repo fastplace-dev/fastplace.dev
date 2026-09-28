@@ -85,6 +85,12 @@ _INDEX_HTML_TEMPLATE = """\
     <script type="module" src="/resources/js/main.jsx"></script>
   </head>
   <body>
+    <noscript>
+      <div style="margin:24px auto;max-width:560px;padding:20px 24px;border:1px solid #3f3f46;border-radius:12px;background:#18181b;color:#fafafa;font-family:system-ui,sans-serif;font-size:14px;line-height:1.6">
+        <p style="margin:0 0 8px;font-weight:600">{app_name} — Home Index</p>
+        <p style="margin:0">This page needs JavaScript for the full interface. Forms still submit without it: posting a form reloads the page with the result.</p>
+      </div>
+    </noscript>
     <div
       id="fastplace"
       data-page='{{"component":"Home/Index","props":{{}},"url":"/","version":"v1"}}'

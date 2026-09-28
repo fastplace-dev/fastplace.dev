@@ -4,13 +4,13 @@ make:model companion flags -c/-s/-r/-a (spec E2, E3)."""
 from __future__ import annotations
 
 import pytest
-
-# Autouse fixture: clean db/model/module state per test (see _isolation.py) —
-# the make:model -a -m path runs migration autogenerate against app.* models.
-from _isolation import isolate_project_state  # noqa: F401
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+
+# Autouse fixture: clean db/model/module state per test (see _isolation.py) —
+# the make:model -a -m path runs migration autogenerate against app.* models.
+from tests.cli._isolation import isolate_project_state  # noqa: F401
 
 runner = CliRunner()
 

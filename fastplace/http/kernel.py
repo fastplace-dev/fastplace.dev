@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,9 @@ from fastplace.http.compression import CompressionMiddleware
 from fastplace.http.maintenance import MaintenanceMiddleware
 from fastplace.http.middleware import Middleware, wrap_middleware
 from fastplace.http.response import Html, Json, Response
-from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware
+from fastplace.http.router import Router, endpoint_adapter, resolve_route_middleware, route_bindings
 from fastplace.http.websocket import websocket_adapter
+from fastplace.logging.middleware import RequestIdMiddleware
 
 API_PREFIX = "/api/v1"
 AI_PREFIX = "/ai"
@@ -144,6 +146,11 @@ def get_app(
     )
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
+    # Request-scoped locale: ?locale= -> Accept-Language -> LOCALE default,
+    # resolved once per request so trans() agrees across the whole response.
+    from fastplace.i18n import LocaleMiddleware
+
+    app.add_middleware(LocaleMiddleware)
     # Compression sits outside the security headers so it sees the final
     # header set; pure ASGI, streaming-safe (see fastplace/http/compression.py).
     app.add_middleware(CompressionMiddleware)
@@ -156,6 +163,10 @@ def get_app(
         MaintenanceMiddleware,
         root=str(root),
     )
+    # plat-G9 request correlation, outermost: minted (or accepted) before
+    # anything downstream runs, so every log line and the response itself
+    # carry the id — including maintenance 503s and error responses.
+    app.add_middleware(RequestIdMiddleware)
     _install_error_handlers(app, debug=debug, root=root)
     return app
 
@@ -167,7 +178,22 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     root = Path(project_root) if project_root else Path.cwd()
     load_env(root / ".env")
     reset_config(root)
+    # plat-G9: the storage/logs promise (deployment guide) becomes true with
+    # zero app config — channels, rotation and retention resolve from LOG_*
+    # config here. Idempotent: an already-configured process is a no-op.
+    from fastplace.logging import configure_logging
+
+    configure_logging(root=root)
     _ensure_import_root(root)
+    # One sweep before any importer runs: sys.modules is process-global
+    # while ``app.*`` is project-local, and the importers below only sweep
+    # behind their own file-existence gates — a project without app/jobs or
+    # app/ai/vectors would otherwise keep the previous project's cached app
+    # package (its module routes, gates, handlers) alive for this boot.
+    from fastplace.queue import _evict_stale_app_modules
+
+    _evict_stale_app_modules(root)
+
     # app/ai/vectors registrations must exist before anything resolves
     # active_vector_store() — boot is the one place a project's stores are
     # guaranteed to be importable.
@@ -254,6 +280,18 @@ def _ensure_import_root(root: Path) -> None:
 
 
 def _load_router_module(root: Path, dotted: str) -> Router | None:
+    # The routes surface is optional: an absent file means an absent router.
+    # The file check must come BEFORE the import — importlib reuses
+    # sys.modules, so a routes module imported for a different project root
+    # would otherwise leak its router into this boot (two projects in one
+    # process, or a test's throwaway project after the repo's routes were
+    # imported). The eviction itself runs before the gate, not after: a
+    # project lacking the file must still clean the previous project's
+    # cached module under the same dotted name.
+    expected = root.joinpath(*dotted.split(".")).with_suffix(".py")
+    _evict_stale_route_module(root, dotted, expected)
+    if not expected.is_file():
+        return None
     try:
         module = importlib.import_module(dotted)
     except ModuleNotFoundError as exc:
@@ -270,6 +308,32 @@ def _load_router_module(root: Path, dotted: str) -> Router | None:
     return router
 
 
+def _evict_stale_route_module(root: Path, dotted: str, expected: Path) -> None:
+    """Drop cached route modules that resolve to a different project's file.
+
+    sys.modules is process-global while routes modules are project-local:
+    when the cache holds another root's module under the same dotted name
+    (or a parent package whose ``__path__`` points elsewhere), a boot would
+    silently import — or fail to find — the wrong file. Evicting both lets
+    importlib resolve this project's own file.
+    """
+    cached = sys.modules.get(dotted)
+    if cached is not None:
+        cached_file = getattr(cached, "__file__", None)
+        if cached_file is None or Path(cached_file).resolve() != expected.resolve():
+            del sys.modules[dotted]
+    parent, _, _ = dotted.rpartition(".")
+    if not parent:
+        return
+    parent_mod = sys.modules.get(parent)
+    if parent_mod is None:
+        return
+    parent_paths = list(getattr(parent_mod, "__path__", None) or [])
+    expected_dir = (root / parent.replace(".", "/")).resolve()
+    if not parent_paths or Path(parent_paths[0]).resolve() != expected_dir:
+        del sys.modules[parent]
+
+
 def _merge_module_routers(
     root: Path, web: Router | None, api: Router | None
 ) -> tuple[Router | None, Router | None]:
@@ -283,8 +347,13 @@ def _merge_module_routers(
     from fastplace.modules import discover_modules
 
     for info in discover_modules(root).values():
-        if not (info.path / "routes.py").is_file():
+        expected = info.path / "routes.py"
+        if not expected.is_file():
             continue
+        # Same stale-module discipline as _load_router_module: a cached
+        # routes.py from another root under the same dotted name must not
+        # answer this boot's import.
+        _evict_stale_route_module(root, info.dotted("routes"), expected)
         module = importlib.import_module(info.dotted("routes"))
         web_extra = getattr(module, "web_routes", None)
         api_extra = getattr(module, "api_routes", None)
@@ -337,6 +406,11 @@ def _route_middleware_registry(
             module = importlib.import_module(module_path)
             entry = getattr(module, class_name)
         registry[name] = entry
+    # Built-in opt-in alias (app overrides always win): signed download /
+    # unsubscribe-style links validate themselves via middleware=["signed"].
+    from fastplace.http.urls import SignedMiddleware
+
+    registry.setdefault("signed", SignedMiddleware)
     return registry
 
 
@@ -349,6 +423,13 @@ def _mount_routes(
     ai_routes: Router | None,
     route_middleware: dict[str, Any] | None = None,
 ) -> None:
+    # Route/config optimization caches (audit sweep-G14) were measured and
+    # rejected: registration costs ~0.2 ms per route (dominated by FastAPI's
+    # own route-object construction, which a build-time manifest cannot
+    # skip) and config() reads are memoized (~0.5 µs). Realistic apps pay
+    # tens of ms once per worker — a persisted manifest would trade that
+    # for cache-invalidation and drift risk. Revisit only if boot profiling
+    # ever shows route registration as a real cost.
     api = APIRouter()
     if routes:
         _register_router(api, routes, route_middleware=route_middleware)
@@ -374,7 +455,11 @@ def _register_router(
         chain = tuple(resolve_route_middleware(registry, alias) for alias in route.middleware)
         target.add_api_route(
             prefix + route.path,
-            endpoint_adapter(route.handler, chain),
+            endpoint_adapter(
+                route.handler,
+                chain,
+                route_bindings(route.handler, prefix + route.path),
+            ),
             methods=[route.method],
             name=route.name or getattr(route.handler, "__name__", None) or "endpoint",
         )
@@ -465,6 +550,13 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
         retry_after = getattr(exc, "retry_after", None)
         if retry_after is not None:
             headers["Retry-After"] = str(retry_after)
+        # Domain errors may carry extra wire headers (the rate limiter's
+        # X-RateLimit-* live on ThrottleRequestsError) — merge them after
+        # Retry-After so a specific attribute always wins.
+        extra_headers = getattr(exc, "headers", None)
+        if isinstance(extra_headers, dict):
+            for name, value in extra_headers.items():
+                headers.setdefault(str(name), str(value))
         from fastplace.http.error_pages import http_error_page, wants_html
 
         # Validation keeps the 422 JSON envelope on every path — it is
@@ -509,11 +601,25 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Any, exc: Exception) -> Response:
+        # plat-G9: the response stays generic (by design), so the traceback
+        # must land in storage/logs — with the request's correlation id —
+        # or a production 500 leaves no trace anywhere. The id comes from
+        # the scope stamp: exception propagation already reset the
+        # contextvar by the time ServerErrorMiddleware calls this handler.
+        import logging
+
         from fastplace.http.error_pages import (
             debug_error_page,
             production_error_page,
             wants_html,
         )
+        from fastplace.logging.context import request_context
+
+        request_id = (getattr(request, "scope", None) or {}).get("fastplace_request_id", "")
+        with request_context(request_id):
+            logging.getLogger("fastplace.http").exception(
+                "unhandled exception during %s %s", request.method, request.url.path
+            )
 
         # Browser navigations get a styled page (rich in debug, generic in
         # production); API clients and the SPA bridge keep the JSON contract.

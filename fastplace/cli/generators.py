@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -897,13 +898,29 @@ def make_policy(
     )
 
 
-_TEST_TEMPLATE = '''"""{name} test."""
+_UNIT_TEST_TEMPLATE = '''"""{name} test — pure unit, no app boot needed."""
 
 from __future__ import annotations
 
 
-async def test_{snake}() -> None:
+def test_{snake}() -> None:
     assert True
+'''
+
+
+_FEATURE_TEST_TEMPLATE = '''"""{name} feature test — drives the real app through the test client.
+
+The ``client`` fixture lives in tests/conftest.py (created by this command
+if the project lacks one) and boots the actual routers over a throwaway
+database.
+"""
+
+from __future__ import annotations
+
+
+async def test_{snake}(client) -> None:
+    response = await client.get("/")
+    response.assert_ok()
 '''
 
 
@@ -911,20 +928,81 @@ async def test_{snake}() -> None:
 def make_test(
     name: str = typer.Argument(..., help="Test subject name in PascalCase"),
     feature: bool = typer.Option(
-        False, "--feature", help="Scaffold under tests/http/ instead of tests/unit/."
+        False, "--feature", help="Scaffold under tests/feature/ with the app client."
     ),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing file."),
 ) -> None:
-    """Create a test stub under tests/unit/ (or tests/http/ with --feature)."""
+    """Create a test stub under tests/unit/ (or tests/feature/ with --feature).
+
+    A plain project gets the test bootstrap too: pyproject.toml gains the
+    pytest tooling block, and a scaffold-shaped project (routes/web.py plus
+    the accounts model) also gets tests/conftest.py — written once, never
+    overwriting an existing one. On other shapes the plugin's own fixtures
+    keep working instead of being shadowed by imports that cannot resolve.
+    """
     root = _project_root()
     clean = _clean_name(name, "test")
-    folder = "http" if feature else "unit"
+    # `InvoiceTest` names the test, not the subject — the file is
+    # test_invoice.py either way, so the Test suffix never doubles up.
+    subject = clean
+    for suffix in ("_tests", "_test"):
+        if subject.endswith(suffix) and len(subject) > len(suffix):
+            subject = subject[: -len(suffix)]
+            break
+    folder = "feature" if feature else "unit"
+    template = _FEATURE_TEST_TEMPLATE if feature else _UNIT_TEST_TEMPLATE
+    _ensure_test_conftest(root)
     _write(
-        root / "tests" / folder / f"test_{clean}.py",
-        _TEST_TEMPLATE.format(name=name.strip(), snake=clean),
+        root / "tests" / folder / f"test_{subject}.py",
+        template.format(name=name.strip(), snake=subject),
         root,
         force=force,
     )
+
+
+def _ensure_test_conftest(root: Path) -> None:
+    """Write tests/conftest.py once and pytest tooling into pyproject.toml.
+
+    The conftest template imports routes.web and the accounts model, so it
+    only fits a scaffold-shaped project — dropped anywhere else it would
+    shadow the fastplace plugin's working fixtures with import errors.
+    Non-scaffold projects keep the plugin defaults; the pytest tooling still
+    lands either way, and a hand-written bootstrap is never touched.
+    """
+    from fastplace.cli.auth_scaffold import _TESTS_CONFTEST_TEMPLATE, _augment_pyproject
+
+    if not (root / "pyproject.toml").is_file():
+        # Minimal project table only — _augment_pyproject appends the full
+        # pytest tooling tail right after, so one code path owns that block.
+        # The directory name goes through the same slugifier `fastplace new`
+        # uses: "My App" must not become an invalid PEP 621 project name.
+        (root / "pyproject.toml").write_text(
+            _PYPROJECT_BOOTSTRAP_TEMPLATE.format(slug=_slugify_project(root.name) or "app")
+        )
+    _augment_pyproject(root)
+    if not _has_scaffold_shape(root):
+        return
+    conftest = root / "tests" / "conftest.py"
+    if conftest.is_file():
+        return
+    conftest.parent.mkdir(parents=True, exist_ok=True)
+    conftest.write_text(_TESTS_CONFTEST_TEMPLATE)
+
+
+def _has_scaffold_shape(root: Path) -> bool:
+    """Every module the emitted conftest imports must actually exist."""
+    needed = (
+        root / "routes" / "web.py",
+        root / "app" / "modules" / "accounts" / "models" / "user.py",
+    )
+    return all(path.is_file() for path in needed)
+
+
+_PYPROJECT_BOOTSTRAP_TEMPLATE = """[project]
+name = "{slug}"
+version = "0.1.0"
+description = "A Fastplace application."
+"""
 
 
 _SCOPE_TEMPLATE = '''"""{name} scope — composable query filters ({module} module)."""
@@ -1305,7 +1383,13 @@ from fastplace.http import Controller, Request, render
 
 class HomeController(Controller):
     async def index(self, request: Request):
-        return render(request, component="Home/Index", props={{"appName": "{app_name}"}})
+        return render(
+            request,
+            component="Home/Index",
+            props={{"appName": "{app_name}"}},
+            title="Home",
+            canonical="/",
+        )
 '''
 
 _WEB_ROUTES_TEMPLATE = '''"""Web routes — bridge pages (controllers return render(...))."""
@@ -1334,8 +1418,11 @@ from fastplace.http import Controller, Request, render
 
 
 class AuthPageController(Controller):
+    # Auth pages are public but never index-worthy — every one ships noindex.
     async def login(self, request: Request):
-        return render(request, component="Auth/Login", props={})
+        return render(
+            request, component="Auth/Login", props={}, title="Log in", robots="noindex"
+        )
 
     async def register(self, request: Request):
         # The register page's client-side default is "minlength: 8;" — the
@@ -1344,10 +1431,18 @@ class AuthPageController(Controller):
             request,
             component="Auth/Register",
             props={"passwordRules": frontend_rules()},
+            title="Register",
+            robots="noindex",
         )
 
     async def forgot_password(self, request: Request):
-        return render(request, component="Auth/ForgotPassword", props={})
+        return render(
+            request,
+            component="Auth/ForgotPassword",
+            props={},
+            title="Forgot Password",
+            robots="noindex",
+        )
 
     async def reset_password(self, request: Request):
         # The email link lands on /reset-password/{token}?email=... — the
@@ -1360,16 +1455,36 @@ class AuthPageController(Controller):
                 "email": request.query("email", ""),
                 "passwordRules": frontend_rules(),
             },
+            title="Reset Password",
+            robots="noindex",
         )
 
     async def verify_email(self, request: Request):
-        return render(request, component="Auth/VerifyEmail", props={})
+        return render(
+            request,
+            component="Auth/VerifyEmail",
+            props={},
+            title="Verify Email",
+            robots="noindex",
+        )
 
     async def confirm_password(self, request: Request):
-        return render(request, component="Auth/ConfirmPassword", props={})
+        return render(
+            request,
+            component="Auth/ConfirmPassword",
+            props={},
+            title="Confirm Password",
+            robots="noindex",
+        )
 
     async def two_factor_challenge(self, request: Request):
-        return render(request, component="Auth/TwoFactorChallenge", props={})
+        return render(
+            request,
+            component="Auth/TwoFactorChallenge",
+            props={},
+            title="Two-Factor Challenge",
+            robots="noindex",
+        )
 '''
 
 _DASHBOARD_CONTROLLER_TEMPLATE = '''"""Dashboard page controller — the authenticated landing page."""
@@ -1382,7 +1497,9 @@ from fastplace.http import Controller, Request, render
 class DashboardController(Controller):
     async def index(self, request: Request):
         # Blank starter canvas — props arrive when the app grows real data.
-        return render(request, component="Dashboard/Index", props={})
+        return render(
+            request, component="Dashboard/Index", props={}, title="Dashboard", robots="noindex"
+        )
 '''
 
 _SETTINGS_PAGES_CONTROLLER_TEMPLATE = '''"""Account settings page controller — profile and security bridge pages."""
@@ -1395,7 +1512,13 @@ from fastplace.http import Controller, Request, render
 
 class SettingsPagesController(Controller):
     async def profile(self, request: Request):
-        return render(request, component="Settings/Profile", props={})
+        return render(
+            request,
+            component="Settings/Profile",
+            props={},
+            title="Profile",
+            robots="noindex",
+        )
 
     async def security(self, request: Request):
         from fastplace.config import config
@@ -1416,7 +1539,13 @@ class SettingsPagesController(Controller):
             from fastplace.auth.passkey_guard import passkey_guard
 
             props["passkeys"] = await passkey_guard().list_for(user)
-        return render(request, component="Settings/Security", props=props)
+        return render(
+            request,
+            component="Settings/Security",
+            props=props,
+            title="Security",
+            robots="noindex",
+        )
 '''
 
 _SETTINGS_APPEARANCE_CONTROLLER_TEMPLATE = '''"""Settings appearance controller — the appearance settings bridge page."""
@@ -1428,7 +1557,13 @@ from fastplace.http import Controller, Request, render
 
 class SettingsAppearanceController(Controller):
     async def index(self, request: Request):
-        return render(request, component="Settings/Appearance", props={})
+        return render(
+            request,
+            component="Settings/Appearance",
+            props={},
+            title="Appearance",
+            robots="noindex",
+        )
 '''
 
 #: The auth variant of routes/web.py — the guest auth pages, the blank
@@ -1719,6 +1854,11 @@ CACHE_DRIVER=memory
 #   DATABASE_URL=mysql://user:pass@localhost:3306/{slug}
 DATABASE_URL=sqlite+aiosqlite:///./database.sqlite3
 
+# i18n — default locale; LOCALES lists every lang/<locale>.json the app serves
+# (comma-separated). Requests pick one via ?locale= or Accept-Language.
+LOCALE=en
+LOCALES=en
+
 # Bridge + assets (dev)
 VITE_DEV_URL=http://localhost:5173
 """
@@ -1794,6 +1934,12 @@ _INDEX_HTML_TEMPLATE = """\
     <script type="module" src="/resources/js/main.jsx"></script>
   </head>
   <body>
+    <noscript>
+      <div style="margin:24px auto;max-width:560px;padding:20px 24px;border:1px solid #3f3f46;border-radius:12px;background:#18181b;color:#fafafa;font-family:system-ui,sans-serif;font-size:14px;line-height:1.6">
+        <p style="margin:0 0 8px;font-weight:600">{app_name} — Home Index</p>
+        <p style="margin:0">This page needs JavaScript for the full interface. Forms still submit without it: posting a form reloads the page with the result.</p>
+      </div>
+    </noscript>
     <div
       id="fastplace"
       data-page='{{"component":"Home/Index","props":{{}},"url":"/","version":"v1"}}'
@@ -2396,6 +2542,10 @@ def new_project(
         (Path("config/auth.py"), _CONFIG_AUTH_TEMPLATE),
         (Path("public/.gitkeep"), ""),
         (Path("storage/.gitkeep"), ""),
+        (
+            Path("lang/en.json"),
+            json.dumps({"messages": {"welcome": f"Welcome to {app_name}"}}, indent=2) + "\n",
+        ),
         (Path(".env"), env),
         (Path(".env.example"), env_example),
         (Path(".gitignore"), _GITIGNORE_TEMPLATE),

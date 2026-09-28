@@ -10,12 +10,12 @@ from __future__ import annotations
 import re
 
 import pytest
-
-# Autouse fixture: clean db/model/module state per test (see _isolation.py).
-from _isolation import isolate_project_state  # noqa: F401
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+
+# Autouse fixture: clean db/model/module state per test (see _isolation.py).
+from tests.cli._isolation import isolate_project_state  # noqa: F401
 
 # Rich colorizes output when the environment forces color; strip codes so
 # assertions match on plain text.

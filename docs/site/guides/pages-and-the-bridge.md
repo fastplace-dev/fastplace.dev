@@ -113,3 +113,68 @@ the API and the bridge — the frontend can render errors from one shape.
   bridge client.
 - The bridge never re-runs page JavaScript on navigation — state in
   layouts survives; state in pages resets, by design.
+
+## Page titles & SEO
+
+Fastplace renders a **server-driven SPA**: the initial HTML document is
+produced by the backend, and crawlers that do not execute JavaScript
+(Facebook, Slack, iMessage, WhatsApp unfurlers, search bots) read its
+`<head>`. Pass head metadata as keyword arguments to `render()` so every
+tag is already present in the initial document:
+
+```python
+return render(
+    request,
+    component="Projects/Show",
+    props={"project": project},
+    title=f"{project.name} — Projects",
+    description=project.summary,
+    canonical=f"/projects/{project.id}",
+    image="/covers/launch.png",
+    og={"type": "article"},
+)
+```
+
+- **`title`** — the `<title>` tag. Without it the title is derived from
+  the component name (`Auth/ForgotPassword` → "Forgot Password").
+- **`description`** — `<meta name="description">` and `og:description`.
+- **`canonical`** — `<link rel="canonical">` and `og:url` (both carry
+  the same absolute URL). Relative paths are resolved against the
+  `APP_URL` config value — set it to your public origin in production.
+  It is deliberately **never** derived from the request's `Host`
+  header, which an attacker can poison.
+- **`image`** — `og:image`, absolutized the same way.
+- **`robots`** — `<meta name="robots">` (e.g. `noindex` on auth pages).
+- **`og`** — Open Graph overrides and extras: `title`, `description`,
+  `image`, `url`, `type`, `site_name`, plus any additional
+  `og:*` key (`locale`, `video`, ...). `og:title`, `og:type` (default
+  `website`) and `og:site_name` (default `APP_NAME`) always render;
+  `twitter:card` defaults to `summary`, or `summary_large_image` when
+  an image resolves.
+- **`head_tags`** — a list of raw trusted tags appended verbatim
+  (hreflang alternates, JSON-LD, ...).
+
+On SPA navigation the `<Head>` component updates `document.title`
+client-side; the head arguments only shape the initial document, which
+is where crawlers look.
+
+## Without JavaScript
+
+Fastplace keeps the web's escape hatches open when JavaScript never
+loads:
+
+- **Reading** — the initial HTML document carries the page title, a
+  description/OG block, and a `<noscript>` notice explaining the state.
+  The SPA itself (the hydrated interface) requires JavaScript.
+- **Forms** — `<Form>` renders a real `<form method="post">` and
+  injects a hidden `_token` field carrying the session CSRF token, so a
+  native form post works with JS disabled. The server answers with a
+  303 redirect back to the form, flashing validation errors (or the
+  CSRF-expiry message) onto the session; the reloaded page surfaces
+  them through the standard `errors` prop. The same contract covers
+  session-expired CSRF failures for JavaScript clients too.
+
+This is the documented rendering contract: **SPA-first, server-owned
+head, no-JS form posts**. Opt-in server-side rendering of the full
+React tree (a Node render sidecar with graceful fallback) is on the
+roadmap — see the blueprint's rendering-contract section.

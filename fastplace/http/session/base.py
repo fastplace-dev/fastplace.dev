@@ -35,8 +35,14 @@ class SessionStore(Protocol):
         payload: dict[str, Any],
         *,
         user_id: int | None = None,
-    ) -> None:
-        """Persist the full payload (upsert); ``user_id`` feeds revocation."""
+    ) -> str | None:
+        """Persist the full payload (upsert); ``user_id`` feeds revocation.
+
+        Statelessness hook: a store that keeps the payload inside the cookie
+        itself (``cookie`` driver) returns the encrypted value the middleware
+        must set as the cookie — server-side stores return ``None`` and keep
+        the minted opaque ID.
+        """
         ...
 
     async def destroy(self, session_id: str) -> None:

@@ -294,6 +294,78 @@ describe("Form", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * <Form> no-JS CSRF token
+ * ------------------------------------------------------------------ */
+
+describe("Form no-JS CSRF token", () => {
+  function appendMeta(content: string) {
+    const meta = document.createElement("meta");
+    meta.name = "csrf-token";
+    meta.content = content;
+    document.head.appendChild(meta);
+    return meta;
+  }
+
+  it("injects a hidden _token input when a csrf token is known", () => {
+    appendMeta("tok-123");
+    renderWithProvider(
+      <Form action="/projects">
+        <input type="text" name="name" />
+      </Form>,
+    );
+    const token = document.querySelector('input[type="hidden"][name="_token"]');
+    expect(token).not.toBeNull();
+    expect(token).toHaveValue("tok-123");
+    expect(token).toHaveAttribute("data-fastplace-csrf");
+  });
+
+  it("omits the token input when no csrf token is known", () => {
+    renderWithProvider(
+      <Form action="/projects">
+        <input type="text" name="name" />
+      </Form>,
+    );
+    expect(document.querySelector('input[name="_token"]')).toBeNull();
+  });
+
+  it("renders the token input as the first form control (first value wins)", () => {
+    appendMeta("tok-123");
+    renderWithProvider(
+      <Form action="/projects">
+        <input type="text" name="name" />
+      </Form>,
+    );
+    const form = document.querySelector("form")!;
+    expect(form.firstElementChild).toBe(form.querySelector('input[name="_token"]'));
+  });
+
+  it("keeps the auto token out of the bridge JSON body (the header carries it)", async () => {
+    const user = userEvent.setup();
+    appendMeta("tok-123");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          mockJsonResponse({ component: "Projects/Index", props: {}, url: "/projects" }),
+        ),
+    );
+
+    renderWithProvider(
+      <Form action="/projects">
+        <input type="text" name="name" defaultValue="Apollo" />
+        <button type="submit">Save</button>
+      </Form>,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(init.headers["X-Fastplace-CSRF-Token"]).toBe("tok-123");
+    expect(JSON.parse(init.body)).toEqual({ name: "Apollo" });
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * useForm
  * ------------------------------------------------------------------ */
 

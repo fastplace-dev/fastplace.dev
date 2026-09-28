@@ -128,9 +128,9 @@ class TestBackendScaffolds:
     def test_make_test_feature_flag_targets_tests_http(self, tmp_path, monkeypatch):
         result = _invoke(monkeypatch, tmp_path, "make:test", "Invoice", "--feature")
         assert result.exit_code == 0, result.output
-        feature = tmp_path / "tests" / "http" / "test_invoice.py"
+        feature = tmp_path / "tests" / "feature" / "test_invoice.py"
         assert feature.is_file()
-        assert "def test_invoice(" in feature.read_text()
+        assert "async def test_invoice(" in feature.read_text()
         assert not (tmp_path / "tests" / "unit" / "test_invoice.py").exists()
 
     def test_make_scope_requires_the_module_option(self, tmp_path, monkeypatch):

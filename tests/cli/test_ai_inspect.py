@@ -7,11 +7,11 @@ import re
 from pathlib import Path
 
 import pytest
-from _isolation import park_app_modules
 from typer.testing import CliRunner
 
 from fastplace.ai import Tool, reset_tool_registry, reset_vector_registry, vector_registry
 from fastplace.cli import app as cli_app
+from tests.cli._isolation import park_app_modules
 
 # Rich colorizes when the environment forces color; strip codes before matching.
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
