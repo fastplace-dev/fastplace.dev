@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -179,6 +180,15 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
 
     configure_logging(root=root)
     _ensure_import_root(root)
+    # One sweep before any importer runs: sys.modules is process-global
+    # while ``app.*`` is project-local, and the importers below only sweep
+    # behind their own file-existence gates — a project without app/jobs or
+    # app/ai/vectors would otherwise keep the previous project's cached app
+    # package (its module routes, gates, handlers) alive for this boot.
+    from fastplace.queue import _evict_stale_app_modules
+
+    _evict_stale_app_modules(root)
+
     # app/ai/vectors registrations must exist before anything resolves
     # active_vector_store() — boot is the one place a project's stores are
     # guaranteed to be importable.
@@ -265,6 +275,18 @@ def _ensure_import_root(root: Path) -> None:
 
 
 def _load_router_module(root: Path, dotted: str) -> Router | None:
+    # The routes surface is optional: an absent file means an absent router.
+    # The file check must come BEFORE the import — importlib reuses
+    # sys.modules, so a routes module imported for a different project root
+    # would otherwise leak its router into this boot (two projects in one
+    # process, or a test's throwaway project after the repo's routes were
+    # imported). The eviction itself runs before the gate, not after: a
+    # project lacking the file must still clean the previous project's
+    # cached module under the same dotted name.
+    expected = root.joinpath(*dotted.split(".")).with_suffix(".py")
+    _evict_stale_route_module(root, dotted, expected)
+    if not expected.is_file():
+        return None
     try:
         module = importlib.import_module(dotted)
     except ModuleNotFoundError as exc:
@@ -281,6 +303,32 @@ def _load_router_module(root: Path, dotted: str) -> Router | None:
     return router
 
 
+def _evict_stale_route_module(root: Path, dotted: str, expected: Path) -> None:
+    """Drop cached route modules that resolve to a different project's file.
+
+    sys.modules is process-global while routes modules are project-local:
+    when the cache holds another root's module under the same dotted name
+    (or a parent package whose ``__path__`` points elsewhere), a boot would
+    silently import — or fail to find — the wrong file. Evicting both lets
+    importlib resolve this project's own file.
+    """
+    cached = sys.modules.get(dotted)
+    if cached is not None:
+        cached_file = getattr(cached, "__file__", None)
+        if cached_file is None or Path(cached_file).resolve() != expected.resolve():
+            del sys.modules[dotted]
+    parent, _, _ = dotted.rpartition(".")
+    if not parent:
+        return
+    parent_mod = sys.modules.get(parent)
+    if parent_mod is None:
+        return
+    parent_paths = list(getattr(parent_mod, "__path__", None) or [])
+    expected_dir = (root / parent.replace(".", "/")).resolve()
+    if not parent_paths or Path(parent_paths[0]).resolve() != expected_dir:
+        del sys.modules[parent]
+
+
 def _merge_module_routers(
     root: Path, web: Router | None, api: Router | None
 ) -> tuple[Router | None, Router | None]:
@@ -294,8 +342,13 @@ def _merge_module_routers(
     from fastplace.modules import discover_modules
 
     for info in discover_modules(root).values():
-        if not (info.path / "routes.py").is_file():
+        expected = info.path / "routes.py"
+        if not expected.is_file():
             continue
+        # Same stale-module discipline as _load_router_module: a cached
+        # routes.py from another root under the same dotted name must not
+        # answer this boot's import.
+        _evict_stale_route_module(root, info.dotted("routes"), expected)
         module = importlib.import_module(info.dotted("routes"))
         web_extra = getattr(module, "web_routes", None)
         api_extra = getattr(module, "api_routes", None)
@@ -476,6 +529,13 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
         retry_after = getattr(exc, "retry_after", None)
         if retry_after is not None:
             headers["Retry-After"] = str(retry_after)
+        # Domain errors may carry extra wire headers (the rate limiter's
+        # X-RateLimit-* live on ThrottleRequestsError) — merge them after
+        # Retry-After so a specific attribute always wins.
+        extra_headers = getattr(exc, "headers", None)
+        if isinstance(extra_headers, dict):
+            for name, value in extra_headers.items():
+                headers.setdefault(str(name), str(value))
         from fastplace.http.error_pages import http_error_page, wants_html
 
         # Validation keeps the 422 JSON envelope on every path — it is

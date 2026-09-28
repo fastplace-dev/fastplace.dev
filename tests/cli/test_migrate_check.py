@@ -6,9 +6,6 @@ import os
 import re
 
 import pytest
-
-# Autouse fixture: clean db/model/module state per test (see _isolation.py).
-from _isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 from typer.testing import CliRunner
 
 # Registered at collection time, like tests/cli/test_model_inspect.py — the
@@ -18,6 +15,9 @@ from typer.testing import CliRunner
 import app.modules.accounts.models  # noqa: E402, F401
 import app.modules.projects.models  # noqa: E402, F401
 from fastplace.cli import app as cli_app
+
+# Autouse fixture: clean db/model/module state per test (see _isolation.py).
+from tests.cli._isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 
 runner = CliRunner()
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")

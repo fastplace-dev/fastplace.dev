@@ -7,10 +7,12 @@ import os
 import re
 
 import pytest
-from _isolation import isolate_project_state  # noqa: F401  (autouse: db + app.* isolation)
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+from tests.cli._isolation import (
+    isolate_project_state,  # noqa: F401  (autouse: db + app.* isolation)
+)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 runner = CliRunner()

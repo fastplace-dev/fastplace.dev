@@ -36,6 +36,11 @@ def _clean_logging_state(monkeypatch):
     saved_root_level = root.level
     fastplace_logger = logging.getLogger("fastplace")
     saved_fastplace_level = fastplace_logger.level
+    # Kernel-booting tests rebind the default config registry to the tmp
+    # project (create_app -> reset_config); leave it exactly as we found it.
+    import fastplace.config as config_module
+
+    default_config_before = config_module._default_config
 
     reset_logging_state()
     # INFO passes the root-logger gate: without a configure call, pytest's
@@ -48,6 +53,7 @@ def _clean_logging_state(monkeypatch):
     root.handlers[:] = saved_handlers
     root.setLevel(saved_root_level)
     fastplace_logger.setLevel(saved_fastplace_level)
+    config_module._default_config = default_config_before
 
 
 class _Capture(logging.Handler):

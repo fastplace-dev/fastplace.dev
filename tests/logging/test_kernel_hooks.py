@@ -8,6 +8,8 @@ documents in the kernel.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -58,7 +60,21 @@ def minimal_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     (tmp_path / ".env").write_text("APP_ENV=local\n")
     monkeypatch.chdir(tmp_path)
-    return tmp_path
+    # create_app boots leak by design: .env keys join os.environ, the
+    # project's routes modules join sys.modules, and the project root joins
+    # sys.path. Restore all three so later suites see the process as it was.
+    env_before = set(os.environ)
+    path_before = list(sys.path)
+    yield tmp_path
+    for key in set(os.environ) - env_before:
+        os.environ.pop(key, None)
+    sys.path[:] = path_before
+    for name in ("routes", "routes.web", "routes.auth", "routes.api", "routes.ai"):
+        module = sys.modules.get(name)
+        if module is not None:
+            file = getattr(module, "__file__", None)
+            if file and Path(file).is_relative_to(tmp_path):
+                del sys.modules[name]
 
 
 def test_create_app_configures_logging_with_project_root(

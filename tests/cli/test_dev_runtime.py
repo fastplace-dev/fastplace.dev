@@ -18,12 +18,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-# Autouse fixture: clean db/model/module state per test (see _isolation.py).
-from _isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+
+# Autouse fixture: clean db/model/module state per test (see _isolation.py).
+from tests.cli._isolation import isolate_project_state  # noqa: F401  (reset_db + module parking)
 
 runner = CliRunner()
 

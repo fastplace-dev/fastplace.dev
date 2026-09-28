@@ -6,13 +6,13 @@ import os
 import re
 
 import pytest
-from _isolation import (  # noqa: F401 — autouse + fixture by name
-    isolate_project_state,
-    park_project_modules,
-)
 from typer.testing import CliRunner
 
 from fastplace.cli import app as cli_app
+from tests.cli._isolation import (  # noqa: F401 — autouse + fixture by name
+    isolate_project_state,
+    park_project_modules,
+)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 runner = CliRunner()

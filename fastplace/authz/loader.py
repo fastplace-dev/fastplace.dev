@@ -31,6 +31,21 @@ def _import_by_path(gates_file: Path) -> None:
         raise
 
 
+def _evict_stale_gates_module(gates_file: Path) -> None:
+    """Drop a cached gates module bound to a different project's file.
+
+    sys.modules is process-global while gates.py is project-local: without
+    this, a second boot in one process would re-register — or silently
+    keep answering with — the first project's gates.
+    """
+    cached = sys.modules.get(_GATES_MODULE)
+    if cached is None:
+        return
+    cached_file = getattr(cached, "__file__", None)
+    if cached_file is None or Path(cached_file).resolve() != gates_file.resolve():
+        del sys.modules[_GATES_MODULE]
+
+
 def import_gates(project_root: str | Path | None = None) -> bool:
     """Import ``app/auth/gates.py`` so its gate registrations run.
 
@@ -42,6 +57,8 @@ def import_gates(project_root: str | Path | None = None) -> bool:
     gates_file = root / "app" / "auth" / "gates.py"
     if not gates_file.is_file():
         return False
+
+    _evict_stale_gates_module(gates_file)
 
     root_str = str(root)
     # Scope the path entry to this call (the import_jobs precedent: leaving

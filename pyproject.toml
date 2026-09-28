@@ -98,6 +98,11 @@ include = ["fastplace*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "packages/tenancy/src"]
+# importlib mode: test modules keep their real file identity — the default
+# prepend mode top-levels bare basenames, so two suites shipping the same
+# filename (logging/test_context.py vs tenancy/test_context.py) collide the
+# moment both collect in one process.
+addopts = "--import-mode=importlib"
 markers = ["slow: long-running build-gate tests (npm install + vite build)"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
