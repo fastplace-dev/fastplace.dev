@@ -62,6 +62,22 @@ def test_fastplace_pyproject_declares_project_urls():
     assert f'Issues = "{REPO_URL}/issues"' in urls_block
 
 
+def test_python_and_npm_versions_move_in_lockstep():
+    """The compatibility contract (upg-G3): python and npm packages release
+    together under one version — ``fastplace X.Y.Z`` pairs with
+    ``@fastplace/react X.Y.Z`` and ``@fastplace/ai-react X.Y.Z``. The
+    scaffolded npm pin derives from the running Python distribution, so a
+    repo where the three drift apart ships apps with untested combos."""
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    react = json.loads((ROOT / "packages" / "react" / "package.json").read_text())
+    ai_react = json.loads((ROOT / "packages" / "ai-react" / "package.json").read_text())
+    version = pyproject["project"]["version"]
+    assert react["version"] == version, "@fastplace/react must match pyproject"
+    assert ai_react["version"] == version, "@fastplace/ai-react must match pyproject"
+
+
 def test_pyproject_license_uses_pep639_spdx_form():
     """The ``license = { text = ... }`` TOML table is deprecated (setuptools
     warns it stops being supported); PEP 639 wants the SPDX string plus an

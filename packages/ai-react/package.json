@@ -1,6 +1,6 @@
 {
   "name": "@fastplace/ai-react",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Streaming AI hooks for Fastplace — SSE consumption for useAIStream/useAgent over /ai/* endpoints",
   "homepage": "https://fastplace.dev",
   "bugs": {
