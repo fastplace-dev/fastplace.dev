@@ -17,7 +17,11 @@ export default function ForgotPassword() {
     <>
       <Head title="Forgot password" />
 
-      {status && <div className="text-success mb-4 text-center text-sm font-medium">{status}</div>}
+      {status && (
+        <div role="status" className="text-success mb-4 text-center text-sm font-medium">
+          {status}
+        </div>
+      )}
 
       <div className="space-y-6">
         <Form action="/forgot-password" method="post">
@@ -32,9 +36,11 @@ export default function ForgotPassword() {
                   autoComplete="off"
                   autoFocus
                   placeholder="email@example.com"
+                  aria-describedby={errors.email ? "email-error" : undefined}
+                  aria-invalid={errors.email ? true : undefined}
                 />
 
-                <InputError message={errors.email?.[0]} />
+                <InputError id="email-error" message={errors.email?.[0]} />
               </div>
 
               <div className="my-6 flex items-center justify-start">

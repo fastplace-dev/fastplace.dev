@@ -65,8 +65,10 @@ export default function TwoFactorChallenge() {
                     placeholder="Enter recovery code"
                     autoFocus={showRecoveryInput}
                     required
+                    aria-describedby={errors.recovery_code ? "recovery_code-error" : undefined}
+                    aria-invalid={errors.recovery_code ? true : undefined}
                   />
-                  <InputError message={errors.recovery_code?.[0]} />
+                  <InputError id="recovery_code-error" message={errors.recovery_code?.[0]} />
                 </>
               ) : (
                 <div className="flex flex-col items-center justify-center space-y-3 text-center">
@@ -87,7 +89,9 @@ export default function TwoFactorChallenge() {
                       </InputOTPGroup>
                     </InputOTP>
                   </div>
-                  <InputError message={errors.code?.[0]} />
+                  {/* The OTP widget owns its internal inputs; the error stays
+                      visible and announced rather than wired via id. */}
+                  <InputError id="code-error" message={errors.code?.[0]} />
                 </div>
               )}
 
