@@ -130,9 +130,13 @@ class TestParseChannel:
             with pytest.raises(BroadcastError):
                 parse_channel(raw)
 
-    def test_non_string_name_is_a_type_error(self):
-        with pytest.raises(TypeError):
-            parse_channel(42)  # type: ignore[arg-type]
+    def test_overlong_names_are_refused(self):
+        # Parsed names become bus subscription keys and roster dict entries
+        # held for the process lifetime — an unbounded name is a memory
+        # pressure vector even from fully authorized sockets.
+        with pytest.raises(BroadcastError):
+            parse_channel("a" * 201)
+        parse_channel("a" * 200)  # the cap itself is a legal name
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +417,34 @@ class TestPresenceRoster:
         tracker = make_tracker()
         await tracker.leave("presence.orders.42", 7)
         assert tracker.roster("presence.orders.42") == []
+
+    async def test_last_leave_releases_control_plumbing(self):
+        # The WS layer mirrors every socket unsubscribe into leave(), so an
+        # empty local roster means the control subscription, remote
+        # snapshots, and diff cache for that channel are pure memory leak —
+        # a long-lived process cycling presence channels would grow without
+        # bound. Releasing on the last leave bounds it.
+        clock = FakeClock()
+        bus = MemoryBroadcastBus()
+        here = make_tracker(bus=bus, clock=clock, origin="here")
+        there = make_tracker(bus=bus, clock=clock, origin="there")
+
+        await there.join("presence.orders.42", 9)
+        await here.join("presence.orders.42", 7)  # populates there's remote view
+        assert "presence.orders.42" in there._unsubscribes
+        assert "presence.orders.42" in there._remote
+
+        await there.leave("presence.orders.42", 9)
+        assert "presence.orders.42" not in there._unsubscribes
+        assert "presence.orders.42" not in there._remote
+        assert "presence.orders.42" not in there._local
+
+        # A later join re-establishes everything (and sees remote members
+        # again once the next control message or snapshot arrives).
+        await there.join("presence.orders.42", 11)
+        assert "presence.orders.42" in there._unsubscribes
+        await here.heartbeat()
+        assert sorted(m.user_id for m in there.roster("presence.orders.42")) == [7, 11]
 
 
 class TestPresenceAcrossProcesses:

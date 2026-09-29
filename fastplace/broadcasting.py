@@ -74,6 +74,11 @@ _event_mappings: dict[str, str] = {}
 #: must be refused, never silently treated under the public rule.
 _RESERVED = frozenset({"company", "private", "presence"})
 
+# Hard cap on any parsed channel name (the raw string, prefixes included).
+# Names become bus subscription keys and roster dict entries held for the
+# process lifetime; the cap bounds that memory from authorized sockets too.
+MAX_CHANNEL_NAME_LENGTH = 200
+
 #: Default per-payload cap (bytes of the serialized JSON). A slow consumer
 #: is dropped, never allowed to balloon a channel's memory.
 _DEFAULT_MAX_PAYLOAD_BYTES = 65536
@@ -112,10 +117,16 @@ def parse_channel(raw: str) -> Channel:
     ``channel := company "." tenant_id "." rest | rest`` and
     ``rest := "private." name | "presence." name | name``. Malformed names
     raise :class:`BroadcastError` — an unknown shape never falls through to
-    a weaker rule.
+    a weaker rule. Names are capped at ``MAX_CHANNEL_NAME_LENGTH`` chars:
+    parsed names become bus subscription keys and roster entries held for
+    the process lifetime, so the grammar bounds them.
     """
     if not isinstance(raw, str):
         raise TypeError(f"channel name must be a str, got {type(raw).__name__}")
+    if len(raw) > MAX_CHANNEL_NAME_LENGTH:
+        raise BroadcastError(
+            f"channel name of {len(raw)} chars exceeds the {MAX_CHANNEL_NAME_LENGTH}-character cap"
+        )
     if raw.startswith("_") or "::" in raw:
         # Presence control traffic rides shadow channels ("__presence::…").
         # Those names must be unparseable here on both the subscribe and the
@@ -553,6 +564,26 @@ class PresenceTracker:
             channel, {"kind": "leave", "user_id": user_id, "connections": member.connections}
         )
         self._changed(channel)
+        self._release(channel)
+
+    def _release(self, channel: str) -> None:
+        """Drop a presence channel's control plumbing once nobody local holds it.
+
+        The WebSocket layer mirrors every socket unsubscribe into
+        ``leave()``, so an empty local roster means no local socket can
+        receive that channel's roster pushes — the control subscription,
+        remote snapshots, and diff cache would grow without bound in a
+        long-lived process cycling presence channels. A later ``join``
+        re-establishes all of it (``_listen`` + the next control message).
+        """
+        if self._local.get(channel):
+            return
+        self._local.pop(channel, None)
+        unsubscribe = self._unsubscribes.pop(channel, None)
+        if unsubscribe is not None:
+            unsubscribe()
+        self._remote.pop(channel, None)
+        self._last_roster.pop(channel, None)
 
     async def heartbeat(self) -> None:
         """Republish the full local member list per channel, keyed by origin.
