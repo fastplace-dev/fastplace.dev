@@ -243,6 +243,7 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     mount_dashboard(app)
     _install_static_mounts(app, root)
     _register_db_lifecycle(root)
+    _register_broadcast_lifecycle()
     # Default shared props: every page payload carries the auth snapshot
     # (spec §4.16). Registered here — the real boot path — never in get_app,
     # whose test factories pin exact props shapes.
@@ -736,6 +737,28 @@ def _register_db_lifecycle(root: Path) -> None:
         # shutdown loop — logged a misleading "dropped without disposal"
         # warning on every graceful stop.
         await db.manager.dispose()
+
+
+def _register_broadcast_lifecycle() -> None:
+    """Close the process broadcast bus on shutdown under the redis driver.
+
+    Only the redis bus holds a broker connection and a listener task — the
+    memory driver registers nothing (idle apps keep the hook list clean).
+    The listener itself starts lazily on first subscribe/publish; startup
+    needs no hook.
+    """
+    from fastplace.config import config
+
+    if str(config("BROADCAST_DRIVER", default="memory")).lower() != "redis":
+        return
+
+    from fastplace.broadcasting import broadcast_bus
+
+    bus = broadcast_bus()
+
+    @lifecycle.on_shutdown
+    async def _close_broadcast_bus() -> None:
+        await bus.close()
 
 
 async def _drain_memory_queue_on_shutdown() -> None:

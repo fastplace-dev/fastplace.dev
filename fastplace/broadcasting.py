@@ -39,12 +39,13 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from fastplace.config import config
 from fastplace.errors import ConfigurationError, FastplaceError
 
 __all__ = [
+    "BroadcastBus",
     "BroadcastError",
     "Channel",
     "Member",
@@ -270,6 +271,16 @@ def _job_id() -> str | None:
 Subscriber = Callable[[str, str], Any]
 
 
+class BroadcastBus(Protocol):
+    """The driver contract: subscribe/publish/close over serialized strings."""
+
+    def subscribe(self, channel: str, callback: Subscriber) -> Callable[[], None]: ...
+
+    async def publish(self, channel: str, data: str) -> None: ...
+
+    async def close(self) -> None: ...
+
+
 class MemoryBroadcastBus:
     """In-process pub/sub — deterministic dev and tests, no broker.
 
@@ -304,15 +315,15 @@ class MemoryBroadcastBus:
         """Release driver resources (the memory driver holds none)."""
 
 
-_bus: MemoryBroadcastBus | None = None
+_bus: BroadcastBus | None = None
 
 
-def broadcast_bus() -> MemoryBroadcastBus:
+def broadcast_bus() -> BroadcastBus:
     """The process broadcast bus, built once behind ``BROADCAST_DRIVER``.
 
     Only the in-process memory driver lives here; the redis pub/sub driver
-    (``fastplace.broadcasting_redis``) registers itself through
-    :func:`set_broadcast_bus` at factory time once imported.
+    is ``fastplace.broadcasting_redis.RedisBroadcastBus`` (same
+    :class:`BroadcastBus` protocol, broker fan-out).
     """
     global _bus
     if _bus is None:
@@ -321,7 +332,7 @@ def broadcast_bus() -> MemoryBroadcastBus:
             try:
                 from fastplace.broadcasting_redis import RedisBroadcastBus
 
-                _bus = RedisBroadcastBus()  # type: ignore[assignment]
+                _bus = RedisBroadcastBus()
             except ImportError as exc:  # pragma: no cover — redis extra missing
                 raise ConfigurationError(
                     f"unknown BROADCAST_DRIVER {driver!r} or its dependency is "
@@ -332,7 +343,7 @@ def broadcast_bus() -> MemoryBroadcastBus:
     return _bus
 
 
-def set_broadcast_bus(bus: MemoryBroadcastBus) -> None:
+def set_broadcast_bus(bus: BroadcastBus) -> None:
     """Swap the process bus (DI seam — tests and the redis subscriber)."""
     global _bus
     _bus = bus
@@ -411,7 +422,7 @@ class PresenceTracker:
     def __init__(
         self,
         *,
-        bus: MemoryBroadcastBus | None = None,
+        bus: BroadcastBus | None = None,
         clock: Callable[[], float] = time.monotonic,
         origin: str | None = None,
         ghost_ttl: float = 45.0,
