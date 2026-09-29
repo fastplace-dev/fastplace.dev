@@ -32,6 +32,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   allows. `queue:health` warns when the flag is on but the driver is not
   saq; failed jobs stay on the CLI surface (queue:failed / retry / forget
   / flush / prune-failed).
+- Broadcasting: `broadcast(channel, payload)` fans JSON frames to
+  WebSocket subscribers over a pluggable bus (`BROADCAST_DRIVER` = memory
+  for single-process dev/tests, redis pub/sub for multi-worker). Channels
+  follow one grammar — public `orders.42`, gated `private.*` /
+  `presence.*` (subscribe-time gate check via BROADCAST_PRIVATE_ABILITY,
+  fail-closed when unset), and tenancy-scoped `company.{id}.*` checked
+  against the requesting user's membership. The `/ws/broadcast` endpoint
+  resolves the session cookie at the handshake (close codes 4400/4401/
+  4403), enforces payload/subscription/queue bounds, and derives
+  presence rosters from join/leave bus events plus local connection
+  tracking — no separate roster store; a heartbeat bounds ghosts from
+  crashed processes. Domain events broadcast only through an explicit
+  opt-in `broadcast_to` mapping. Frontend: `useBroadcast` /
+  `usePresence` hooks in `@fastplace/react` (exponential-backoff
+  reconnect, resubscribe on reconnect, SSR-dormant). Sample app gains a
+  `/broadcast` demo page; guide at docs/site/guides/broadcasting.md.
 
 ## [0.2.1] - 2026-09-28
 
