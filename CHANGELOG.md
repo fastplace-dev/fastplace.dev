@@ -49,6 +49,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   reconnect, resubscribe on reconnect, SSR-dormant). Sample app gains a
   `/broadcast` demo page; guide at docs/site/guides/broadcasting.md.
 
+### Fixed
+
+- Broadcasting: presence control channel names (`__presence::…`, any leading
+  `_` or `::`) are refused by the channel grammar — previously they parsed
+  as public channels, letting a client subscribe to roster plumbing (join/
+  leave/snapshot frames carrying user ids).
+- Broadcasting: tenancy-scoped `company.<id>.*` channels are denied when no
+  channel authorizer weighs in (fastplace-tenancy absent or not installed) —
+  previously they degraded to the public rule.
+- Broadcasting: the redis driver's crashed-listener restart path re-queues
+  broker-side subscriptions and releases the dead connection pair —
+  previously the rebuilt listener never re-subscribed, so the process
+  silently stopped receiving; a publish racing `close()` can no longer
+  resurrect a listener close() would never tear down.
+- Broadcasting: the WebSocket layer owns a process-wide presence heartbeat
+  task (every third of the 45s ghost window) — previously nothing
+  heartbeated outside tests, so every remote roster ghost-aged out after
+  the last control message while sockets stayed open. Join/leave control
+  events now carry honest per-tab connection counts and refresh the
+  origin's liveness stamp, and a presence channel's control plumbing is
+  released when its last local member leaves (bounded memory). Channel
+  names are capped at 200 characters.
+- Storage: the S3 disk's `public` flag is parsed, not cast — an env
+  `S3_PUBLIC=false` arrived as the string `'false'` and `bool('false')` is
+  True, so disabling public URLs silently enabled them.
+- Gates: the ruff/mypy `storage` exclusion is anchored to the repo root —
+  the unanchored pattern also excluded `tests/storage/` from every gate;
+  that directory is lint-clean now.
+
 ## [0.2.1] - 2026-09-28
 
 The SQLAlchemy 2.1 compatibility release. `morph_to_many` eager loads are

@@ -94,6 +94,11 @@ Rendering rules, all deliberate:
   payload carries final `html`/`text` only — `mail:outbox` and
   `mail:preview` show queued mailables exactly as the worker will send
   them.
+- **No request context in mail.** A notification's mailable renders in
+  the queue worker, where no request exists to derive a host from.
+  Build absolute links from `APP_URL` (or thread the base URL through
+  the mailable), never from the enqueueing request — otherwise a
+  worker-sent mail carries links for the wrong host.
 
 The envelope builders (`attach` / `add_cc` / `add_bcc` / `set_reply_to`)
 work on a `Mailable` exactly as on a `MailMessage`, and a notification's
