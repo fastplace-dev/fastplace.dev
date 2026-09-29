@@ -36,6 +36,12 @@ auto default). ``to_queue=True`` requires the job; ``to_queue=False`` keeps
 the dispatch in-process only. The queue leg always keys on the exact event
 name — wildcards only widen who listens in-process.
 
+Broadcast bridging: an event name mapped through
+``fastplace.broadcasting.broadcast_events`` also publishes on its mapped
+channel. The mapping is explicit per event — unmapped names are never
+broadcast — and the broadcast leg rides the same post-commit buffer as the
+queue leg.
+
 Ordering contract: inside ``db.transaction()`` the queue leg is *buffered on
 the transaction scope* and flushed only after the commit — a worker cannot
 see an uncommitted row, and a rollback discards the buffered events (a
@@ -163,31 +169,51 @@ async def dispatch(event: DomainEvent, *, to_queue: bool | None = None) -> None:
         ran_listener = True
         await _invoke(handler, event)
 
-    if to_queue is False:
-        return
+    # Broadcast leg (opt-in map): rendered here — a template that does not
+    # fit the payload is a wiring bug and fails loud, in-operation — but
+    # published post-commit like the queue leg below.
+    from fastplace.broadcasting import mapped_broadcast_channel
 
-    from fastplace.queue import jobs
+    channel = mapped_broadcast_channel(event.name, event.payload)
 
-    has_job = event.name in jobs()
-    if not ran_listener and not has_job and to_queue is None:
-        logger.warning(
-            "domain event %r dispatched with no listener and no registered job — "
-            "cross-module work may be silently skipped (did this process import app/jobs?)",
-            event.name,
-        )
-    if to_queue is not True and not has_job:
-        return
-
-    # Inside a commit-owning scope the enqueue waits for the commit (see the
-    # module docstring); otherwise it runs inline.
+    # Both bridged legs obey the same ordering contract: inside a
+    # commit-owning scope they buffer on the scope and land only after the
+    # commit (a rollback discards them); outside one they run inline.
     from fastplace.orm.session import ambient
 
     state = ambient()
-    if state is not None and state.owns_commit:
-        state.deferred_domain_events.append((event.name, dict(event.payload), to_queue))
-        return
+    scope = state if (state is not None and state.owns_commit) else None
 
-    await _enqueue(event.name, event.payload, to_queue)
+    if to_queue is not False:
+        from fastplace.queue import jobs
+
+        has_job = event.name in jobs()
+        if not ran_listener and not has_job and channel is None and to_queue is None:
+            logger.warning(
+                "domain event %r dispatched with no listener and no registered job — "
+                "cross-module work may be silently skipped (did this process import app/jobs?)",
+                event.name,
+            )
+        if to_queue is True or has_job:
+            if scope is not None:
+                scope.deferred_domain_events.append((event.name, dict(event.payload), to_queue))
+            else:
+                await _enqueue(event.name, event.payload, to_queue)
+
+    if channel is not None:
+        if scope is not None:
+            scope.deferred_broadcasts.append((channel, dict(event.payload)))
+        else:
+            await _broadcast_leg(channel, event.payload)
+
+
+async def _broadcast_leg(channel: str | None, payload: dict[str, Any]) -> None:
+    """Publish a mapped event now (the post-commit flush calls this too)."""
+    if channel is None:
+        return
+    from fastplace.broadcasting import broadcast
+
+    await broadcast(channel, payload)
 
 
 async def _invoke(handler: Listener, event: DomainEvent) -> None:
@@ -222,11 +248,21 @@ async def flush_deferred_domain_events(state: Any) -> None:
     buffered, state.deferred_domain_events = state.deferred_domain_events, []
     for name, payload, to_queue in buffered:
         await _enqueue(name, payload, to_queue)
+    broadcasts, state.deferred_broadcasts = state.deferred_broadcasts, []
+    for channel, payload in broadcasts:
+        # The write is already durable — a broker outage at flush time is
+        # logged, never raised into the caller of a committed transaction
+        # (the queue leg's auto path follows the same rule).
+        try:
+            await _broadcast_leg(channel, payload)
+        except Exception:
+            logger.exception("buffered broadcast on channel %r lost", channel)
 
 
 def discard_deferred_domain_events(state: Any) -> None:
     """Drop the events buffered on a rolled-back transaction scope."""
     state.deferred_domain_events = []
+    state.deferred_broadcasts = []
 
 
 def reset_listeners() -> None:

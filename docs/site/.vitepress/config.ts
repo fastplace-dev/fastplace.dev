@@ -51,6 +51,7 @@ export default defineConfig({
           { text: "AI-native apps", link: "/guides/ai" },
           { text: "Multi-tenancy", link: "/guides/tenancy" },
           { text: "Background jobs & cache", link: "/guides/background-and-cache" },
+          { text: "Broadcasting", link: "/guides/broadcasting" },
           { text: "Storage", link: "/guides/storage" },
           { text: "Search", link: "/guides/search" },
           { text: "Mail & notifications", link: "/guides/mail-and-notifications" },

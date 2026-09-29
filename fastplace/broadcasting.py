@@ -54,6 +54,8 @@ __all__ = [
     "authorize_subscribe",
     "broadcast",
     "broadcast_bus",
+    "broadcast_events",
+    "mapped_broadcast_channel",
     "parse_channel",
     "register_channel_authorizer",
     "reset_broadcasting",
@@ -61,6 +63,11 @@ __all__ = [
 ]
 
 logger = logging.getLogger("fastplace.broadcasting")
+
+#: Event name -> channel template, populated by :func:`broadcast_events`.
+#: Empty by default: without an explicit registration no domain event ever
+#: reaches a channel (the bridge is opt-in per event, reviewable by design).
+_event_mappings: dict[str, str] = {}
 
 #: Segments that only mean something in prefix position. Occurring anywhere
 #: else makes the whole name unparseable — an ``orders.private.42`` shape
@@ -350,10 +357,11 @@ def set_broadcast_bus(bus: BroadcastBus) -> None:
 
 
 def reset_broadcasting() -> None:
-    """Clear the bus singleton and the authorizer chain (test seam)."""
+    """Clear the bus singleton, the authorizer chain, and the event map."""
     global _bus
     _bus = None
     _authorizers.clear()
+    _event_mappings.clear()
 
 
 async def broadcast(channel: str, payload: Any) -> None:
@@ -377,6 +385,47 @@ async def broadcast(channel: str, payload: Any) -> None:
                 job,
             )
     await broadcast_bus().publish(parsed.raw, data)
+
+
+# ---------------------------------------------------------------------------
+# the event bridge — explicit domain-event → channel mapping
+# ---------------------------------------------------------------------------
+
+
+def broadcast_events(mapping: Mapping[str, str]) -> None:
+    """Map domain event names to channel templates, opt-in per event.
+
+    ``broadcast_events({"order_created": "orders.{order_id}"})`` makes that
+    one event publish on ``orders.<id>`` (placeholders interpolate from the
+    event payload); a template without placeholders is a constant channel.
+    Events without a mapping are never broadcast — a blanket ``*`` listener
+    would push every model lifecycle event onto channels, an unauditable
+    security surface. Call from app wiring; later calls compose per key.
+    """
+    for name, template in mapping.items():
+        if not isinstance(name, str) or not name:
+            raise TypeError(f"event name must be a non-empty str, got {name!r}")
+        if not isinstance(template, str) or not template:
+            raise TypeError(f"channel template must be a non-empty str, got {template!r}")
+        _event_mappings[name] = template
+
+
+def mapped_broadcast_channel(name: str, payload: Mapping[str, Any]) -> str | None:
+    """Render the mapped channel for ``name``, or ``None`` when unmapped.
+
+    A mapped name whose template references a key the payload lacks is a
+    wiring bug, not a runtime condition — it fails loud, naming the event.
+    """
+    template = _event_mappings.get(name)
+    if template is None:
+        return None
+    try:
+        return template.format_map(dict(payload))
+    except KeyError as exc:
+        raise BroadcastError(
+            f"broadcast_events mapping for {name!r} references {exc.args[0]!r} "
+            f"but the event payload carries no such key"
+        ) from None
 
 
 # ---------------------------------------------------------------------------
