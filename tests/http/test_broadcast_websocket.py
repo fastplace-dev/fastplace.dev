@@ -160,9 +160,14 @@ class TestFrames:
                 "payload": {"n": 1},
             }
 
-    def test_private_channel_denial_is_an_error_frame_socket_stays_open(self, app_client):
-        # BROADCAST_PRIVATE_ABILITY unset denies every private channel
-        # (fail-closed) — but denial is an error frame, never a close.
+    def test_private_channel_denial_is_an_error_frame_socket_stays_open(
+        self, app_client, monkeypatch
+    ):
+        # An explicitly empty BROADCAST_PRIVATE_ABILITY denies every private
+        # channel (fail-closed) — but denial is an error frame, never a close.
+        # Pinned to "" so the sample app's config default cannot flip the
+        # premise: this tests the framework's no-ability branch, not the app.
+        monkeypatch.setenv("BROADCAST_PRIVATE_ABILITY", "")
         _, _, connect = app_client
         with connect(user_id=7) as ws:
             ws.send_json({"type": "subscribe", "channel": "private.orders.42"})

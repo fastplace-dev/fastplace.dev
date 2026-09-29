@@ -133,12 +133,16 @@ class TestAuthorizeSubscribe:
     async def test_presence_channel_requires_authentication(self):
         assert not await authorize_subscribe(None, parse_channel("presence.orders.42"))
 
-    async def test_private_fails_closed_without_ability(self):
+    async def test_private_fails_closed_without_ability(self, monkeypatch):
         # "Private but the ability name is missing" must never degrade to
-        # public — unset ability denies everyone.
+        # public — unset ability denies everyone. Pinned to "" so the sample
+        # app's config default cannot flip the premise: this tests the
+        # framework's no-ability branch, not the app's config choice.
+        monkeypatch.setenv("BROADCAST_PRIVATE_ABILITY", "")
         assert not await authorize_subscribe(User(), parse_channel("private.orders.42"))
 
-    async def test_presence_fails_closed_without_ability(self):
+    async def test_presence_fails_closed_without_ability(self, monkeypatch):
+        monkeypatch.setenv("BROADCAST_PRIVATE_ABILITY", "")
         assert not await authorize_subscribe(User(), parse_channel("presence.orders.42"))
 
     async def test_ability_receives_the_parsed_channel(self, monkeypatch):

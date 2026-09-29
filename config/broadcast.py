@@ -10,7 +10,9 @@ BROADCAST_REDIS_URL = None
 BROADCAST_CHANNEL_PREFIX = "fastplace:broadcast:"
 # Gate ability required to subscribe private/presence channels; None =
 # private and presence channels deny everyone (fail-closed by design).
-BROADCAST_PRIVATE_ABILITY = None
+# The sample app's demo grants every authenticated user (the gate lives in
+# app/http/controllers/broadcast_demo_controller.py).
+BROADCAST_PRIVATE_ABILITY = "view-broadcast"
 # Serialized payload cap in bytes; oversized payloads fail loud at publish.
 BROADCAST_MAX_PAYLOAD_BYTES = 65536
 # Per-socket channel cap — one client cannot pin unlimited bus subscriptions.

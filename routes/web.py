@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.http.controllers.about_controller import AboutController
 from app.http.controllers.assistant_page_controller import AssistantPageController
 from app.http.controllers.auth_page_controller import AuthPageController
+from app.http.controllers.broadcast_demo_controller import BroadcastDemoController
 from app.http.controllers.dashboard_controller import DashboardController
 from app.http.controllers.home_controller import HomeController
 from app.http.controllers.knowledge_controller import KnowledgeController
@@ -24,6 +25,22 @@ router.get(
     middleware=["auth", "verified"],
 )
 router.get("/about", AboutController, "index", name="about")
+# Broadcasting demo — a live /ws/broadcast page (auth: the socket handshake
+# resolves the session cookie, and the presence leg is authenticated-only).
+router.get(
+    "/broadcast",
+    BroadcastDemoController,
+    "index",
+    name="broadcast.demo",
+    middleware=["auth"],
+)
+router.post(
+    "/broadcast/publish",
+    BroadcastDemoController,
+    "publish",
+    name="broadcast.publish",
+    middleware=["auth"],
+)
 router.get("/assistant", AssistantPageController, "index", name="assistant")
 router.get("/knowledge", KnowledgeController, "index", name="knowledge.index")
 
