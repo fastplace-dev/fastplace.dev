@@ -1,5 +1,7 @@
 """Application configuration defaults (env vars always win)."""
 
+import os
+
 APP_NAME = "Fastplace"
 APP_ENV = "local"
 # Safe by default — flip to True in .env for local debugging. The kernel also
@@ -60,3 +62,16 @@ MIDDLEWARE = [
     "fastplace.auth.middleware.SharedAbilitiesMiddleware",
     "fastplace.auth.middleware.CsrfMiddleware",
 ]
+
+# Named rate limiter for POST /register (routes/auth.py names it as
+# "throttle:register"). The default matches the credential class's other
+# limits — 5 per minute per IP, fail-closed. AUTH_REGISTER_THROTTLE_MAX
+# exists for dense test topologies (the e2e suite registers several users
+# inside one window from 127.0.0.1); production never sets it.
+from fastplace.ratelimit import Limit  # noqa: E402
+from fastplace.ratelimit import limit as _register_limit  # noqa: E402
+
+_register_limit(
+    "register",
+    lambda request: Limit.per_minute(int(os.environ.get("AUTH_REGISTER_THROTTLE_MAX", "5"))),
+)

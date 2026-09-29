@@ -43,6 +43,7 @@ export default defineConfig({
       `APP_ENV=production APP_KEY=e2e-test-secret-key-0123456789abcdef ` +
       `APP_URL=http://localhost:${PORT} ` +
       `CACHE_ALLOW_MEMORY_IN_PRODUCTION=1 ` + // single uvicorn worker — safe here
+      `AUTH_REGISTER_THROTTLE_MAX=20 ` + // the suite registers ~7 users/min from one IP
       `DATABASE_URL=sqlite+aiosqlite:///storage/e2e.sqlite3 ` +
       `sh -c 'mkdir -p storage && ` +
       `rm -f storage/e2e.sqlite3 storage/e2e.sqlite3-wal storage/e2e.sqlite3-shm && ` +

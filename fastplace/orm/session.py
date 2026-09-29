@@ -30,6 +30,9 @@ class _ScopeState:
     deferred_domain_events: list[tuple[str, dict[str, Any], bool | None]] = field(
         default_factory=list
     )
+    # Broadcast legs of mapped events, buffered under the same rule: a
+    # rolled-back write never happened, so its broadcasts must not either.
+    deferred_broadcasts: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
 
 _current_session: ContextVar[_ScopeState | None] = ContextVar("fastplace_session", default=None)

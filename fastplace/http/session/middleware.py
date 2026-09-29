@@ -158,20 +158,7 @@ class ServerSessionMiddleware:
 
     async def _load(self, scope: dict) -> ServerSession:
         """Read the cookie, load the row — or start a fresh empty session."""
-        headers = Headers(scope=scope)
-        raw = headers.get("cookie", "")
-        cookie: SimpleCookie = SimpleCookie()
-        try:
-            cookie.load(raw)
-        except Exception:  # malformed cookie header -> fresh session
-            cookie = SimpleCookie()
-        morsel = cookie.get(self.cookie_name)
-        if morsel is None or not morsel.value:
-            return ServerSession.new()
-        stored = await self.store.read(morsel.value)
-        if stored is None:  # expired or unknown ID -> fresh session
-            return ServerSession.new()
-        return ServerSession.hydrate(morsel.value, stored)
+        return await load_session_from_scope(self.store, self.cookie_name, scope)
 
     async def _persist(self, session: ServerSession, message: dict) -> None:
         now = int(time.time())
@@ -236,3 +223,29 @@ class ServerSessionMiddleware:
             (b"set-cookie", self._cookie_header(session_id, self.lifetime).encode("latin-1"))
         )
         message["headers"] = headers
+
+
+async def load_session_from_scope(
+    store: SessionStore, cookie_name: str, scope: dict
+) -> ServerSession:
+    """Resolve a session from a scope's cookie header, or start fresh.
+
+    Shared by the http middleware and the broadcast WebSocket endpoint (the
+    middleware skips non-http scopes by design, so the socket layer loads
+    the handshake session through this same function — one cookie parser,
+    never two).
+    """
+    headers = Headers(scope=scope)
+    raw = headers.get("cookie", "")
+    cookie: SimpleCookie = SimpleCookie()
+    try:
+        cookie.load(raw)
+    except Exception:  # malformed cookie header -> fresh session
+        cookie = SimpleCookie()
+    morsel = cookie.get(cookie_name)
+    if morsel is None or not morsel.value:
+        return ServerSession.new()
+    stored = await store.read(morsel.value)
+    if stored is None:  # expired or unknown ID -> fresh session
+        return ServerSession.new()
+    return ServerSession.hydrate(morsel.value, stored)

@@ -264,3 +264,30 @@ def test_aborted_check_survives_an_unreachable_redis(tmp_path, monkeypatch):
     check = _check_aborted_jobs()
     assert check.status == "warn"
     assert "cannot" in check.detail.lower()
+
+
+def test_dashboard_enabled_with_memory_driver_warns(tmp_path, monkeypatch):
+    """Dashboard flag on + memory driver: WARN — the mount is skipped."""
+    _make_project(
+        tmp_path, monkeypatch, env_text="QUEUE_DRIVER=memory\nQUEUE_DASHBOARD_ENABLED=true\n"
+    )
+
+    result = runner.invoke(cli_app, ["queue:health"])
+
+    assert result.exit_code == 0, _out(result)  # WARN never fails the exit
+    out = _out(result)
+    assert "WARN" in out
+    assert "dashboard" in out.lower()
+
+
+def test_dashboard_check_passes_when_disabled(tmp_path, monkeypatch):
+    """Flag off (the default): the dashboard row passes without noise."""
+    _make_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli_app, ["queue:health"])
+
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "FAIL" not in out
+    dashboard_rows = [line for line in out.splitlines() if "dashboard" in line.lower()]
+    assert all("WARN" not in line for line in dashboard_rows)

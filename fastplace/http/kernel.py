@@ -156,6 +156,18 @@ def get_app(
     app.add_middleware(CompressionMiddleware)
     app.add_middleware(_QueryTrackerMiddleware)
     _install_session_middleware(app, cfg, app_env=app_env)
+    # The broadcast WebSocket endpoint — the socket half of the broadcasting
+    # layer. Mounted here (not from app routes) because it is framework
+    # surface; BROADCAST_ENABLED=false mounts nothing.
+    if bool(cfg.get("BROADCAST_ENABLED", default=True)):
+        from fastplace.http.broadcast_ws import BROADCAST_WS_PATH, broadcast_socket
+        from fastplace.http.websocket import websocket_adapter
+
+        app.add_api_websocket_route(
+            BROADCAST_WS_PATH,
+            websocket_adapter(broadcast_socket),
+            name="broadcast",
+        )
     # Added last -> outermost (add_middleware inserts at index 0). A down
     # app answers with the 503 gate before sessions mint cookies or the
     # bridge/React surface is reached.
@@ -236,8 +248,14 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
         project_root=root,
     )
     app.state.fastplace_root = str(root)
+    # SAQ dashboard mount — a no-op unless QUEUE_DASHBOARD_ENABLED and the
+    # saq driver are both on (the guard wraps the whole embedded app).
+    from fastplace.http.dashboard import mount_dashboard
+
+    mount_dashboard(app)
     _install_static_mounts(app, root)
     _register_db_lifecycle(root)
+    _register_broadcast_lifecycle()
     # Default shared props: every page payload carries the auth snapshot
     # (spec §4.16). Registered here — the real boot path — never in get_app,
     # whose test factories pin exact props shapes.
@@ -491,9 +509,13 @@ def _install_session_middleware(app: FastAPI, cfg: _ConfigShim, *, app_env: str)
             "APP_KEY is required in production — set it in .env "
             "(generate: python -c 'import secrets; print(secrets.token_urlsafe(48))')"
         )
+    store = session_store(config_get=cfg.get)
+    # The broadcast ws endpoint cannot see the middleware's store (it skips
+    # non-http scopes), so the instance is stashed for the handshake loader.
+    app.state.fastplace_session_store = store
     app.add_middleware(
         ServerSessionMiddleware,
-        store=session_store(config_get=cfg.get),
+        store=store,
         cookie_name=str(cfg.get("SESSION_COOKIE", default="fastplace_session")),
         lifetime=int(cfg.get("SESSION_LIFETIME", default=7200)),
         path=str(cfg.get("SESSION_PATH", default="/")),
@@ -731,6 +753,28 @@ def _register_db_lifecycle(root: Path) -> None:
         # shutdown loop — logged a misleading "dropped without disposal"
         # warning on every graceful stop.
         await db.manager.dispose()
+
+
+def _register_broadcast_lifecycle() -> None:
+    """Close the process broadcast bus on shutdown under the redis driver.
+
+    Only the redis bus holds a broker connection and a listener task — the
+    memory driver registers nothing (idle apps keep the hook list clean).
+    The listener itself starts lazily on first subscribe/publish; startup
+    needs no hook.
+    """
+    from fastplace.config import config
+
+    if str(config("BROADCAST_DRIVER", default="memory")).lower() != "redis":
+        return
+
+    from fastplace.broadcasting import broadcast_bus
+
+    bus = broadcast_bus()
+
+    @lifecycle.on_shutdown
+    async def _close_broadcast_bus() -> None:
+        await bus.close()
 
 
 async def _drain_memory_queue_on_shutdown() -> None:

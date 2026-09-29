@@ -4,6 +4,51 @@ All notable changes to the Fastplace framework are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Storage: `S3Disk` driver (`fastplace.storage_s3`) over the same `Disk` ABC —
+  primitives, presigned `temporary_url`, public URL policy (`public_base` /
+  vhost / refuse-with-hint), and the same containment gate as local paths
+  (refusals + stack-based dot-dot normalization bounded by the configured key
+  prefix). aioboto3 ships as the optional `fastplace[s3]` extra (also part of
+  `all`); constructing the driver without it fails loud with the install hint.
+  `config/storage.py` carries the commented disk entry; `.env.example` the S3
+  variable block.
+- Mail: rendered mailables. `Mailable` (fastplace.mail.mailable) renders
+  str.format placeholders into a MailMessage — values html-escaped (user
+  data can never inject markup), subject raw, unknown names failing loud,
+  optional `Layout` with a required {body} slot, best-effort tag-stripped
+  text fallback. `Mail.send` and the notification mail channel accept a
+  Mailable; rendering happens before the queue decision so payloads carry
+  final html/text only.
+- Queue: the SAQ web dashboard, mounted behind one fail-closed auth guard
+  (`QUEUE_DASHBOARD_ENABLED`, off by default; mounts only under
+  QUEUE_DRIVER=saq). Anonymous browsers redirect to /login with the
+  intended URL parked, programmatic callers get the 401/403 JSON envelope,
+  and QUEUE_DASHBOARD_ABILITY gate-checks every request including SAQ's
+  retry/abort POSTs — an undefined ability fails loud, never silently
+  allows. `queue:health` warns when the flag is on but the driver is not
+  saq; failed jobs stay on the CLI surface (queue:failed / retry / forget
+  / flush / prune-failed).
+- Broadcasting: `broadcast(channel, payload)` fans JSON frames to
+  WebSocket subscribers over a pluggable bus (`BROADCAST_DRIVER` = memory
+  for single-process dev/tests, redis pub/sub for multi-worker). Channels
+  follow one grammar — public `orders.42`, gated `private.*` /
+  `presence.*` (subscribe-time gate check via BROADCAST_PRIVATE_ABILITY,
+  fail-closed when unset), and tenancy-scoped `company.{id}.*` checked
+  against the requesting user's membership. The `/ws/broadcast` endpoint
+  resolves the session cookie at the handshake (close codes 4400/4401/
+  4403), enforces payload/subscription/queue bounds, and derives
+  presence rosters from join/leave bus events plus local connection
+  tracking — no separate roster store; a heartbeat bounds ghosts from
+  crashed processes. Domain events broadcast only through an explicit
+  opt-in `broadcast_to` mapping. Frontend: `useBroadcast` /
+  `usePresence` hooks in `@fastplace/react` (exponential-backoff
+  reconnect, resubscribe on reconnect, SSR-dormant). Sample app gains a
+  `/broadcast` demo page; guide at docs/site/guides/broadcasting.md.
+
 ## [0.2.1] - 2026-09-28
 
 The SQLAlchemy 2.1 compatibility release. `morph_to_many` eager loads are

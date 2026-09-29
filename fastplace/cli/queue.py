@@ -1085,6 +1085,34 @@ def _check_defaults() -> Check:
     )
 
 
+def _check_dashboard() -> Check:
+    """QUEUE_DASHBOARD_ENABLED vs driver — the mount needs the saq queue.
+
+    Flag on + memory driver means the dashboard silently never mounts; the
+    row warns so the operator sees the combo instead of hunting a 404.
+    """
+    from fastplace.cli._doctor import Check
+
+    enabled = str(config("QUEUE_DASHBOARD_ENABLED", default=False)).lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    driver = str(config("QUEUE_DRIVER", default="memory"))
+    if not enabled:
+        return Check("dashboard", "pass", "off")
+    if driver != "saq":
+        return Check(
+            "dashboard",
+            "warn",
+            f"QUEUE_DASHBOARD_ENABLED=true but QUEUE_DRIVER={driver} — not mounted",
+            "set QUEUE_DRIVER=saq or turn the dashboard flag off",
+        )
+    path = str(config("QUEUE_DASHBOARD_PATH", default="/queue-dashboard"))
+    return Check("dashboard", "pass", f"mounted at {path}")
+
+
 def _check_aborted_jobs() -> Check:
     """ABORTED jobs sitting in redis — crash-loss made visible (q2-G5).
 
@@ -1147,6 +1175,7 @@ def queue_health() -> None:
             _check_restart_sentinel,
             _check_failed_jobs,
             _check_aborted_jobs,
+            _check_dashboard,
             _check_defaults,
             _schedule_check,
         ],
