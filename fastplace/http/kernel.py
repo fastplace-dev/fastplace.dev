@@ -236,6 +236,11 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
         project_root=root,
     )
     app.state.fastplace_root = str(root)
+    # SAQ dashboard mount — a no-op unless QUEUE_DASHBOARD_ENABLED and the
+    # saq driver are both on (the guard wraps the whole embedded app).
+    from fastplace.http.dashboard import mount_dashboard
+
+    mount_dashboard(app)
     _install_static_mounts(app, root)
     _register_db_lifecycle(root)
     # Default shared props: every page payload carries the auth snapshot
