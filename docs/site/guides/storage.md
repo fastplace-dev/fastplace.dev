@@ -1,6 +1,6 @@
 # File & Cloud Storage
 
-`fastplace.storage` gives every file operation one async surface. Services read and write through a `Disk` and never care whether the bytes live on the local filesystem or — once an adapter ships — an object store.
+`fastplace.storage` gives every file operation one async surface. Services read and write through a `Disk` and never care whether the bytes live on the local filesystem or an object store (the S3 driver below).
 
 ```python
 from fastplace.storage import disk
@@ -66,6 +66,42 @@ digest, expires = sign(
 ```
 
 A cloud adapter (S3) implements the same `Disk` interface with a presigned `temporary_url` — no application code changes when you move disks.
+
+## The S3 driver
+
+`S3Disk` (`fastplace.storage_s3`) speaks the same surface against S3-compatible stores (AWS, R2, MinIO). The dependency is an optional extra:
+
+```bash
+pip install 'fastplace[s3]'   # aioboto3, imported lazily by the driver
+```
+
+Declare the disk in `config/storage.py` — the shipped file carries the entry commented out; the per-key `config()` calls are what make each credential individually overridable through the environment (the `STORAGE_DISKS` dict itself does not ride through env):
+
+```python
+STORAGE_DISKS = {
+    "local": {"driver": "local", "root": "storage/app"},
+    "s3": {
+        "driver": "s3",
+        "bucket": config("S3_BUCKET", default=""),
+        "region": config("S3_REGION", default="us-east-1"),
+        "endpoint_url": config("S3_ENDPOINT_URL", default=None),  # MinIO/R2
+        "prefix": config("S3_PREFIX", default=""),  # e.g. "tenants/7"
+        "public_base": config("S3_PUBLIC_BASE", default=None),
+        "public": config("S3_PUBLIC", default=False),
+    },
+}
+```
+
+Constructing the driver without the extra installed fails with `ConfigurationError` naming `fastplace[s3]`. If the bucket hosts private objects only, leave `public_base`/`public` unset: `url()` refuses with `StorageNotSupported` and points at presigning, and `temporary_url()` does the real thing:
+
+```python
+url = await disk("s3").temporary_url("invoices/9.pdf", expires_in=300)
+# a presigned GET, scoped to the bucket + key, honoring the prefix
+```
+
+For stable public URLs set `public_base` (a CDN or app base — `url()` becomes pure path math) or `public=True` (the bucket's vhost URL).
+
+Key containment carries over unchanged: every key is refusal-checked and dot-dot-normalized on a stack before any S3 call, so a path that would escape the configured `prefix` raises `StoragePathError` — one bucket can safely host many prefixed disks (per-tenant prefixes included) without one disk ever addressing another's objects. Listings return disk-relative paths; the prefix never leaks. `files()` uses delimiter roll-up for directory listings and follows continuation tokens for large recursive scans.
 
 ## Testing code that uses storage
 

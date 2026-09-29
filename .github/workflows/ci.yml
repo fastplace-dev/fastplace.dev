@@ -117,7 +117,7 @@ jobs:
 
       - name: Install package (all database extras)
         run: |
-          python -m pip install -e ".[dev,postgresql,mysql,mongodb,queue]"
+          python -m pip install -e ".[dev,postgresql,mysql,mongodb,queue,s3]"
           python -m pip install -e ./packages/tenancy
 
       - uses: actions/setup-node@v5

@@ -4,6 +4,19 @@ All notable changes to the Fastplace framework are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Storage: `S3Disk` driver (`fastplace.storage_s3`) over the same `Disk` ABC —
+  primitives, presigned `temporary_url`, public URL policy (`public_base` /
+  vhost / refuse-with-hint), and the same containment gate as local paths
+  (refusals + stack-based dot-dot normalization bounded by the configured key
+  prefix). aioboto3 ships as the optional `fastplace[s3]` extra (also part of
+  `all`); constructing the driver without it fails loud with the install hint.
+  `config/storage.py` carries the commented disk entry; `.env.example` the S3
+  variable block.
+
 ## [0.2.1] - 2026-09-28
 
 The SQLAlchemy 2.1 compatibility release. `morph_to_many` eager loads are
