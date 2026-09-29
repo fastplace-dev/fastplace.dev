@@ -24,7 +24,9 @@ router.post(
     AuthApiController,
     "register",
     name="auth.register.store",
-    middleware=["guest", "throttle:5,60"],
+    # Named limiter (config/app.py): production default stays 5/min, and
+    # AUTH_REGISTER_THROTTLE_MAX gives dense test topologies headroom.
+    middleware=["guest", "throttle:register"],
 )
 router.post(
     "/logout",
