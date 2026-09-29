@@ -60,6 +60,13 @@ def write_pages(pages: list[CapturedPage], out_dir: Path) -> PrerenderManifest:
     else is recorded as skipped. Stale output from earlier runs is cleared
     first — the tree is fully derived from this run's captures.
     """
+    # The tree is cleared and rewritten wholesale below; a symlinked out_dir
+    # would rmtree/write the *target* tree instead. Refuse before anything
+    # touches the filesystem.
+    if out_dir.is_symlink():
+        raise ValueError(
+            f"prerender output directory {out_dir} is a symlink — refusing to write through it"
+        )
     writable: list[CapturedPage] = []
     skipped: list[str] = []
     for page in pages:
@@ -109,14 +116,22 @@ def _route_dir(route: str, out_dir: Path) -> Path:
     ``/`` maps to ``out_dir`` itself; every other route maps to its segment
     path. An empty segment (``/a//b``) or ``..`` would resolve outside the
     intended subtree shape and is rejected before any path is built on.
+    A symlinked directory inside the tree is caught the same way: the
+    candidate is resolved (collapsing link chains) and must stay inside
+    ``out_dir`` resolved — both sides, since macOS maps ``/tmp`` onto
+    ``/private/tmp`` and an unresolved comparison would misfire there.
     """
     if route == "/":
-        return out_dir
-    segments = route.strip("/").split("/")
-    for segment in segments:
-        if segment in ("", ".."):
-            raise ValueError(f"unsafe prerender route segment in {route!r}")
-    return out_dir.joinpath(*segments)
+        directory = out_dir
+    else:
+        segments = route.strip("/").split("/")
+        for segment in segments:
+            if segment in ("", ".."):
+                raise ValueError(f"unsafe prerender route segment in {route!r}")
+        directory = out_dir.joinpath(*segments)
+    if not directory.resolve().is_relative_to(out_dir.resolve()):
+        raise ValueError(f"prerender route {route!r} resolves outside the output tree")
+    return directory
 
 
 def _hash(body: bytes) -> str:

@@ -18,12 +18,17 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 _INDEX = "index.html"
 
+# The capture engine's bypass: a request carrying this header wants the
+# live app (a `fastplace prerender` re-run refreshing this very directory),
+# not the stale file this middleware would otherwise serve.
+_CAPTURE_MARKER = b"x-fastplace-prerender-capture"
+
 
 def _accepts_html(scope: Scope) -> bool:
-    for key, value in scope.get("headers") or []:
-        if key == b"accept":
-            return b"text/html" in value.lower()
-    return False
+    headers = scope.get("headers") or []
+    if any(key == _CAPTURE_MARKER for key, _value in headers):
+        return False
+    return any(key == b"accept" and b"text/html" in value.lower() for key, value in headers)
 
 
 def _prerender_file(route_path: str, prerender_dir: Path) -> Path | None:

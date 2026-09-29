@@ -99,3 +99,37 @@ def test_write_pages_ignores_route_query_or_fragment_garbage(tmp_path):
     just a directory name, but an empty segment (double slash) is rejected."""
     with pytest.raises(ValueError):
         write_pages([CapturedPage("/a//b", 200, "text/html", b"x")], tmp_path)
+
+
+def test_symlinked_out_dir_refused(tmp_path):
+    """The writer never operates through a symlinked output directory.
+
+    mkdir/iterdir/unlink through the link would clear or write the target
+    tree — refuse the run with the target untouched instead.
+    """
+    target = tmp_path / "real-tree"
+    target.mkdir()
+    (target / "keep.txt").write_text("precious")
+    out_dir = tmp_path / "prerender"
+    out_dir.symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        write_pages([CapturedPage("/", 200, "text/html", b"<h1>x</h1>")], out_dir)
+    assert (target / "keep.txt").read_text() == "precious"
+
+
+def test_intermediate_symlink_escape_refused(tmp_path):
+    """A symlinked route directory inside the tree is never written through.
+
+    Writing ``docs/x/index.html`` through ``docs -> evil`` would plant the
+    page in the evil tree; containment is verified on the resolved path.
+    """
+    out_dir = tmp_path / "prerender"
+    out_dir.mkdir()
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    (out_dir / "docs").symlink_to(evil)
+
+    with pytest.raises(ValueError, match="outside"):
+        write_pages([CapturedPage("/docs/x", 200, "text/html", b"<h1>x</h1>")], out_dir)
+    assert list(evil.iterdir()) == []  # nothing leaked through the link

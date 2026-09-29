@@ -140,9 +140,15 @@ def get_app(
     # before mounts, so a StaticFiles mount never could) — added FIRST so
     # the lookup ends up innermost: prerendered HTML flows back out through
     # security headers and compression like every other HTML response.
-    from fastplace.http.prerender_static import PrerenderStaticFiles
+    # The dev runtime is exempt: one prerender run must not freeze live
+    # pages while the developer edits (FASTPLACE_RUNTIME=dev is set by
+    # `fastplace run dev`; serve and direct uvicorn boots keep the lookup).
+    if os.environ.get("FASTPLACE_RUNTIME") != "dev":
+        from fastplace.http.prerender_static import PrerenderStaticFiles
 
-    app.add_middleware(PrerenderStaticFiles, prerender_dir=root / "public" / "build" / "prerender")
+        app.add_middleware(
+            PrerenderStaticFiles, prerender_dir=root / "public" / "build" / "prerender"
+        )
     _mount_routes(
         app,
         routes=routes,

@@ -52,6 +52,16 @@ def test_prerender_middleware_is_innermost_user_middleware():
     assert app.user_middleware[-1].cls is PrerenderStaticFiles
 
 
+def test_prerender_middleware_off_in_dev_runtime(monkeypatch):
+    """`fastplace run dev` serves live pages — one stale prerender run must
+    not freeze every navigation while the developer edits."""
+    from fastplace.http.kernel import get_app
+
+    monkeypatch.setenv("FASTPLACE_RUNTIME", "dev")
+    app = get_app()
+    assert all(m.cls is not PrerenderStaticFiles for m in app.user_middleware)
+
+
 def test_prerendered_html_served_for_get(tmp_path):
     client = _make_site(tmp_path)
     response = client.get("/docs/x", headers={"accept": "text/html"})
@@ -95,6 +105,18 @@ def test_traversal_attempts_do_not_escape(tmp_path):
     client = _make_site(tmp_path)
     response = client.get("/..%2F..%2Fsecret.txt", headers={"accept": "text/html"})
     assert response.status_code in (400, 404)
+    assert MARKER not in response.content
+
+
+def test_capture_marker_bypasses_prerender(tmp_path):
+    """`fastplace prerender` re-runs must reach the live app, not old output."""
+    client = _make_site(tmp_path)
+    response = client.get(
+        "/docs/x",
+        headers={"accept": "text/html", "x-fastplace-prerender-capture": "1"},
+    )
+    assert response.status_code == 200
+    assert b"LIVE" in response.content
     assert MARKER not in response.content
 
 

@@ -21,7 +21,13 @@ _BASE_URL = "http://prerender.internal"
 
 # Browsers navigate with an HTML accept header; the captured request should
 # look like the traffic the prerendered files will later serve.
-_HEADERS = {"accept": "text/html"}
+#
+# The capture marker tells PrerenderStaticFiles to stand down: the capture
+# request is exactly the interception shape (GET, text/html, no query), so
+# without it a re-run would capture the previous run's output instead of
+# the live app.
+CAPTURE_MARKER = "x-fastplace-prerender-capture"
+_HEADERS = {"accept": "text/html", CAPTURE_MARKER: "1"}
 
 
 @dataclass(frozen=True)

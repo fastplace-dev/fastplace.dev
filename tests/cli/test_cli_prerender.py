@@ -163,3 +163,39 @@ def test_app_flag_missing_attr_exits_one(tmp_path, monkeypatch):
     result = runner.invoke(cli_app, ["prerender", "--app", "asgi:nope"])
     assert result.exit_code == 1
     assert "nope" in _out(result)
+
+
+def test_second_run_recaptures_live_app_not_stale_output(tmp_path, monkeypatch):
+    """Re-running the command must capture the live app, not the previous run's files.
+
+    The CLI imports the real kernel app, which serves PrerenderStaticFiles
+    from the very directory being refreshed — the capture request is exactly
+    the interception shape (GET, text/html, no query). A capture-side bypass
+    marker keeps the second run fresh.
+    """
+    project = _make_project(tmp_path, monkeypatch)
+    assert runner.invoke(cli_app, ["prerender"]).exit_code == 0
+    page = project / "public" / "build" / "prerender" / "index.html"
+    assert b"HOME-PAGE" in page.read_bytes()
+
+    # The live page changes between runs.
+    (project / "routes" / "web.py").write_text(
+        "from fastplace.http import Html, Router\n\n\n"
+        "async def home(request):\n"
+        "    return Html('<h1>HOME-PAGE-V2</h1>')\n\n\n"
+        "async def gone(request):\n"
+        "    return Html('<h1>gone</h1>', status_code=404)\n\n\n"
+        "router = Router()\n"
+        "router.get('/', home)\n"
+        "router.get('/gone', gone)\n"
+    )
+    # Python must re-import the edited routes module (and the asgi module
+    # that boots it) for the new run.
+    import sys
+
+    for name in ("routes.web", "routes", "asgi"):
+        sys.modules.pop(name, None)
+
+    result = runner.invoke(cli_app, ["prerender"])
+    assert result.exit_code == 0, _out(result)
+    assert b"HOME-PAGE-V2" in page.read_bytes()
