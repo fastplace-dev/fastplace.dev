@@ -106,13 +106,17 @@ class _Socket:
 _sockets: set[_Socket] = set()
 _by_user: dict[Any, set[_Socket]] = {}
 _tracker: PresenceTracker | None = None
+_heartbeat_task: asyncio.Task[None] | None = None
 
 
 def reset() -> None:
     """Clear the socket registry and tracker (test seam)."""
     _sockets.clear()
     _by_user.clear()
-    global _tracker
+    global _tracker, _heartbeat_task
+    if _heartbeat_task is not None:
+        _heartbeat_task.cancel()
+        _heartbeat_task = None
     _tracker = None
 
 
@@ -352,7 +356,39 @@ def _presence() -> PresenceTracker:
     global _tracker
     if _tracker is None:
         _tracker = PresenceTracker(on_change=_push_roster)
+    _start_heartbeat(_tracker)
     return _tracker
+
+
+def _start_heartbeat(tracker: PresenceTracker) -> None:
+    """Own the tracker's heartbeat, or every roster ghosts out remotely.
+
+    Nothing else heartbeats this tracker: without a scheduler, remote
+    processes age its members out ``ghost_ttl`` after the last control
+    message even while every socket here is open. The interval is a third
+    of the ttl, so one swallowed beat still lands inside the window.
+    """
+    global _heartbeat_task
+    if _heartbeat_task is not None and not _heartbeat_task.done():
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # sync first touch — the first socket handler starts it
+    _heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(tracker), name="fastplace-presence-heartbeat"
+    )
+
+
+async def _heartbeat_loop(tracker: PresenceTracker) -> None:
+    while True:
+        await asyncio.sleep(tracker.ghost_ttl / 3.0)
+        try:
+            await tracker.heartbeat()
+        except Exception:
+            # One failed beat must never kill the scheduler — the next one
+            # is only a third of the ttl away.
+            logger.exception("presence heartbeat failed; retrying next interval")
 
 
 def _push_roster(channel: str, members: list[Member]) -> None:

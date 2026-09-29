@@ -113,9 +113,30 @@ class TestParseChannel:
             with pytest.raises(BroadcastError):
                 parse_channel(raw)
 
-    def test_non_string_name_is_a_type_error(self):
-        with pytest.raises(TypeError):
-            parse_channel(42)  # type: ignore[arg-type]
+    def test_control_channel_names_are_refused(self):
+        # Presence plumbing rides shadow channels named "__presence::<raw>".
+        # The grammar must refuse those names so a client cannot subscribe
+        # to roster control traffic (join/leave/snapshot frames carrying
+        # user ids) as if it were a public channel — "_" prefixes and "::"
+        # separators never appear in the user grammar.
+        for raw in (
+            "__presence::presence.demo",
+            "__presence::presence.orders.42",
+            "__presence::company.7.presence.room",
+            "__presence::anything",
+            "_private.orders.42",
+            "orders::42",
+        ):
+            with pytest.raises(BroadcastError):
+                parse_channel(raw)
+
+    def test_overlong_names_are_refused(self):
+        # Parsed names become bus subscription keys and roster dict entries
+        # held for the process lifetime — an unbounded name is a memory
+        # pressure vector even from fully authorized sockets.
+        with pytest.raises(BroadcastError):
+            parse_channel("a" * 201)
+        parse_channel("a" * 200)  # the cap itself is a legal name
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +165,18 @@ class TestAuthorizeSubscribe:
     async def test_presence_fails_closed_without_ability(self, monkeypatch):
         monkeypatch.setenv("BROADCAST_PRIVATE_ABILITY", "")
         assert not await authorize_subscribe(User(), parse_channel("presence.orders.42"))
+
+    async def test_tenant_channels_fail_closed_without_an_authorizer(self):
+        # The grammar parses company.{id} as a trust-relevant tenant-scoped
+        # shape, so the core's default rule must not degrade it to public.
+        # Without the tenancy authorizer registered (package absent or
+        # install_tenant_broadcasting() not called) nobody vouches for
+        # membership — deny, exactly like an unset private ability. A
+        # miswired app loses subscription loudly at the handshake instead
+        # of silently streaming cross-tenant.
+        assert not await authorize_subscribe(User(), parse_channel("company.7.orders.42"))
+        assert not await authorize_subscribe(None, parse_channel("company.7.orders.42"))
+        assert not await authorize_subscribe(User(), parse_channel("company.7.private.x"))
 
     async def test_ability_receives_the_parsed_channel(self, monkeypatch):
         from fastplace.authz import gate
@@ -385,6 +418,34 @@ class TestPresenceRoster:
         await tracker.leave("presence.orders.42", 7)
         assert tracker.roster("presence.orders.42") == []
 
+    async def test_last_leave_releases_control_plumbing(self):
+        # The WS layer mirrors every socket unsubscribe into leave(), so an
+        # empty local roster means the control subscription, remote
+        # snapshots, and diff cache for that channel are pure memory leak —
+        # a long-lived process cycling presence channels would grow without
+        # bound. Releasing on the last leave bounds it.
+        clock = FakeClock()
+        bus = MemoryBroadcastBus()
+        here = make_tracker(bus=bus, clock=clock, origin="here")
+        there = make_tracker(bus=bus, clock=clock, origin="there")
+
+        await there.join("presence.orders.42", 9)
+        await here.join("presence.orders.42", 7)  # populates there's remote view
+        assert "presence.orders.42" in there._unsubscribes
+        assert "presence.orders.42" in there._remote
+
+        await there.leave("presence.orders.42", 9)
+        assert "presence.orders.42" not in there._unsubscribes
+        assert "presence.orders.42" not in there._remote
+        assert "presence.orders.42" not in there._local
+
+        # A later join re-establishes everything (and sees remote members
+        # again once the next control message or snapshot arrives).
+        await there.join("presence.orders.42", 11)
+        assert "presence.orders.42" in there._unsubscribes
+        await here.heartbeat()
+        assert sorted(m.user_id for m in there.roster("presence.orders.42")) == [7, 11]
+
 
 class TestPresenceAcrossProcesses:
     async def test_snapshot_heartbeat_feeds_remote_rosters(self):
@@ -474,3 +535,59 @@ class TestPresenceAcrossProcesses:
         assert changes[-1] == ("presence.orders.42", [7])
         await here.leave("presence.orders.42", 7)
         assert changes[-1] == ("presence.orders.42", [])
+
+    async def test_remote_multi_tab_counts_survive_between_heartbeats(self):
+        # Control events carry the post-change connection count, or a remote
+        # process collapses two tabs into one (join says 1) and drops the
+        # member on the first tab close (leave says gone) until the next
+        # snapshot comes around.
+        clock = FakeClock()
+        bus = MemoryBroadcastBus()
+        here = make_tracker(bus=bus, clock=clock, origin="here")
+        there = make_tracker(bus=bus, clock=clock, origin="there")
+        there.watch("presence.orders.42")
+
+        await here.join("presence.orders.42", 7)
+        await here.join("presence.orders.42", 7)  # second tab, no snapshot yet
+        roster = there.roster("presence.orders.42")
+        assert [(m.user_id, m.connections) for m in roster] == [(7, 2)]
+
+        await here.leave("presence.orders.42", 7)  # one tab closes
+        roster = there.roster("presence.orders.42")
+        assert [(m.user_id, m.connections) for m in roster] == [(7, 1)]
+
+        await here.leave("presence.orders.42", 7)  # last tab
+        assert there.roster("presence.orders.42") == []
+
+    async def test_control_receipts_refresh_last_seen(self):
+        # Any live control message proves the origin is alive — its stamp
+        # must refresh, or a chatty-but-heartbeat-less origin ages out of
+        # every roster mid-conversation.
+        clock = FakeClock()
+        bus = MemoryBroadcastBus()
+        here = make_tracker(bus=bus, clock=clock, origin="here")
+        there = make_tracker(bus=bus, clock=clock, origin="there", ghost_ttl=30.0)
+        there.watch("presence.orders.42")
+
+        await here.join("presence.orders.42", 7)
+        clock.advance(31.0)  # past the ttl on the original stamp...
+        await here.join("presence.orders.42", 9)  # ...yet the origin is alive
+        roster = there.roster("presence.orders.42")
+        assert sorted(m.user_id for m in roster) == [7, 9]
+
+    async def test_heartbeat_survives_a_join_during_publish(self):
+        # Remote receivers run inline with heartbeat's publish; anything a
+        # receiver does that joins a *new* channel mutates the dict being
+        # iterated. The snapshot must be taken up front.
+        from fastplace.broadcasting import _CONTROL_PREFIX
+
+        bus = MemoryBroadcastBus()
+        tracker = make_tracker(bus=bus, origin="solo")
+        await tracker.join("presence.a", 1)
+
+        async def sabotage(control_channel: str, data: str) -> None:
+            await tracker.join("presence.b", 2)
+
+        bus.subscribe(f"{_CONTROL_PREFIX}presence.a", sabotage)
+        await tracker.heartbeat()  # must not raise
+        assert [m.user_id for m in tracker.roster("presence.b")] == [2]

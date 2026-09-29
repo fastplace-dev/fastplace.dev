@@ -69,6 +69,7 @@ class RedisBroadcastBus:
         self._pubsub: Any = None
         self._task: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
+        self._closing = False
 
     def _key(self, channel: str) -> str:
         """The broker-side channel name — prefix + logical channel."""
@@ -102,13 +103,33 @@ class RedisBroadcastBus:
     async def start(self) -> None:
         """Open the broker connection and listener (idempotent)."""
         async with self._start_lock:
+            if self._closing:
+                # close() owns teardown; a publish racing it must not spawn
+                # a fresh listener that close() would never tear down.
+                return
             if self._task is not None and not self._task.done():
                 return
             from redis.asyncio import Redis
 
+            # A crashed listener leaves its client/pubsub pair behind (only
+            # the exception path — close() nulls them). Release the dead
+            # pair before replacing it, or every crash-restart cycle leaks
+            # a connection pool and a dedicated pubsub connection.
+            for displaced in (self._pubsub, self._client):
+                if displaced is not None:
+                    try:
+                        await displaced.aclose()
+                    except Exception:  # broker already gone — best-effort
+                        logger.debug("displaced broadcast resource close ignored", exc_info=True)
             client = Redis.from_url(self._url)
             self._client = client
             self._pubsub = client.pubsub()
+            # The fresh pubsub carries zero broker-side subscriptions, and
+            # _pending_sub was drained before the crash — re-queue every
+            # channel that still has local callbacks, or the rebuilt
+            # listener idle-polls forever and this process silently never
+            # receives again.
+            self._pending_sub |= {self._key(c) for c in self._subscribers}
             self._task = asyncio.create_task(self._listen(), name="fastplace-broadcast-listener")
 
     async def close(self) -> None:
@@ -118,6 +139,7 @@ class RedisBroadcastBus:
         broker side from what is still registered (see ``_pending_sub``).
         """
         async with self._start_lock:
+            self._closing = True
             task, self._task = self._task, None
             pubsub, self._pubsub = self._pubsub, None
             client, self._client = self._client, None
@@ -135,6 +157,7 @@ class RedisBroadcastBus:
         # re-queue every channel that still has local callbacks.
         self._pending_unsub.clear()
         self._pending_sub = {self._key(c) for c in self._subscribers}
+        self._closing = False  # restart-after-close stays supported
 
     # -- internals ---------------------------------------------------------
 

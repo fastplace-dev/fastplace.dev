@@ -297,3 +297,34 @@ class TestEviction:
             # The bystander keeps receiving on the same channel.
             client.get("/push", params={"channel": "orders.9"})
             assert bystander.receive_json()["type"] == "message"
+
+
+# ---------------------------------------------------------------------------
+# presence heartbeat scheduler
+# ---------------------------------------------------------------------------
+
+
+class TestPresenceHeartbeat:
+    async def test_first_tracker_use_starts_the_heartbeat_task(self):
+        # Nobody else heartbeats: the WS layer owns the scheduler, or remote
+        # rosters ghost-age every ghost_ttl even while sockets are open.
+        from fastplace.http import broadcast_ws
+
+        tracker = broadcast_ws._presence()
+        assert tracker is not None
+        task = broadcast_ws._heartbeat_task
+        assert task is not None and not task.done()
+        assert task.get_name() == "fastplace-presence-heartbeat"
+
+    async def test_reset_cancels_the_heartbeat_task(self):
+        import asyncio
+
+        from fastplace.http import broadcast_ws
+
+        broadcast_ws._presence()
+        task = broadcast_ws._heartbeat_task
+        assert task is not None
+        broadcast_ws.reset()
+        with pytest.raises(asyncio.CancelledError):
+            await task  # cancellation lands once the loop runs the task
+        assert broadcast_ws._heartbeat_task is None

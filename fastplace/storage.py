@@ -322,7 +322,10 @@ def _build_disk(name: str, entry: dict[str, Any] | None) -> Disk:
             endpoint_url=entry.get("endpoint_url"),
             prefix=entry.get("prefix", ""),
             public_base=entry.get("public_base"),
-            public=bool(entry.get("public", False)),
+            # Parse, never cast: config() returns raw strings for keys no
+            # config module registers, and bool("false") is True — the
+            # same trap the queue dashboard flag already guards against.
+            public=str(entry.get("public", False)).strip().lower() in ("1", "true", "yes", "on"),
         )
     raise ConfigurationError(
         f"unknown storage driver '{driver}' on disk '{name}' — 'local' and 's3' are the shipped drivers"

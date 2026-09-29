@@ -74,6 +74,11 @@ _event_mappings: dict[str, str] = {}
 #: must be refused, never silently treated under the public rule.
 _RESERVED = frozenset({"company", "private", "presence"})
 
+# Hard cap on any parsed channel name (the raw string, prefixes included).
+# Names become bus subscription keys and roster dict entries held for the
+# process lifetime; the cap bounds that memory from authorized sockets too.
+MAX_CHANNEL_NAME_LENGTH = 200
+
 #: Default per-payload cap (bytes of the serialized JSON). A slow consumer
 #: is dropped, never allowed to balloon a channel's memory.
 _DEFAULT_MAX_PAYLOAD_BYTES = 65536
@@ -112,10 +117,22 @@ def parse_channel(raw: str) -> Channel:
     ``channel := company "." tenant_id "." rest | rest`` and
     ``rest := "private." name | "presence." name | name``. Malformed names
     raise :class:`BroadcastError` — an unknown shape never falls through to
-    a weaker rule.
+    a weaker rule. Names are capped at ``MAX_CHANNEL_NAME_LENGTH`` chars:
+    parsed names become bus subscription keys and roster entries held for
+    the process lifetime, so the grammar bounds them.
     """
     if not isinstance(raw, str):
         raise TypeError(f"channel name must be a str, got {type(raw).__name__}")
+    if len(raw) > MAX_CHANNEL_NAME_LENGTH:
+        raise BroadcastError(
+            f"channel name of {len(raw)} chars exceeds the {MAX_CHANNEL_NAME_LENGTH}-character cap"
+        )
+    if raw.startswith("_") or "::" in raw:
+        # Presence control traffic rides shadow channels ("__presence::…").
+        # Those names must be unparseable here on both the subscribe and the
+        # publish path, or a client could listen to roster plumbing (join/
+        # leave/snapshot frames carrying user ids) under the public rule.
+        raise BroadcastError(f"malformed channel name {raw!r} — reserved control prefix")
     segments = raw.split(".")
     if not raw or any(segment == "" for segment in segments):
         raise BroadcastError(f"malformed channel name {raw!r} — empty segment")
@@ -180,8 +197,9 @@ async def authorize_subscribe(user: Any, channel: Channel) -> bool:
     """Decide whether ``user`` may subscribe to ``channel``.
 
     The authorizer chain answers first (True admits, False denies, None
-    abstains). Otherwise: public channels admit anyone; private and
-    presence channels require an authenticated user **and**
+    abstains). Otherwise: tenant-scoped channels (``company.{id}.…``) deny —
+    nobody vouched for membership; public channels admit anyone; private
+    and presence channels require an authenticated user **and**
     ``gate.allows(user, BROADCAST_PRIVATE_ABILITY, channel)`` — the parsed
     channel rides as the gate argument so policies decide per channel. An
     unset ability denies (fail-closed); an ability nobody defined surfaces
@@ -194,6 +212,13 @@ async def authorize_subscribe(user: Any, channel: Channel) -> bool:
         if verdict is not None:
             return bool(verdict)
 
+    if channel.tenant_id is not None:
+        # The grammar parsed a company.{id} prefix — a trust-relevant,
+        # tenant-scoped shape. No authorizer weighed in (fastplace-tenancy
+        # absent, or install_tenant_broadcasting() never called), so nobody
+        # vouches for membership: deny rather than degrade to the public
+        # rule, mirroring the unset-private-ability stance below.
+        return False
     if channel.kind == "public":
         return True
     if user is None:
@@ -488,6 +513,15 @@ class PresenceTracker:
         self._unsubscribes: dict[str, Callable[[], None]] = {}
         self._last_roster: dict[str, list] = {}
 
+    @property
+    def ghost_ttl(self) -> float:
+        """How long a silent origin's members survive in rosters (seconds).
+
+        Read-only: the heartbeat scheduler sizes its interval from it
+        (ttl / 3), so a live change would strand already-scheduled beats.
+        """
+        return self._ghost_ttl
+
     # -- local membership ------------------------------------------------
 
     async def join(self, channel: str, user_id: int | str, metadata: Any = None) -> None:
@@ -500,8 +534,16 @@ class PresenceTracker:
             member.metadata = metadata
         member.connections += 1
         self._local[channel][user_id] = member
+        # The count rides the event, or a remote process collapses two tabs
+        # into one until the next snapshot comes around.
         await self._publish(
-            channel, {"kind": "join", "user_id": user_id, "metadata": member.metadata}
+            channel,
+            {
+                "kind": "join",
+                "user_id": user_id,
+                "metadata": member.metadata,
+                "connections": member.connections,
+            },
         )
         self._changed(channel)
 
@@ -513,10 +555,35 @@ class PresenceTracker:
         member.connections -= 1
         if member.connections > 0:
             self._local[channel][user_id] = member
-            return
-        del self._local[channel][user_id]
-        await self._publish(channel, {"kind": "leave", "user_id": user_id})
+        else:
+            del self._local[channel][user_id]
+        # Every leave publishes the post-decrement count: "one tab closed"
+        # must read as a count drop remotely, not as the member vanishing a
+        # heartbeat early.
+        await self._publish(
+            channel, {"kind": "leave", "user_id": user_id, "connections": member.connections}
+        )
         self._changed(channel)
+        self._release(channel)
+
+    def _release(self, channel: str) -> None:
+        """Drop a presence channel's control plumbing once nobody local holds it.
+
+        The WebSocket layer mirrors every socket unsubscribe into
+        ``leave()``, so an empty local roster means no local socket can
+        receive that channel's roster pushes — the control subscription,
+        remote snapshots, and diff cache would grow without bound in a
+        long-lived process cycling presence channels. A later ``join``
+        re-establishes all of it (``_listen`` + the next control message).
+        """
+        if self._local.get(channel):
+            return
+        self._local.pop(channel, None)
+        unsubscribe = self._unsubscribes.pop(channel, None)
+        if unsubscribe is not None:
+            unsubscribe()
+        self._remote.pop(channel, None)
+        self._last_roster.pop(channel, None)
 
     async def heartbeat(self) -> None:
         """Republish the full local member list per channel, keyed by origin.
@@ -524,7 +591,10 @@ class PresenceTracker:
         Receivers reconcile by diff and keep the last-seen stamp, so a
         process that dies simply stops heartbeating and its members age out.
         """
-        for channel, members in self._local.items():
+        # Snapshot first: remote receivers run inline with each publish, and
+        # anything they do that joins a new channel here would mutate the
+        # dict mid-iteration.
+        for channel, members in list(self._local.items()):
             if not members:
                 continue
             # A list, never a dict keyed by user id: JSON object keys are
@@ -595,18 +665,23 @@ class PresenceTracker:
             return  # own echo — the local dict is already authoritative
         snapshots = self._remote.setdefault(channel, {})
         if message["kind"] == "join":
-            snapshot, last_seen = snapshots.get(origin, ({}, self._clock()))
+            snapshot, _last_seen = snapshots.get(origin, ({}, self._clock()))
             members = dict(snapshot)
             members[message["user_id"]] = {
                 "metadata": message.get("metadata"),
-                "connections": 1,
+                # Pre-protocol senders without a count meant one connection.
+                "connections": int(message.get("connections", 1)),
             }
-            snapshots[origin] = (members, last_seen)
+            snapshots[origin] = (members, self._clock())
         elif message["kind"] == "leave":
-            snapshot, last_seen = snapshots.get(origin, ({}, self._clock()))
+            snapshot, _last_seen = snapshots.get(origin, ({}, self._clock()))
             members = dict(snapshot)
-            members.pop(message["user_id"], None)
-            snapshots[origin] = (members, last_seen)
+            remaining = int(message.get("connections", 0))
+            if remaining <= 0:
+                members.pop(message["user_id"], None)
+            elif message["user_id"] in members:
+                members[message["user_id"]]["connections"] = remaining
+            snapshots[origin] = (members, self._clock())
         else:  # snapshot — authoritative replacement for that origin
             members = {
                 entry["user_id"]: {

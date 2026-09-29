@@ -127,13 +127,16 @@ python_version = "3.12"
 strict = false
 warn_unused_ignores = false
 ignore_missing_imports = true
-exclude = ["database/migrations/versions", "storage"]
+# Anchored: an unanchored "storage" regex also blinds mypy to tests/storage/.
+exclude = ["database/migrations/versions", "^storage/"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 # Generated Alembic revisions are machine-written (like mypy's exclusion above).
-exclude = ["database/migrations/versions", "storage"]
+# "/storage" is gitignore-style root-anchored: the runtime output dir only —
+# unanchored, it also excluded tests/storage/ from every gate.
+exclude = ["database/migrations/versions", "/storage"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]

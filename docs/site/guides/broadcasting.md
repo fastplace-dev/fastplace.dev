@@ -33,7 +33,12 @@ The leading segments of a dot-namespaced channel decide who may subscribe:
 Private and presence channels fail closed: `BROADCAST_PRIVATE_ABILITY`
 names a gate ability your app defines, and **leaving it unset denies
 everyone** — "private but the ability name is missing" must never degrade
-to public.
+to public. The grammar itself is bounded: reserved words are only valid
+as leading prefixes, names starting with `_` or containing `::` are
+refused (presence control traffic rides shadow channels a client must
+not be able to subscribe to), and raw names are capped at 200
+characters — parsed names become bus subscription keys and roster
+entries held for the process lifetime.
 
 ```python
 from fastplace.authz import gate
@@ -98,8 +103,13 @@ leave pushes a `presence` frame to the channel:
 ```
 
 Member information is deliberately minimal: user id plus a small optional
-metadata dict. Disconnects leave automatically; a periodic heartbeat
-re-announce bounds ghost members left by crashed processes.
+metadata dict. Connection counts are honest between heartbeats: closing
+one tab drops the count, and the member leaves when the last tab
+closes. The WebSocket layer owns a process-wide heartbeat task that
+republishes local rosters every 15 seconds (a third of the 45-second
+ghost window), so a crashed process's members age out of remote rosters
+within a bounded window instead of lingering forever — join and leave
+events refresh that liveness clock too.
 
 ## Domain events → channels
 
@@ -135,13 +145,20 @@ await broadcast(channel, {"status": "shipped"})
 ```
 
 Non-members — including anonymous sockets — are denied; plain channels
-are untouched by the tenancy rules.
+are untouched by the tenancy rules. The core's default matches: without
+the tenancy authorizer registered, `company.<id>.…` channels are denied
+outright — a tenant-scoped shape nobody vouches for never degrades to
+the public rule.
 
 ## Drivers
 
 - **memory** — in-process. Browsers served by this process receive
   everything; a broadcast from a queue worker reaches no browser (the
-  driver warns instead of pretending). Right for dev and tests.
+  driver warns instead of pretending). Right for dev and tests — and
+  quietly wrong anywhere else: under multi-worker `serve` or any
+  load-balanced deploy it partitions silently (each worker holds only
+  its own sockets; presence rosters disagree per worker). Use redis the
+  moment more than one process serves browsers.
 - **redis** — pub/sub fan-out via `BROADCAST_REDIS_URL` (defaults to
   `QUEUE_REDIS_URL`; requires the queue extra's redis). Multi-worker
   deployments need this — or a sticky-session load balancer with memory
