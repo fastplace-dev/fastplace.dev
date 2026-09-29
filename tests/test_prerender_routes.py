@@ -55,8 +55,12 @@ def test_rejects_relative(tmp_path):
         resolve_prerender_routes(None, ["docs/x"], root=tmp_root(tmp_path))
 
 
-def test_empty_module_attr_falls_to_env(monkeypatch, tmp_path):
-    """An explicitly empty module list is not a choice — env still applies."""
+def test_empty_module_attr_means_zero_routes(monkeypatch, tmp_path):
+    """A present-but-empty module list is the app disabling prerender.
+
+    It must NOT fall through to env or default: `fastplace prerender` on
+    such an app exits with "nothing to prerender" and touches no files.
+    """
 
     class EmptyAsgi(ModuleType):
         PRERENDER_ROUTES: list[str] = []
@@ -65,7 +69,16 @@ def test_empty_module_attr_falls_to_env(monkeypatch, tmp_path):
     from fastplace.prerender.routes import resolve_prerender_routes
 
     routes = resolve_prerender_routes(EmptyAsgi("asgi"), [], root=tmp_root(tmp_path))
-    assert routes == ["/from-env"]
+    assert routes == []
+
+
+def test_blank_env_entries_are_dropped(monkeypatch, tmp_path):
+    """Comma noise in the env var is skipped, real entries validated."""
+    monkeypatch.setenv("PRERENDER_ROUTES", " /a , ,/b,")
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    routes = resolve_prerender_routes(None, [], root=tmp_root(tmp_path))
+    assert routes == ["/a", "/b"]
 
 
 def test_dedup_preserves_first_occurrence_order(tmp_path):

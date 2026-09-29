@@ -35,25 +35,28 @@ def resolve_prerender_routes(
 ) -> list[str]:
     """Resolve the routes `fastplace prerender` will capture.
 
-    Precedence (first non-empty wins): CLI ``--route`` flags, then the
-    ``PRERENDER_ROUTES`` list on the app's ``asgi`` module, then the
-    ``PRERENDER_ROUTES`` environment variable (comma-separated), then the
-    ``["/"]`` default. Entries are normalized (absolute, trailing slash
-    stripped) and deduplicated preserving first-occurrence order.
+    Precedence: CLI ``--route`` flags, then the ``PRERENDER_ROUTES`` list
+    on the app's ``asgi`` module, then the ``PRERENDER_ROUTES`` environment
+    variable (comma-separated), then the ``["/"]`` default. A source that
+    is present wins even when empty — ``PRERENDER_ROUTES = []`` on the asgi
+    module is the app disabling prerendering, and resolves to zero routes
+    rather than falling through. Entries are normalized (absolute, trailing
+    slash stripped) and deduplicated preserving first-occurrence order;
+    blank env entries are dropped as comma noise.
 
     ``root`` is accepted for a future routes-file convention and ignored —
     no file-based config ships in this wave; the signature stays stable so
     callers do not churn when one does.
     """
-    source: list[str] | None = explicit or None
-    if source is None and app_module is not None:
-        module_routes = getattr(app_module, "PRERENDER_ROUTES", None)
-        if module_routes:  # an explicitly empty list is not a choice
-            source = list(module_routes)
-    if source is None:
+    source: list[str] | None = None
+    if explicit:
+        source = list(explicit)
+    elif app_module is not None and hasattr(app_module, "PRERENDER_ROUTES"):
+        source = list(app_module.PRERENDER_ROUTES)
+    else:
         env_routes = os.environ.get("PRERENDER_ROUTES", "")
         if env_routes.strip():
-            source = env_routes.split(",")
+            source = [entry for entry in env_routes.split(",") if entry.strip()]
     if source is None:
         source = list(_DEFAULT_ROUTES)
     return list(dict.fromkeys(_normalize(route) for route in source))
