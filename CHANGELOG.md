@@ -19,7 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the `PRERENDER_ROUTES` env var, or `/` by default. `--timeout` (seconds,
   default 30) bounds each capture so a hanging page fails the run instead of
   stalling it. The writer refuses a non-empty `--out` directory that has no
-  `prerender-manifest.json` from a previous run — `--force` overrides. A
+  `prerender-manifest.json` from a previous run — `--force` overrides. A run
+  where every route skipped (transient 500s, non-HTML) writes nothing, so the
+  pages the previous run produced stay live. The `/build` static mount never
+  serves the prerender tree — prerendered pages answer at their own URLs and
+  `prerender-manifest.json` stays unpublished. A
   capture-time crash exits 1 with the cause in a one-line red message.
   `httpx` moves from dev dependency to core.
 

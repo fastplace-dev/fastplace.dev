@@ -185,6 +185,33 @@ async def test_default_timeout_is_generous_for_slow_pages():
     assert b"made it" in pages[0].body
 
 
+async def test_shutdown_failure_does_not_mask_the_capture_error():
+    """When a capture fails AND shutdown then fails, the capture error wins.
+
+    The lifespan wrapper runs best-effort shutdown while the real error is
+    already propagating; surfacing the shutdown failure instead sends the
+    developer chasing a lifecycle bug instead of the slow route.
+    """
+    import asyncio
+
+    import httpx
+
+    async def _moody_app(scope, receive, send):  # noqa: ANN001
+        if scope["type"] == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.failed", "message": "shutdown boom"})
+                    return
+        elif scope["type"] == "http":
+            await asyncio.sleep(5)
+
+    with pytest.raises(httpx.TimeoutException, match="capturing /slow"):
+        await capture_all(_moody_app, ["/slow"], timeout=0.1)
+
+
 async def test_startup_failure_raises_with_app_message():
     """A failing startup hook surfaces its message through the engine."""
 

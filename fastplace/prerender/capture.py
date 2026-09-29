@@ -95,6 +95,20 @@ async def _fetch(client: httpx.AsyncClient, route: str) -> CapturedPage:
     )
 
 
+def _failure_summary(message: str) -> str:
+    """Last line of a lifespan failure message — the exception summary.
+
+    Starlette embeds a full traceback in ``startup.failed``/``shutdown.failed``
+    messages; the CLI prints the error on one console line, so the summary
+    line is the part worth carrying (the whole traceback is still in the
+    app's own logs).
+    """
+    if "Traceback" not in message:
+        return message
+    lines = [line for line in message.strip().splitlines() if line.strip()]
+    return lines[-1] if lines else message
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(app: Any) -> AsyncIterator[None]:
     """Run the app's ASGI lifespan without the asgi-lifespan package.
@@ -128,17 +142,31 @@ async def _lifespan(app: Any) -> AsyncIterator[None]:
         task.result()
         raise RuntimeError("app exited during lifespan handshake")
 
+    async def _shutdown() -> None:
+        await to_app.put({"type": "lifespan.shutdown"})
+        message = await asyncio.wait_for(_receive(), timeout=handshake_timeout)
+        if message["type"] == "lifespan.shutdown.failed":
+            raise RuntimeError(
+                "app lifespan shutdown failed: " + _failure_summary(message.get("message", ""))
+            )
+        await task
+
     try:
         await to_app.put({"type": "lifespan.startup"})
         message = await asyncio.wait_for(_receive(), timeout=handshake_timeout)
         if message["type"] == "lifespan.startup.failed":
-            raise RuntimeError(f"app lifespan startup failed: {message.get('message', '')}")
+            raise RuntimeError(
+                "app lifespan startup failed: " + _failure_summary(message.get("message", ""))
+            )
         yield
-    finally:
-        # Shutdown still runs when the body raised: the captures are done,
-        # but engines and listeners the startup opened deserve a close.
-        await to_app.put({"type": "lifespan.shutdown"})
-        message = await asyncio.wait_for(_receive(), timeout=handshake_timeout)
-        if message["type"] == "lifespan.shutdown.failed":
-            raise RuntimeError(f"app lifespan shutdown failed: {message.get('message', '')}")
-        await task
+    except BaseException:
+        # Shutdown still runs when the body raised: engines and listeners
+        # the startup opened deserve a close — but best-effort only. A
+        # shutdown failure here must not replace the capture error the
+        # developer actually needs to see.
+        with contextlib.suppress(Exception):
+            await _shutdown()
+        task.cancel()
+        raise
+    else:
+        await _shutdown()

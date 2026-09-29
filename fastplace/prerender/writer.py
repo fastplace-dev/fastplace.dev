@@ -72,6 +72,8 @@ def write_pages(pages: list[CapturedPage], out_dir: Path, force: bool = False) -
         raise ValueError(
             f"prerender output directory {out_dir} is a symlink — refusing to write through it"
         )
+    if out_dir.exists() and out_dir.is_file():
+        raise ValueError(f"prerender output path {out_dir} is a file, not a directory")
     if (
         not force
         and out_dir.exists()
@@ -100,6 +102,11 @@ def write_pages(pages: list[CapturedPage], out_dir: Path, force: bool = False) -
         hashes={page.route: _hash(page.body) for page in writable},
         skipped=skipped,
     )
+    if not writable:
+        # Every route skipped (transient 500s, non-HTML). Nothing to
+        # refresh — and clearing would delete the pages the previous run
+        # is still serving. Report the facts, touch nothing.
+        return manifest
     clean_stale(out_dir, manifest)
     for page in writable:
         page_dir = _route_dir(page.route, out_dir)

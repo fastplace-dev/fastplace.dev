@@ -84,13 +84,32 @@ def test_happy_path_captures_root_and_writes_manifest(tmp_path, monkeypatch):
 def test_route_flag_overrides_and_skips_are_reported(tmp_path, monkeypatch):
     project = _make_project(tmp_path, monkeypatch)
     result = runner.invoke(cli_app, ["prerender", "--route", "/gone"])
+    out = _out(result)
+    assert result.exit_code == 0, out
+    # All-skipped run: nothing written, nothing cleared — skips reported.
+    assert "1 skipped" in out
+    prerender_dir = project / "public" / "build" / "prerender"
+    assert not (prerender_dir / "prerender-manifest.json").exists()
+    assert not (prerender_dir / "gone").exists()
+
+
+def test_all_skipped_rerun_preserves_previous_output(tmp_path, monkeypatch):
+    """A rerun of only-failing routes must leave the good tree in place.
+
+    The deploy-time failure mode: backend 500s during a prerender rerun.
+    Exit stays 0 (skips are reported facts), but the previous deploy's
+    pages and manifest survive untouched.
+    """
+    project = _make_project(tmp_path, monkeypatch)
+    assert runner.invoke(cli_app, ["prerender"]).exit_code == 0
+    page = project / "public" / "build" / "prerender" / "index.html"
+    manifest = project / "public" / "build" / "prerender" / "prerender-manifest.json"
+    good_manifest = manifest.read_text()
+
+    result = runner.invoke(cli_app, ["prerender", "--route", "/gone"])
     assert result.exit_code == 0, _out(result)
-    manifest = json.loads(
-        (project / "public" / "build" / "prerender" / "prerender-manifest.json").read_text()
-    )
-    assert manifest["routes"] == []
-    assert manifest["skipped"] == ["/gone"]
-    assert not (project / "public" / "build" / "prerender" / "gone").exists()
+    assert b"HOME-PAGE" in page.read_bytes()
+    assert manifest.read_text() == good_manifest
 
 
 def test_module_attr_routes_used(tmp_path, monkeypatch):
@@ -189,6 +208,19 @@ def test_force_flag_writes_foreign_directory(tmp_path, monkeypatch):
     assert result.exit_code == 0, _out(result)
     assert (foreign / "index.html").exists()
     assert not (foreign / "precious.txt").exists()
+
+
+def test_out_flag_pointing_at_a_file_exits_two(tmp_path, monkeypatch):
+    """--out some-file.txt is a clean refusal, not a NotADirectoryError crash."""
+    _make_project(tmp_path, monkeypatch)
+    target = tmp_path / "not-a-dir.txt"
+    target.write_text("file")
+    result = runner.invoke(cli_app, ["prerender", "--out", str(target)])
+    out = _out(result)
+    assert result.exit_code == 2
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "cannot write prerender output" in out
+    assert target.read_text() == "file"
 
 
 def test_capture_failure_is_a_clean_exit_one(tmp_path, monkeypatch):

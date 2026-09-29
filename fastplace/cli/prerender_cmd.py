@@ -101,8 +101,12 @@ def prerender(
     out_dir = out if out is not None else root / "public" / "build" / "prerender"
     try:
         manifest = write_pages(pages, out_dir, force=force)
-        manifest.write(out_dir)
-    except ValueError as exc:
+        if manifest.routes:
+            # An all-skipped run wrote nothing; stamping a routes-less
+            # manifest would rewrite history over the last good run's.
+            manifest.write(out_dir)
+    except (ValueError, OSError) as exc:
+        # OSError covers a read-only out_dir, a full disk, and kin.
         console.print(f"[red]cannot write prerender output:[/] {exc}")
         raise typer.Exit(code=2) from exc
 

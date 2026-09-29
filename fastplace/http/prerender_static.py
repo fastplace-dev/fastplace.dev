@@ -43,7 +43,14 @@ def _prerender_file(route_path: str, prerender_dir: Path) -> Path | None:
     if any(segment in ("", "..") for segment in segments):
         return None
     directory = prerender_dir.joinpath(*segments) if segments else prerender_dir
-    return directory / _INDEX
+    candidate = directory / _INDEX
+    # Serve-side parity with the writer's containment check: a symlink
+    # planted inside the tree must not serve its target's file. Both sides
+    # resolved — macOS maps /tmp onto /private/tmp and an unresolved
+    # comparison would misfire there.
+    if not candidate.resolve().is_relative_to(prerender_dir.resolve()):
+        return None
+    return candidate
 
 
 class PrerenderStaticFiles:

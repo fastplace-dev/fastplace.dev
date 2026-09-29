@@ -175,3 +175,35 @@ def test_force_overrides_the_guard(tmp_path):
     write_pages([CapturedPage("/", 200, "text/html", b"<h1>x</h1>")], out, force=True)
     assert not (out / "stale.txt").exists()
     assert (out / "index.html").read_bytes() == b"<h1>x</h1>"
+
+
+def test_all_skipped_run_preserves_previous_tree(tmp_path):
+    """A rerun where every route skipped must not wipe the last-good output.
+
+    Transient 500s at deploy time are facts, not a reason to delete the
+    pages the previous deploy is still serving. With nothing writable
+    there is nothing to refresh: the tree and its manifest stay exactly
+    as the last successful run left them.
+    """
+    from fastplace.prerender.writer import MANIFEST_NAME
+
+    first = write_pages([CapturedPage("/", 200, "text/html", b"<h1>good</h1>")], tmp_path)
+    first.write(tmp_path)
+    before = (tmp_path / MANIFEST_NAME).read_text()
+
+    rerun = write_pages([CapturedPage("/", 500, "text/html", b"boom")], tmp_path)
+
+    assert rerun.routes == []
+    assert rerun.skipped == ["/"]
+    assert (tmp_path / "index.html").read_bytes() == b"<h1>good</h1>"
+    assert (tmp_path / MANIFEST_NAME).read_text() == before
+
+
+def test_out_dir_that_is_a_file_is_refused(tmp_path):
+    """--out pointing at a regular file is a clean refusal, not iterdir crash."""
+    target = tmp_path / "not-a-dir.txt"
+    target.write_text("file")
+
+    with pytest.raises(ValueError, match="not a directory"):
+        write_pages([CapturedPage("/", 200, "text/html", b"x")], target)
+    assert target.read_text() == "file"
