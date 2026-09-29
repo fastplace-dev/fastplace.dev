@@ -502,6 +502,15 @@ class PresenceTracker:
         self._unsubscribes: dict[str, Callable[[], None]] = {}
         self._last_roster: dict[str, list] = {}
 
+    @property
+    def ghost_ttl(self) -> float:
+        """How long a silent origin's members survive in rosters (seconds).
+
+        Read-only: the heartbeat scheduler sizes its interval from it
+        (ttl / 3), so a live change would strand already-scheduled beats.
+        """
+        return self._ghost_ttl
+
     # -- local membership ------------------------------------------------
 
     async def join(self, channel: str, user_id: int | str, metadata: Any = None) -> None:
@@ -514,8 +523,16 @@ class PresenceTracker:
             member.metadata = metadata
         member.connections += 1
         self._local[channel][user_id] = member
+        # The count rides the event, or a remote process collapses two tabs
+        # into one until the next snapshot comes around.
         await self._publish(
-            channel, {"kind": "join", "user_id": user_id, "metadata": member.metadata}
+            channel,
+            {
+                "kind": "join",
+                "user_id": user_id,
+                "metadata": member.metadata,
+                "connections": member.connections,
+            },
         )
         self._changed(channel)
 
@@ -527,9 +544,14 @@ class PresenceTracker:
         member.connections -= 1
         if member.connections > 0:
             self._local[channel][user_id] = member
-            return
-        del self._local[channel][user_id]
-        await self._publish(channel, {"kind": "leave", "user_id": user_id})
+        else:
+            del self._local[channel][user_id]
+        # Every leave publishes the post-decrement count: "one tab closed"
+        # must read as a count drop remotely, not as the member vanishing a
+        # heartbeat early.
+        await self._publish(
+            channel, {"kind": "leave", "user_id": user_id, "connections": member.connections}
+        )
         self._changed(channel)
 
     async def heartbeat(self) -> None:
@@ -538,7 +560,10 @@ class PresenceTracker:
         Receivers reconcile by diff and keep the last-seen stamp, so a
         process that dies simply stops heartbeating and its members age out.
         """
-        for channel, members in self._local.items():
+        # Snapshot first: remote receivers run inline with each publish, and
+        # anything they do that joins a new channel here would mutate the
+        # dict mid-iteration.
+        for channel, members in list(self._local.items()):
             if not members:
                 continue
             # A list, never a dict keyed by user id: JSON object keys are
@@ -609,18 +634,23 @@ class PresenceTracker:
             return  # own echo — the local dict is already authoritative
         snapshots = self._remote.setdefault(channel, {})
         if message["kind"] == "join":
-            snapshot, last_seen = snapshots.get(origin, ({}, self._clock()))
+            snapshot, _last_seen = snapshots.get(origin, ({}, self._clock()))
             members = dict(snapshot)
             members[message["user_id"]] = {
                 "metadata": message.get("metadata"),
-                "connections": 1,
+                # Pre-protocol senders without a count meant one connection.
+                "connections": int(message.get("connections", 1)),
             }
-            snapshots[origin] = (members, last_seen)
+            snapshots[origin] = (members, self._clock())
         elif message["kind"] == "leave":
-            snapshot, last_seen = snapshots.get(origin, ({}, self._clock()))
+            snapshot, _last_seen = snapshots.get(origin, ({}, self._clock()))
             members = dict(snapshot)
-            members.pop(message["user_id"], None)
-            snapshots[origin] = (members, last_seen)
+            remaining = int(message.get("connections", 0))
+            if remaining <= 0:
+                members.pop(message["user_id"], None)
+            elif message["user_id"] in members:
+                members[message["user_id"]]["connections"] = remaining
+            snapshots[origin] = (members, self._clock())
         else:  # snapshot — authoritative replacement for that origin
             members = {
                 entry["user_id"]: {

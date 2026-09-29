@@ -503,3 +503,59 @@ class TestPresenceAcrossProcesses:
         assert changes[-1] == ("presence.orders.42", [7])
         await here.leave("presence.orders.42", 7)
         assert changes[-1] == ("presence.orders.42", [])
+
+    async def test_remote_multi_tab_counts_survive_between_heartbeats(self):
+        # Control events carry the post-change connection count, or a remote
+        # process collapses two tabs into one (join says 1) and drops the
+        # member on the first tab close (leave says gone) until the next
+        # snapshot comes around.
+        clock = FakeClock()
+        bus = MemoryBroadcastBus()
+        here = make_tracker(bus=bus, clock=clock, origin="here")
+        there = make_tracker(bus=bus, clock=clock, origin="there")
+        there.watch("presence.orders.42")
+
+        await here.join("presence.orders.42", 7)
+        await here.join("presence.orders.42", 7)  # second tab, no snapshot yet
+        roster = there.roster("presence.orders.42")
+        assert [(m.user_id, m.connections) for m in roster] == [(7, 2)]
+
+        await here.leave("presence.orders.42", 7)  # one tab closes
+        roster = there.roster("presence.orders.42")
+        assert [(m.user_id, m.connections) for m in roster] == [(7, 1)]
+
+        await here.leave("presence.orders.42", 7)  # last tab
+        assert there.roster("presence.orders.42") == []
+
+    async def test_control_receipts_refresh_last_seen(self):
+        # Any live control message proves the origin is alive — its stamp
+        # must refresh, or a chatty-but-heartbeat-less origin ages out of
+        # every roster mid-conversation.
+        clock = FakeClock()
+        bus = MemoryBroadcastBus()
+        here = make_tracker(bus=bus, clock=clock, origin="here")
+        there = make_tracker(bus=bus, clock=clock, origin="there", ghost_ttl=30.0)
+        there.watch("presence.orders.42")
+
+        await here.join("presence.orders.42", 7)
+        clock.advance(31.0)  # past the ttl on the original stamp...
+        await here.join("presence.orders.42", 9)  # ...yet the origin is alive
+        roster = there.roster("presence.orders.42")
+        assert sorted(m.user_id for m in roster) == [7, 9]
+
+    async def test_heartbeat_survives_a_join_during_publish(self):
+        # Remote receivers run inline with heartbeat's publish; anything a
+        # receiver does that joins a *new* channel mutates the dict being
+        # iterated. The snapshot must be taken up front.
+        from fastplace.broadcasting import _CONTROL_PREFIX
+
+        bus = MemoryBroadcastBus()
+        tracker = make_tracker(bus=bus, origin="solo")
+        await tracker.join("presence.a", 1)
+
+        async def sabotage(control_channel: str, data: str) -> None:
+            await tracker.join("presence.b", 2)
+
+        bus.subscribe(f"{_CONTROL_PREFIX}presence.a", sabotage)
+        await tracker.heartbeat()  # must not raise
+        assert [m.user_id for m in tracker.roster("presence.b")] == [2]
