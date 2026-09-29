@@ -10,7 +10,7 @@ the disk prefix.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -19,7 +19,7 @@ from fastplace.errors import ConfigurationError, NotFoundError
 from fastplace.storage import Storage, StorageNotSupported, StoragePathError, reset_storage
 from fastplace.storage_s3 import S3Disk
 
-STAMP = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)
+STAMP = datetime(2026, 9, 29, 12, 0, 0, tzinfo=UTC)
 
 
 class FakeS3Body:
@@ -47,7 +47,7 @@ class FakeS3Client:
         self.objects: dict[str, bytes] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def __aenter__(self) -> "FakeS3Client":
+    async def __aenter__(self) -> FakeS3Client:
         return self
 
     async def __aexit__(self, *exc: object) -> bool:
@@ -102,7 +102,7 @@ class FakeS3Client:
         if Delimiter:
             trimmed: list[str] = []
             for key in keys:
-                rest = key[len(Prefix):]
+                rest = key[len(Prefix) :]
                 if Delimiter in rest:
                     head = Prefix + rest.split(Delimiter, 1)[0] + Delimiter
                     if head not in common:
@@ -201,7 +201,9 @@ async def test_s3_disk_last_modified_returns_none_when_missing(s3: S3Disk) -> No
     assert await s3.last_modified("gone.txt") is None
 
 
-async def test_s3_disk_exists_covers_objects_and_directories(fake: FakeS3Client, s3: S3Disk) -> None:
+async def test_s3_disk_exists_covers_objects_and_directories(
+    fake: FakeS3Client, s3: S3Disk
+) -> None:
     await s3.put("dir/a.txt", "a")
     assert await s3.exists("dir/a.txt") is True
     assert await s3.exists("dir") is True  # prefix with objects underneath
@@ -226,7 +228,9 @@ async def test_s3_disk_last_modified_parses_head_object_timestamp(s3: S3Disk) ->
     assert await s3.last_modified("stamped.txt") == STAMP.timestamp()
 
 
-async def test_s3_disk_copy_uses_server_side_copy_and_keeps_source(fake: FakeS3Client, s3: S3Disk) -> None:
+async def test_s3_disk_copy_uses_server_side_copy_and_keeps_source(
+    fake: FakeS3Client, s3: S3Disk
+) -> None:
     await s3.put("src.txt", "data")
     await s3.copy("src.txt", "dst.txt")
     assert fake.objects["src.txt"] == b"data"  # server-side copy keeps the source
@@ -309,7 +313,9 @@ async def test_s3_disk_operations_stay_under_the_prefix(fake: FakeS3Client) -> N
 def test_disk_factory_builds_s3_disk_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.util
 
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "aioboto3" else None)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: object() if name == "aioboto3" else None
+    )
     storage = Storage(
         disks={
             "s3": {
@@ -325,10 +331,14 @@ def test_disk_factory_builds_s3_disk_from_config(monkeypatch: pytest.MonkeyPatch
     assert isinstance(built, S3Disk)
 
 
-def test_disk_factory_s3_without_bucket_is_a_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_disk_factory_s3_without_bucket_is_a_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import importlib.util
 
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "aioboto3" else None)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: object() if name == "aioboto3" else None
+    )
     storage = Storage(disks={"s3": {"driver": "s3"}}, default="s3")
     with pytest.raises(ConfigurationError, match="bucket"):
         storage.disk()
@@ -342,7 +352,9 @@ def test_disk_factory_parses_truthy_string_public_flag(monkeypatch: pytest.Monke
     # the flag, not cast it, or "disable public URLs" silently enables them.
     import importlib.util
 
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "aioboto3" else None)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: object() if name == "aioboto3" else None
+    )
     storage = Storage(
         disks={
             "off": {"driver": "s3", "bucket": "b", "public": "false"},
