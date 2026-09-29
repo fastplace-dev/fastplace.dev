@@ -4,6 +4,23 @@ All notable changes to the Fastplace framework are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-29
+
+### Changed
+
+- Project status: **Beta**. The `Development Status` trove classifier moves from
+  _3 - Alpha_ to _4 - Beta_ — the first release carrying Beta metadata, matching
+  the public beta.
+
+### Fixed
+
+- React bridge: a `FastplaceProvider` re-render after `router.reset()` no longer
+  throws "no page initialized". A pending React update scheduled by an earlier
+  `emit()` could flush after the store was emptied and re-render the provider
+  against it; the provider now falls back to the page it booted with
+  (`initialPage`). The failure was timing-dependent (local green, CI red) and
+  surfaced in vitest as an unhandled exception with every test passing.
+
 ## [0.3.0] - 2026-09-29
 
 ### Added

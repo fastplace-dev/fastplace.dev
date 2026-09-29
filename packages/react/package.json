@@ -1,6 +1,6 @@
 {
   "name": "@fastplace/react",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "React bridge for Fastplace — server-driven SPA over the X-Fastplace-Request protocol",
   "homepage": "https://fastplace.dev",
   "bugs": {

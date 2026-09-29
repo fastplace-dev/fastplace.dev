@@ -141,7 +141,7 @@ def test_pyproject_declares_trove_classifiers():
     text = (ROOT / "pyproject.toml").read_text()
     classifiers_block = text.split("classifiers = [", 1)[1].split("]", 1)[0]
     for needle in (
-        "Development Status :: 3 - Alpha",
+        "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
