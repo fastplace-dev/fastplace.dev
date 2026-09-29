@@ -334,6 +334,28 @@ def test_disk_factory_s3_without_bucket_is_a_configuration_error(monkeypatch: py
         storage.disk()
 
 
+def test_disk_factory_parses_truthy_string_public_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    # config() hands back raw strings for keys no config module registers:
+    # the commented-out s3 entry in config/storage.py reads
+    # config("S3_PUBLIC", default=False), so an env S3_PUBLIC=false arrives
+    # here as 'false' — and bool('false') is True. The factory must parse
+    # the flag, not cast it, or "disable public URLs" silently enables them.
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "aioboto3" else None)
+    storage = Storage(
+        disks={
+            "off": {"driver": "s3", "bucket": "b", "public": "false"},
+            "on": {"driver": "s3", "bucket": "b", "public": "true"},
+            "bool": {"driver": "s3", "bucket": "b", "public": True},
+        },
+        default="off",
+    )
+    assert storage.disk("off")._public is False
+    assert storage.disk("on")._public is True
+    assert storage.disk("bool")._public is True
+
+
 # -- presigned URLs & public URL policy ----------------------------------------
 
 
