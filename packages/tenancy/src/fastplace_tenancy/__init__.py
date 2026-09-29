@@ -8,6 +8,11 @@ distribution, never a ``fastplace.*`` submodule.
 """
 
 from fastplace_tenancy.authorization import require_membership
+from fastplace_tenancy.broadcasting import (
+    install_tenant_broadcasting,
+    tenant_channel,
+    tenant_channel_authorizer,
+)
 from fastplace_tenancy.cache import CompanyCacheStore
 from fastplace_tenancy.context import (
     CompanyRoleRequired,
@@ -59,6 +64,10 @@ __all__ = [
     "request_company_id",
     # cache
     "CompanyCacheStore",
+    # broadcasting
+    "install_tenant_broadcasting",
+    "tenant_channel",
+    "tenant_channel_authorizer",
     # queue
     "TenantQueue",
     "tenant_job",

@@ -79,6 +79,34 @@ def dispose_all_models() -> None:
             metadata.remove(table)
 
 
+def dispose_models_under(prefix: str) -> None:
+    """Unmap only the model classes declared under ``prefix``.
+
+    ``dispose_all_models`` is the right hammer inside the orm suite (its
+    conftest also purges every evictable module from ``sys.modules``), but a
+    suite that maps third-party models — say ``fastplace_tenancy.*`` — and
+    leaves other suites' collection-time imports (``app.*`` model modules)
+    cached must dispose surgically: disposing those too would strand their
+    still-cached module objects with corpse classes. The caller drops the
+    matching modules from ``sys.modules`` so later imports redeclare fresh.
+    """
+    from fastplace.orm.model import Model
+    from fastplace.orm.registry import all_models
+
+    registry = Model.registry
+    metadata = Model.metadata
+    for cls in [c for c in all_models() if c.__module__.startswith(prefix)]:
+        table = getattr(cls, "__table__", None)
+        manager = getattr(cls, "_sa_class_manager", None)
+        if manager is not None:
+            registry._dispose_manager_and_mapper(manager)  # noqa: SLF001
+            registry._managers.pop(manager, None)  # noqa: SLF001
+        else:  # pragma: no cover — an uninstrumented subclass has no manager
+            registry._dispose_cls(cls)  # noqa: SLF001
+        if table is not None and table.key in metadata.tables:
+            metadata.remove(table)
+
+
 @pytest.fixture()
 def swept_registry() -> Iterator[None]:
     """Snapshot-and-sweep the shared metadata around one test."""

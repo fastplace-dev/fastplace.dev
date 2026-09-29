@@ -13,3 +13,10 @@ BROADCAST_CHANNEL_PREFIX = "fastplace:broadcast:"
 BROADCAST_PRIVATE_ABILITY = None
 # Serialized payload cap in bytes; oversized payloads fail loud at publish.
 BROADCAST_MAX_PAYLOAD_BYTES = 65536
+# Per-socket channel cap — one client cannot pin unlimited bus subscriptions.
+BROADCAST_MAX_SUBSCRIPTIONS = 100
+# Per-socket outbound queue bound; a slow consumer is closed, never allowed
+# to balloon process memory.
+BROADCAST_SOCKET_QUEUE_SIZE = 256
+# Seconds between ping frames on an idle socket (proxy/NAT keepalive).
+BROADCAST_PING_INTERVAL = 30.0

@@ -156,6 +156,18 @@ def get_app(
     app.add_middleware(CompressionMiddleware)
     app.add_middleware(_QueryTrackerMiddleware)
     _install_session_middleware(app, cfg, app_env=app_env)
+    # The broadcast WebSocket endpoint — the socket half of the broadcasting
+    # layer. Mounted here (not from app routes) because it is framework
+    # surface; BROADCAST_ENABLED=false mounts nothing.
+    if bool(cfg.get("BROADCAST_ENABLED", default=True)):
+        from fastplace.http.broadcast_ws import BROADCAST_WS_PATH, broadcast_socket
+        from fastplace.http.websocket import websocket_adapter
+
+        app.add_api_websocket_route(
+            BROADCAST_WS_PATH,
+            websocket_adapter(broadcast_socket),
+            name="broadcast",
+        )
     # Added last -> outermost (add_middleware inserts at index 0). A down
     # app answers with the 503 gate before sessions mint cookies or the
     # bridge/React surface is reached.
@@ -497,9 +509,13 @@ def _install_session_middleware(app: FastAPI, cfg: _ConfigShim, *, app_env: str)
             "APP_KEY is required in production — set it in .env "
             "(generate: python -c 'import secrets; print(secrets.token_urlsafe(48))')"
         )
+    store = session_store(config_get=cfg.get)
+    # The broadcast ws endpoint cannot see the middleware's store (it skips
+    # non-http scopes), so the instance is stashed for the handshake loader.
+    app.state.fastplace_session_store = store
     app.add_middleware(
         ServerSessionMiddleware,
-        store=session_store(config_get=cfg.get),
+        store=store,
         cookie_name=str(cfg.get("SESSION_COOKIE", default="fastplace_session")),
         lifetime=int(cfg.get("SESSION_LIFETIME", default=7200)),
         path=str(cfg.get("SESSION_PATH", default="/")),
