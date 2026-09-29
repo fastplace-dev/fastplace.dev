@@ -16,9 +16,12 @@ _DEFAULT_ROUTES = ["/"]
 def _normalize(route: str) -> str:
     """One route -> ``/clean/path`` form: trimmed, absolute, no trailing slash.
 
-    Raises ``ValueError`` for anything that is not an absolute path — the
-    writer maps routes onto filesystem paths, so a relative or empty entry
-    is rejected here, at the boundary, before any file is opened.
+    Raises ``ValueError`` for anything that is not an absolute path, and for
+    ``..`` or empty (double-slash) segments — the writer maps routes onto
+    filesystem paths, so those are rejected here, at the boundary, before
+    any request is captured. Without this, httpx dot-normalizes ``/../etc``
+    into a real route that only fails later, at the writer, after the whole
+    app has rendered it for nothing.
     """
     cleaned = route.strip()
     if not cleaned.startswith("/"):
@@ -27,7 +30,10 @@ def _normalize(route: str) -> str:
         )
     # Root stays "/" (rstrip would empty it); every other path loses its
     # trailing slash so "/docs" and "/docs/" map to one output directory.
-    return cleaned.rstrip("/") or "/"
+    normalized = cleaned.rstrip("/") or "/"
+    if normalized != "/" and any(segment in ("", "..") for segment in normalized.split("/")[1:]):
+        raise ValueError(f"unsafe prerender route segment in {route!r}")
+    return normalized
 
 
 def resolve_prerender_routes(
@@ -52,7 +58,17 @@ def resolve_prerender_routes(
     if explicit:
         source = list(explicit)
     elif app_module is not None and hasattr(app_module, "PRERENDER_ROUTES"):
-        source = list(app_module.PRERENDER_ROUTES)
+        attr = app_module.PRERENDER_ROUTES
+        # [] disables prerendering (present-and-empty wins); anything else
+        # non-list-like is a config mistake. A bare string is the classic
+        # slip — list("/docs") would silently capture one-character routes,
+        # and None would surface as a raw TypeError traceback.
+        if not isinstance(attr, (list, tuple)):
+            raise ValueError(
+                "PRERENDER_ROUTES on the asgi module must be a list of route "
+                f"strings (use [] to disable prerendering), got {type(attr).__name__}"
+            )
+        source = list(attr)
     else:
         env_routes = os.environ.get("PRERENDER_ROUTES", "")
         if env_routes.strip():

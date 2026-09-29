@@ -165,6 +165,87 @@ def test_app_flag_missing_attr_exits_one(tmp_path, monkeypatch):
     assert "nope" in _out(result)
 
 
+def test_out_flag_refuses_foreign_directory(tmp_path, monkeypatch):
+    """--out pointed at a real directory must refuse, not clear it."""
+    _make_project(tmp_path, monkeypatch)
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+    (foreign / "precious.txt").write_text("keep")
+    result = runner.invoke(cli_app, ["prerender", "--out", str(foreign)])
+    out = _out(result)
+    assert result.exit_code == 2
+    assert "--force" in out
+    assert (foreign / "precious.txt").exists()
+    assert not (foreign / "index.html").exists()
+
+
+def test_force_flag_writes_foreign_directory(tmp_path, monkeypatch):
+    """--force says "yes, clear it" and the run proceeds."""
+    _make_project(tmp_path, monkeypatch)
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+    (foreign / "precious.txt").write_text("keep")
+    result = runner.invoke(cli_app, ["prerender", "--out", str(foreign), "--force"])
+    assert result.exit_code == 0, _out(result)
+    assert (foreign / "index.html").exists()
+    assert not (foreign / "precious.txt").exists()
+
+
+def test_capture_failure_is_a_clean_exit_one(tmp_path, monkeypatch):
+    """A capture-time crash must read as a one-line error, not a traceback.
+
+    A failing app lifespan (dead DB, missing secret) raises inside
+    asyncio.run; the command catches it, prints the cause in red, and
+    exits 1 — same shape as the import-failure path.
+    """
+    _make_project(tmp_path, monkeypatch)
+    (tmp_path / "asgi.py").write_text(
+        "from contextlib import asynccontextmanager\n"
+        "from starlette.applications import Starlette\n"
+        "PRERENDER_ROUTES = ['/']\n"
+        "@asynccontextmanager\n"
+        "async def _boom(app):\n"
+        "    raise RuntimeError('db unreachable during boot')\n"
+        "    yield\n"
+        "app = Starlette(routes=[], lifespan=_boom)\n"
+    )
+    result = runner.invoke(cli_app, ["prerender"])
+    out = _out(result)
+    assert result.exit_code == 1
+    # typer.Exit arrives as SystemExit; anything else means a raw crash ran past.
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Traceback" not in out
+    assert "prerender failed" in out
+    assert "db unreachable during boot" in out
+
+
+def test_timeout_flag_bounds_a_hanging_route(tmp_path, monkeypatch):
+    """--timeout (seconds) caps each capture; a hung page fails fast.
+
+    The route below sleeps far past the 0.1s budget — without the flag the
+    command would sit there for the route's full sleep.
+    """
+    _make_project(tmp_path, monkeypatch)
+    (tmp_path / "routes" / "web.py").write_text(
+        "import asyncio\n"
+        "from fastplace.http import Html, Router\n\n\n"
+        "async def home(request):\n"
+        "    await asyncio.sleep(30)\n"
+        "    return Html('<h1>HOME-PAGE</h1>')\n\n\n"
+        "async def gone(request):\n"
+        "    return Html('<h1>gone</h1>', status_code=404)\n\n\n"
+        "router = Router()\n"
+        "router.get('/', home)\n"
+        "router.get('/gone', gone)\n"
+    )
+    result = runner.invoke(cli_app, ["prerender", "--timeout", "0.1"])
+    out = _out(result)
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "timed out" in out
+    assert "/" in out  # the message names the route that hung
+
+
 def test_second_run_recaptures_live_app_not_stale_output(tmp_path, monkeypatch):
     """Re-running the command must capture the live app, not the previous run's files.
 

@@ -16,8 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `Accept: text/html`, no query string — and falls through to the live app for
   everything else; assets and existing static mounts are untouched. Routes
   come from `--route` flags, the `PRERENDER_ROUTES` list on the asgi module,
-  the `PRERENDER_ROUTES` env var, or `/` by default. `httpx` moves from dev
-  dependency to core.
+  the `PRERENDER_ROUTES` env var, or `/` by default. `--timeout` (seconds,
+  default 30) bounds each capture so a hanging page fails the run instead of
+  stalling it. The writer refuses a non-empty `--out` directory that has no
+  `prerender-manifest.json` from a previous run — `--force` overrides. A
+  capture-time crash exits 1 with the cause in a one-line red message.
+  `httpx` moves from dev dependency to core.
 
 ## [0.3.1] - 2026-09-29
 

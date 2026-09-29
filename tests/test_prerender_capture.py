@@ -142,6 +142,49 @@ async def test_app_dying_during_lifespan_raises_instead_of_hanging():
     assert not isinstance(excinfo.value, TimeoutError), "capture hung on dead app"
 
 
+async def test_slow_route_hits_the_capture_timeout():
+    """A route slower than the timeout fails the capture, not the evening.
+
+    httpx's default timeout is 5s per phase; a page that hangs (bad DB
+    pool, blocked template) would hold `fastplace prerender` for that
+    long per route with no knob to turn. The engine takes an explicit
+    timeout so the CLI can own one number for the whole run.
+    """
+    import asyncio
+
+    import httpx
+
+    async def _slow(request):  # noqa: ANN001
+        await asyncio.sleep(2)
+        from fastplace.http import Html
+
+        return Html("late")
+
+    app = Starlette(routes=[Route("/slow", _slow)])
+    with pytest.raises(httpx.TimeoutException):
+        await capture_all(app, ["/slow"], timeout=0.1)
+
+
+async def test_default_timeout_is_generous_for_slow_pages():
+    """Sans explicit timeout a 0.3s page still captures (default ~30s).
+
+    Guards against the knob tightening the default: a normal-but-slow
+    page must never start timing out because the parameter exists.
+    """
+    import asyncio
+
+    async def _sluggish(request):  # noqa: ANN001
+        await asyncio.sleep(0.3)
+        from fastplace.http import Html
+
+        return Html("made it")
+
+    app = Starlette(routes=[Route("/sluggish", _sluggish)])
+    pages = await capture_all(app, ["/sluggish"])
+    assert pages[0].status == 200
+    assert b"made it" in pages[0].body
+
+
 async def test_startup_failure_raises_with_app_message():
     """A failing startup hook surfaces its message through the engine."""
 

@@ -97,3 +97,53 @@ def test_explicit_flags_validated_too(tmp_path):
 
     with pytest.raises(ValueError, match="absolute"):
         resolve_prerender_routes(None, ["not-/absolute"], root=tmp_root(tmp_path))
+
+
+def test_none_module_attr_is_a_clean_error(tmp_path):
+    """`PRERENDER_ROUTES = None` is a config mistake, not "disabled".
+
+    [] disables; None means the author probably renamed or deleted the
+    list — a raw TypeError from list(None) would surface as a traceback.
+    """
+    import pytest
+
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    module: Any = ModuleType("asgi")
+    module.PRERENDER_ROUTES = None
+    with pytest.raises(ValueError, match="PRERENDER_ROUTES"):
+        resolve_prerender_routes(module, [], root=tmp_root(tmp_path))
+
+
+def test_string_module_attr_is_a_clean_error(tmp_path):
+    """A bare string is the classic slip: without this guard it iterates
+    per character and captures garbage routes ("/", "d", "o", ...)."""
+    import pytest
+
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    module: Any = ModuleType("asgi")
+    module.PRERENDER_ROUTES = "/docs"
+    with pytest.raises(ValueError, match="PRERENDER_ROUTES"):
+        resolve_prerender_routes(module, [], root=tmp_root(tmp_path))
+
+
+def test_dotdot_segments_rejected_at_resolution(tmp_path):
+    """`/../etc`-style routes must die at the boundary, before any capture —
+    httpx dot-normalizes them into real routes that then fail at the writer
+    only after the whole app ran for nothing."""
+    import pytest
+
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    with pytest.raises(ValueError, match="route"):
+        resolve_prerender_routes(None, ["/../etc"], root=tmp_root(tmp_path))
+
+
+def test_double_slash_segments_rejected_at_resolution(tmp_path):
+    import pytest
+
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    with pytest.raises(ValueError, match="route"):
+        resolve_prerender_routes(None, ["/a//b"], root=tmp_root(tmp_path))

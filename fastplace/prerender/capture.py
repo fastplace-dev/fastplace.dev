@@ -8,6 +8,7 @@ the served one.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -53,7 +54,7 @@ async def capture_route(app: Any, route: str) -> CapturedPage:
         return await _fetch(client, route)
 
 
-async def capture_all(app: Any, routes: list[str]) -> list[CapturedPage]:
+async def capture_all(app: Any, routes: list[str], timeout: float = 30.0) -> list[CapturedPage]:
     """Capture every route sequentially, under one application lifespan.
 
     Sequential on purpose: app boot hooks (DB engines, caches) are not
@@ -61,13 +62,27 @@ async def capture_all(app: Any, routes: list[str]) -> list[CapturedPage]:
     failure reports readable. The lifespan runs around the whole batch —
     startup before the first fetch, shutdown after the last — so pages see
     the same initialized state the live server gives them.
+
+    ``timeout`` bounds each fetch. ASGITransport is in-process, so httpx's
+    own timeout config never fires — the bound is enforced with
+    ``asyncio.wait_for`` around each fetch and re-raised as an
+    ``httpx.TimeoutException`` naming the route. The CLI threads its
+    ``--timeout`` flag through, so one knob covers a whole run.
     """
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url=_BASE_URL,
     ) as client:
         async with _lifespan(app):
-            return [await _fetch(client, route) for route in routes]
+            pages: list[CapturedPage] = []
+            for route in routes:
+                try:
+                    pages.append(await asyncio.wait_for(_fetch(client, route), timeout=timeout))
+                except TimeoutError as exc:
+                    raise httpx.TimeoutException(
+                        f"timed out after {timeout}s capturing {route}"
+                    ) from exc
+            return pages
 
 
 async def _fetch(client: httpx.AsyncClient, route: str) -> CapturedPage:
@@ -92,8 +107,6 @@ async def _lifespan(app: Any) -> AsyncIterator[None]:
     that never answers (or dies mid-handshake) fails via timeout instead of
     hanging the CLI forever.
     """
-    import asyncio
-
     handshake_timeout = 30.0
 
     scope: dict[str, Any] = {

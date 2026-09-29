@@ -41,15 +41,17 @@ def test_non_html_and_non_200_skipped(tmp_path):
 def test_hash_stable_and_content_sensitive(tmp_path):
     body = b"<p>v1</p>"
     m1 = write_pages([CapturedPage("/p", 200, "text/html", body)], tmp_path)
-    m2 = write_pages([CapturedPage("/p", 200, "text/html", body)], tmp_path)
-    m3 = write_pages([CapturedPage("/p", 200, "text/html", b"<p>v2</p>")], tmp_path)
+    # Repeats hash-only mechanics; force bypasses the non-empty-tree guard.
+    m2 = write_pages([CapturedPage("/p", 200, "text/html", body)], tmp_path, force=True)
+    m3 = write_pages([CapturedPage("/p", 200, "text/html", b"<p>v2</p>")], tmp_path, force=True)
     assert m1.hashes == m2.hashes
     assert m1.hashes != m3.hashes
 
 
 def test_clean_stale_removes_old_routes(tmp_path):
-    write_pages([CapturedPage("/old", 200, "text/html", b"x")], tmp_path)
+    first = write_pages([CapturedPage("/old", 200, "text/html", b"x")], tmp_path)
     assert (tmp_path / "old" / "index.html").exists()
+    first.write(tmp_path)  # stamp, exactly as a real CLI run does
     write_pages([CapturedPage("/new", 200, "text/html", b"y")], tmp_path)
     assert not (tmp_path / "old" / "index.html").exists()
     assert (tmp_path / "new" / "index.html").exists()
@@ -90,7 +92,9 @@ def test_clean_stale_never_escapes_out_dir(tmp_path):
     os.symlink(sibling, out / "evil")
     from fastplace.prerender.writer import write_pages
 
-    write_pages([CapturedPage("/new", 200, "text/html", b"y")], out)
+    # force=True: this test drives the clean step's link handling, not the
+    # non-empty-tree guard (the planted symlink makes the dir non-empty).
+    write_pages([CapturedPage("/new", 200, "text/html", b"y")], out, force=True)
     assert (sibling / "keep.txt").exists()
 
 
@@ -131,5 +135,43 @@ def test_intermediate_symlink_escape_refused(tmp_path):
     (out_dir / "docs").symlink_to(evil)
 
     with pytest.raises(ValueError, match="outside"):
-        write_pages([CapturedPage("/docs/x", 200, "text/html", b"<h1>x</h1>")], out_dir)
+        # force=True so the planted-symlink dir reaches the containment
+        # check instead of tripping the non-empty-tree guard first.
+        write_pages([CapturedPage("/docs/x", 200, "text/html", b"<h1>x</h1>")], out_dir, force=True)
     assert list(evil.iterdir()) == []  # nothing leaked through the link
+
+
+def test_refuses_non_empty_dir_without_manifest(tmp_path):
+    """A fat-fingered --out must not be cleared.
+
+    Every run clears the tree wholesale, so the writer only operates on a
+    directory it recognizes: empty (a fresh output dir) or stamped by a
+    previous run's manifest. Anything else — a sources dir, a home dir —
+    is refused with its contents untouched.
+    """
+    out = tmp_path / "elsewhere"
+    out.mkdir()
+    (out / "precious.txt").write_text("keep me")
+
+    with pytest.raises(ValueError, match="prerender-manifest"):
+        write_pages([CapturedPage("/", 200, "text/html", b"<h1>x</h1>")], out)
+    assert (out / "precious.txt").read_text() == "keep me"
+
+
+def test_manifest_stamp_allows_rerun_into_same_tree(tmp_path):
+    """A stamped tree is recognized as the run's own output and refreshed."""
+    first = write_pages([CapturedPage("/old", 200, "text/html", b"x")], tmp_path)
+    first.write(tmp_path)  # a real CLI run always stamps the tree
+    write_pages([CapturedPage("/new", 200, "text/html", b"y")], tmp_path)
+    assert not (tmp_path / "old").exists()
+    assert (tmp_path / "new" / "index.html").exists()
+
+
+def test_force_overrides_the_guard(tmp_path):
+    """force=True accepts a foreign-but-intended tree, clearing it as usual."""
+    out = tmp_path / "elsewhere"
+    out.mkdir()
+    (out / "stale.txt").write_text("from an aborted setup")
+    write_pages([CapturedPage("/", 200, "text/html", b"<h1>x</h1>")], out, force=True)
+    assert not (out / "stale.txt").exists()
+    assert (out / "index.html").read_bytes() == b"<h1>x</h1>"

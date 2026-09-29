@@ -138,6 +138,12 @@ def test_no_prerender_dir_no_startup_crash(tmp_path):
         return HTMLResponse("<h1>HOME</h1>")
 
     _install_static_mounts(app, tmp_path)
+    # Wire the middleware like get_app does — "boots and serves normally"
+    # must mean the prerender lookup ran and fell through, not that it was
+    # never installed.
+    app.add_middleware(
+        PrerenderStaticFiles, prerender_dir=tmp_path / "public" / "build" / "prerender"
+    )
     client = TestClient(app)
     response = client.get("/", headers={"accept": "text/html"})
     assert response.status_code == 200

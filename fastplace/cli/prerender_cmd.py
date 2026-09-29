@@ -60,6 +60,12 @@ def prerender(
     app_ref: str = typer.Option(
         None, "--app", help="App import target as module:attr (default: asgi:app)."
     ),
+    timeout: float = typer.Option(
+        30.0, "--timeout", help="Per-route capture timeout in seconds (default: 30)."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Write into --out even if it is not a known prerender tree."
+    ),
 ) -> None:
     """Capture GET routes to static HTML under public/build/prerender."""
     from fastplace.config import load_env
@@ -86,14 +92,18 @@ def prerender(
         console.print("Nothing to prerender — no routes configured.")
         raise typer.Exit(code=0)
 
-    pages = asyncio.run(capture_all(app, routes))
+    try:
+        pages = asyncio.run(capture_all(app, routes, timeout=timeout))
+    except Exception as exc:  # noqa: BLE001 — any capture crash is a clean exit 1
+        console.print(f"[red]prerender failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
 
     out_dir = out if out is not None else root / "public" / "build" / "prerender"
     try:
-        manifest = write_pages(pages, out_dir)
+        manifest = write_pages(pages, out_dir, force=force)
         manifest.write(out_dir)
     except ValueError as exc:
-        console.print(f"[red]bad prerender route:[/] {exc}")
+        console.print(f"[red]cannot write prerender output:[/] {exc}")
         raise typer.Exit(code=2) from exc
 
     from rich.table import Table

@@ -53,12 +53,17 @@ class PrerenderManifest:
         (out_dir / MANIFEST_NAME).write_text(self.to_json(), encoding="utf-8")
 
 
-def write_pages(pages: list[CapturedPage], out_dir: Path) -> PrerenderManifest:
+def write_pages(pages: list[CapturedPage], out_dir: Path, force: bool = False) -> PrerenderManifest:
     """Write capturable pages under ``out_dir`` and return the manifest.
 
     Only 200 responses with an HTML content type become files; everything
     else is recorded as skipped. Stale output from earlier runs is cleared
     first — the tree is fully derived from this run's captures.
+
+    Because the clear is wholesale, a non-empty ``out_dir`` the run does
+    not recognize (no ``prerender-manifest.json`` from a previous run) is
+    refused unless ``force`` is set — the difference between refreshing
+    derived output and deleting a directory someone cares about.
     """
     # The tree is cleared and rewritten wholesale below; a symlinked out_dir
     # would rmtree/write the *target* tree instead. Refuse before anything
@@ -66,6 +71,17 @@ def write_pages(pages: list[CapturedPage], out_dir: Path) -> PrerenderManifest:
     if out_dir.is_symlink():
         raise ValueError(
             f"prerender output directory {out_dir} is a symlink — refusing to write through it"
+        )
+    if (
+        not force
+        and out_dir.exists()
+        and any(out_dir.iterdir())
+        and not (out_dir / MANIFEST_NAME).is_file()
+    ):
+        raise ValueError(
+            f"{out_dir} is not empty and has no {MANIFEST_NAME} — refusing to "
+            "clear a directory that is not a prerender output tree "
+            "(pass --force to write there anyway)"
         )
     writable: list[CapturedPage] = []
     skipped: list[str] = []
