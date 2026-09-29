@@ -64,6 +64,37 @@ round trip). Programmatic navigation uses the same router the `Link`
 component uses; plain `<a href>` still works and simply triggers a full
 document load.
 
+## useBroadcast / usePresence
+
+Live server push over the framework's `/ws/broadcast` WebSocket endpoint
+(the backend guide lives at `https://fastplace.dev/guides/broadcasting`):
+
+```jsx
+import { useBroadcast, usePresence } from "@fastplace/react";
+
+function OrderTracker({ orderId }) {
+    const status = useBroadcast(`orders.${orderId}`, (message) => {
+        // message = { channel: "orders.42", payload: {...} }
+        setLatest(message.payload);
+    });
+    return <p data-live={status === "open"}>{statusLabel(status)}</p>;
+}
+
+function TeamBar({ roomId }) {
+    const members = usePresence(`room.${roomId}`); // [{ user_id, metadata, connections }]
+    return <ul>{members.map((m) => <li key={m.user_id}>{name(m.user_id)}</li>)}</ul>;
+}
+```
+
+`useBroadcast` subscribes on open, delivers every `message` frame to the
+callback, and survives dropped sockets: exponential-backoff reconnect
+(1s doubling to a 30s ceiling), automatic resubscribe, then one
+`onResubscribe(channels)` call — the hook for refetching anything missed
+while disconnected. Changing the channel set closes and reopens the
+socket. Unmount sends `unsubscribe` frames so presence rosters drop the
+member immediately. During SSR (no `window`) both hooks stay dormant —
+no socket, status `"closed"`, empty roster.
+
 ## Requirements
 
 - React ≥ 18 (peer dependency; the monorepo develops against 19)

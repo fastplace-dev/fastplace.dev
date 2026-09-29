@@ -448,6 +448,14 @@ export function usePage<TProps extends PageProps = PageProps>(): Page<TProps> {
 }
 
 export { useCan, type CanMap } from "./useCan";
+export {
+  useBroadcast,
+  usePresence,
+  type BroadcastMessage,
+  type BroadcastStatus,
+  type PresenceMember,
+  type UseBroadcastOptions,
+} from "./useBroadcast";
 /* ------------------------------------------------------------------ *
  * Link
  * ------------------------------------------------------------------ */
