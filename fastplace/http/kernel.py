@@ -136,6 +136,13 @@ def get_app(
     )
     app.state.fastplace_root = str(project_root or cfg.root)
     root = Path(project_root or cfg.root or Path.cwd())
+    # Prerendered pages must outrank the router (Starlette matches routes
+    # before mounts, so a StaticFiles mount never could) — added FIRST so
+    # the lookup ends up innermost: prerendered HTML flows back out through
+    # security headers and compression like every other HTML response.
+    from fastplace.http.prerender_static import PrerenderStaticFiles
+
+    app.add_middleware(PrerenderStaticFiles, prerender_dir=root / "public" / "build" / "prerender")
     _mount_routes(
         app,
         routes=routes,
