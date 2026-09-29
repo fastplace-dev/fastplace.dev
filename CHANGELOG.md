@@ -4,6 +4,29 @@ All notable changes to the Fastplace framework are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Static prerendering (SSG): `fastplace prerender` captures configured GET
+  routes to static HTML under `public/build/prerender` (in-process ASGI
+  capture with full lifecycle boot; `prerender-manifest.json` with sha256
+  hashes and no timestamps, so output is reproducible). `PrerenderStaticFiles`
+  serves those files ahead of the app for plain GET navigations — method GET,
+  `Accept: text/html`, no query string — and falls through to the live app for
+  everything else; assets and existing static mounts are untouched. Routes
+  come from `--route` flags, the `PRERENDER_ROUTES` list on the asgi module,
+  the `PRERENDER_ROUTES` env var, or `/` by default. `--timeout` (seconds,
+  default 30) bounds each capture so a hanging page fails the run instead of
+  stalling it. The writer refuses a non-empty `--out` directory that has no
+  `prerender-manifest.json` from a previous run — `--force` overrides. A run
+  where every route skipped (transient 500s, non-HTML) writes nothing, so the
+  pages the previous run produced stay live. The `/build` static mount never
+  serves the prerender tree — prerendered pages answer at their own URLs and
+  `prerender-manifest.json` stays unpublished. A
+  capture-time crash exits 1 with the cause in a one-line red message.
+  `httpx` moves from dev dependency to core.
+
 ## [0.3.1] - 2026-09-29
 
 ### Changed

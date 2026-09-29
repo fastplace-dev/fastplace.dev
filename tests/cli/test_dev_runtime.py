@@ -250,10 +250,14 @@ def test_serve_marks_the_runtime_for_asset_resolution(spawned):
     assert spawned.envs and spawned.envs[0].get("FASTPLACE_RUNTIME") == "serve"
 
 
-def test_run_dev_does_not_mark_serve_runtime(spawned):
+def test_run_dev_marks_dev_runtime_not_serve(spawned):
+    # Stronger than the old "no marker" contract: dev declares "dev"
+    # explicitly so PrerenderStaticFiles stays out of the stack (one stale
+    # prerender run must not shadow live pages) — and "serve" never leaks
+    # into a dev child, whatever the shell exported.
     result = runner.invoke(cli_app, ["run", "dev", "--skip-vite", "--skip-lint"])
     assert result.exit_code == 0, result.output
-    assert all(env.get("FASTPLACE_RUNTIME") is None for env in spawned.envs)
+    assert spawned.envs and all(env.get("FASTPLACE_RUNTIME") == "dev" for env in spawned.envs)
 
 
 # --- proxy-header passthrough (serve-G6) -------------------------------------

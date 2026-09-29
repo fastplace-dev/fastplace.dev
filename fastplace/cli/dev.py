@@ -239,9 +239,10 @@ def run_dev(
 
     children: list[subprocess.Popen] = []
     # The dev runtime never resolves serve-style assets, whatever the shell
-    # happened to export — the Vite dev server owns asset URLs here.
-    env = {**os.environ, "VITE_DEV_URL": vite_url}
-    env.pop("FASTPLACE_RUNTIME", None)
+    # happened to export — the Vite dev server owns asset URLs here, and
+    # declaring "dev" also keeps PrerenderStaticFiles out of the stack so a
+    # stray prerender output can't shadow live pages during development.
+    env = {**os.environ, "VITE_DEV_URL": vite_url, "FASTPLACE_RUNTIME": "dev"}
 
     # Handlers go in BEFORE the first spawn: a TERM landing between spawn
     # and install would kill the wrapper without the cleanup finally-block,

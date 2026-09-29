@@ -136,6 +136,19 @@ def get_app(
     )
     app.state.fastplace_root = str(project_root or cfg.root)
     root = Path(project_root or cfg.root or Path.cwd())
+    # Prerendered pages must outrank the router (Starlette matches routes
+    # before mounts, so a StaticFiles mount never could) — added FIRST so
+    # the lookup ends up innermost: prerendered HTML flows back out through
+    # security headers and compression like every other HTML response.
+    # The dev runtime is exempt: one prerender run must not freeze live
+    # pages while the developer edits (FASTPLACE_RUNTIME=dev is set by
+    # `fastplace run dev`; serve and direct uvicorn boots keep the lookup).
+    if os.environ.get("FASTPLACE_RUNTIME") != "dev":
+        from fastplace.http.prerender_static import PrerenderStaticFiles
+
+        app.add_middleware(
+            PrerenderStaticFiles, prerender_dir=root / "public" / "build" / "prerender"
+        )
     _mount_routes(
         app,
         routes=routes,
@@ -681,12 +694,25 @@ class CachedStaticFiles(StaticFiles):
     hashes its ``assets/`` output, but the public-root mount serves Vite's
     ``publicDir`` files un-hashed, so it passes ``None`` and everything
     there revalidates after 5 minutes.
+
+    ``exclude_prefixes`` names subdirectories the mount must never serve.
+    The build mount uses it for ``prerender``: prerendered pages serve
+    through the PrerenderStaticFiles middleware at their own URLs, and a
+    second public copy under /build/prerender would publish the manifest
+    (a route inventory plus framework version) and create duplicate-
+    content URLs for every page.
     """
 
     IMMUTABLE = "public, max-age=31536000, immutable"
     SHORT = "public, max-age=300"
 
-    def __init__(self, *args: Any, immutable_prefix: str | None = "assets", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        immutable_prefix: str | None = "assets",
+        exclude_prefixes: tuple[str, ...] = (),
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         # StaticFiles realpaths the directory when serving; without the
         # matching resolve here, a symlinked project root makes every
@@ -694,6 +720,16 @@ class CachedStaticFiles(StaticFiles):
         if self.directory is not None:
             self.directory = Path(self.directory).resolve()
         self.immutable_prefix = immutable_prefix
+        self.exclude_prefixes = exclude_prefixes
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        stripped = path.rstrip("/")
+        if any(
+            stripped == prefix or stripped.startswith(f"{prefix}/")
+            for prefix in self.exclude_prefixes
+        ):
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
 
     def file_response(self, *args: Any, **kwargs: Any) -> Response:
         response = super().file_response(*args, **kwargs)
@@ -722,7 +758,13 @@ def _install_static_mounts(app: FastAPI, root: Path) -> None:
         # only what already exists and let absent paths 404 cleanly.
         pass
     if build_dir.is_dir():
-        app.mount("/build", CachedStaticFiles(directory=str(build_dir)), name="build")
+        app.mount(
+            "/build",
+            # "prerender" output serves via PrerenderStaticFiles, never
+            # from a second public URL under /build.
+            CachedStaticFiles(directory=str(build_dir), exclude_prefixes=("prerender",)),
+            name="build",
+        )
     if public_dir.is_dir():
         app.mount(
             "/",

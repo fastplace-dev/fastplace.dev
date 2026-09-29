@@ -215,6 +215,12 @@ def _register_phase_commands() -> None:  # pragma: no cover - wiring only
         app.add_typer(search_cmd_app, name="")
     except ImportError:
         pass
+    try:
+        from fastplace.cli.prerender_cmd import prerender_app
+
+        app.add_typer(prerender_app, name="")
+    except ImportError:
+        pass
 
 
 _register_phase_commands()
