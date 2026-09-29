@@ -186,8 +186,9 @@ async def authorize_subscribe(user: Any, channel: Channel) -> bool:
     """Decide whether ``user`` may subscribe to ``channel``.
 
     The authorizer chain answers first (True admits, False denies, None
-    abstains). Otherwise: public channels admit anyone; private and
-    presence channels require an authenticated user **and**
+    abstains). Otherwise: tenant-scoped channels (``company.{id}.…``) deny —
+    nobody vouched for membership; public channels admit anyone; private
+    and presence channels require an authenticated user **and**
     ``gate.allows(user, BROADCAST_PRIVATE_ABILITY, channel)`` — the parsed
     channel rides as the gate argument so policies decide per channel. An
     unset ability denies (fail-closed); an ability nobody defined surfaces
@@ -200,6 +201,13 @@ async def authorize_subscribe(user: Any, channel: Channel) -> bool:
         if verdict is not None:
             return bool(verdict)
 
+    if channel.tenant_id is not None:
+        # The grammar parsed a company.{id} prefix — a trust-relevant,
+        # tenant-scoped shape. No authorizer weighed in (fastplace-tenancy
+        # absent, or install_tenant_broadcasting() never called), so nobody
+        # vouches for membership: deny rather than degrade to the public
+        # rule, mirroring the unset-private-ability stance below.
+        return False
     if channel.kind == "public":
         return True
     if user is None:

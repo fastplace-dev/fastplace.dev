@@ -162,6 +162,18 @@ class TestAuthorizeSubscribe:
         monkeypatch.setenv("BROADCAST_PRIVATE_ABILITY", "")
         assert not await authorize_subscribe(User(), parse_channel("presence.orders.42"))
 
+    async def test_tenant_channels_fail_closed_without_an_authorizer(self):
+        # The grammar parses company.{id} as a trust-relevant tenant-scoped
+        # shape, so the core's default rule must not degrade it to public.
+        # Without the tenancy authorizer registered (package absent or
+        # install_tenant_broadcasting() not called) nobody vouches for
+        # membership — deny, exactly like an unset private ability. A
+        # miswired app loses subscription loudly at the handshake instead
+        # of silently streaming cross-tenant.
+        assert not await authorize_subscribe(User(), parse_channel("company.7.orders.42"))
+        assert not await authorize_subscribe(None, parse_channel("company.7.orders.42"))
+        assert not await authorize_subscribe(User(), parse_channel("company.7.private.x"))
+
     async def test_ability_receives_the_parsed_channel(self, monkeypatch):
         from fastplace.authz import gate
 
