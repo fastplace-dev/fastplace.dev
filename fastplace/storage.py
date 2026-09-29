@@ -308,8 +308,24 @@ def _build_disk(name: str, entry: dict[str, Any] | None) -> Disk:
         if not root:
             raise ConfigurationError(f"storage disk '{name}' needs a 'root' directory")
         return LocalDisk(root)
+    if driver == "s3":
+        # Lazy import keeps aioboto3 an optional extra (fastplace[s3]).
+        from fastplace.storage_s3 import S3Disk, _require_aioboto3
+
+        _require_aioboto3()
+        bucket = entry.get("bucket")
+        if not bucket:
+            raise ConfigurationError(f"storage disk '{name}' needs a 'bucket'")
+        return S3Disk(
+            bucket,
+            region=entry.get("region"),
+            endpoint_url=entry.get("endpoint_url"),
+            prefix=entry.get("prefix", ""),
+            public_base=entry.get("public_base"),
+            public=bool(entry.get("public", False)),
+        )
     raise ConfigurationError(
-        f"unknown storage driver '{driver}' on disk '{name}' — 'local' is the shipped driver"
+        f"unknown storage driver '{driver}' on disk '{name}' — 'local' and 's3' are the shipped drivers"
     )
 
 
