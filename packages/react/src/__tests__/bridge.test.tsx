@@ -91,6 +91,37 @@ describe("FastplaceProvider + usePage", () => {
   });
 });
 
+describe("router.reset (the test seam)", () => {
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+    router.reset();
+  });
+
+  it("a provider re-render after reset falls back to initialPage instead of throwing mid-flight", () => {
+    const initial = {
+      component: "Dashboard/Index",
+      props: { user: "Firoz" },
+      url: "/dashboard",
+      version: "v1",
+    };
+    const { rerender } = renderApp(initial);
+
+    // reset() empties the store (as an afterEach does); a pending React
+    // update scheduled by an earlier emit() can flush afterwards and
+    // re-render the provider against the emptied store. The provider
+    // must fall back to its own initialPage — never throw mid-render.
+    router.reset();
+    expect(() =>
+      rerender(
+        <FastplaceProvider initialPage={initial}>
+          <DashboardPage />
+        </FastplaceProvider>,
+      ),
+    ).not.toThrow();
+    expect(screen.getByText("Dashboard: Firoz")).toBeInTheDocument();
+  });
+});
+
 describe("Link", () => {
   beforeEach(() => {
     vi.stubGlobal(

@@ -63,15 +63,6 @@ function subscribe(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
-function getSnapshot(): Page {
-  if (currentPage === null) {
-    throw new Error(
-      "@fastplace/react: no page initialized — render <FastplaceProvider initialPage={...}> first.",
-    );
-  }
-  return currentPage;
-}
-
 function setPage(page: Page, opts: { history?: HistoryMode } = {}): void {
   currentPage = page;
   // Every bridge payload carries the session CSRF token (render() embeds
@@ -435,7 +426,15 @@ export function FastplaceProvider({ initialPage, children }: FastplaceProviderPr
   }, [initialPage]);
   void init;
 
-  const page = useSyncExternalStore(subscribe, getSnapshot, () => initialPage);
+  const page = useSyncExternalStore(
+    subscribe,
+    // reset() (the test seam) empties the store; a pending update scheduled
+    // by an earlier emit() can then flush and re-render this provider
+    // against the emptied store. Fall back to the page it booted with —
+    // a mid-render throw here surfaced as an unhandled crash in test runs.
+    () => currentPage ?? initialPage,
+    () => initialPage,
+  );
   return <PageContext.Provider value={page}>{children}</PageContext.Provider>;
 }
 
