@@ -115,3 +115,48 @@ Long-running work belongs in the queue, not the request: the kernel
 drains the memory driver at graceful shutdown, and Redis-backed SAQ
 workers consume dispatches independently of web processes. Keep handlers
 idempotent — dispatches are at-least-once under SAQ.
+
+## The SAQ dashboard
+
+SAQ ships a web UI — live queue depth, job inspection, retry/abort — and
+Fastplace mounts it behind authentication. It is **off by default**;
+turn it on in `.env`:
+
+```env
+QUEUE_DASHBOARD_ENABLED=true
+QUEUE_DASHBOARD_PATH=/queue-dashboard   # any mount path you like
+QUEUE_DASHBOARD_ABILITY=                # empty = any logged-in user
+```
+
+The mount exists only under `QUEUE_DRIVER=saq` (a memory-driver process
+has no SAQ queue to show — `queue:health` warns about the combination
+instead of the boot crashing). Every request through the mount — the
+pages and SAQ's own retry/abort POSTs — passes one guard that mirrors
+the `auth` middleware contract:
+
+- anonymous browsers are redirected to `/login` with the intended URL
+  parked, so login resumes on the dashboard;
+- programmatic callers (the bridge header, JSON `Accept`) get the 401/403
+  JSON envelope, never an HTML page;
+- `QUEUE_DASHBOARD_ABILITY`, when set, is checked through the gate on
+  every request. An ability nobody defined surfaces its
+  `ConfigurationError` on the first request — a typo can never silently
+  open the dashboard.
+
+Scope it to operators with a gate ability:
+
+```python
+# app/authz/gates.py (or wherever your gates load from)
+@gate.define("view-queue-dashboard")
+async def view_queue_dashboard(user):
+    return getattr(user, "is_ops", False)
+```
+
+…then set `QUEUE_DASHBOARD_ABILITY=view-queue-dashboard`.
+
+The dashboard is read-mostly by design. Failed jobs live in the
+persisted failed-job store, surfaced and managed through the CLI —
+`queue:failed` lists, `queue:retry <id>` requeues, `queue:forget <id>`
+drops one record, `queue:flush` clears the ledger, and
+`queue:prune-failed` drops stale entries. That surface round-trips the
+same store the dashboard reads from.
