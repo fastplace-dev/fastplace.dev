@@ -144,3 +144,144 @@ async def test_mailable_fluent_builders_return_self() -> None:
     mailable = Mailable(subject="S", html="x")
     assert mailable.add_cc("a@x.test") is mailable
     assert mailable.set_reply_to("b@x.test") is mailable
+
+
+# -- the facade accepts a Mailable ---------------------------------------------
+# Rendering happens BEFORE the queue decision: payloads carry final
+# html/text, never templates or placeholders.
+
+
+def _welcome_mailable() -> Mailable:
+    return Mailable(
+        subject="Welcome, {name}!",
+        html="<h1>Hello {name}</h1>",
+        placeholders={"name": "Kim & <team>"},
+    )
+
+
+async def test_mail_send_renders_mailable_before_delivery(monkeypatch) -> None:
+    import fastplace.mail as mail_module
+    from fastplace.mail import clear_mail_outbox, mail_outbox
+
+    clear_mail_outbox()
+    monkeypatch.setenv("MAIL_DRIVER", "memory")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")
+    final = await mail_module.Mail.to("user@example.test").send(_welcome_mailable())
+    assert final.to == "user@example.test"
+    assert final.subject == "Welcome, Kim & <team>!"
+    assert final.html == "<h1>Hello Kim &amp; &lt;team&gt;</h1>"
+    stored = mail_outbox()[0]
+    assert stored.html == final.html
+    assert stored.text == final.text  # stripped fallback survived the envelope
+    clear_mail_outbox()
+
+
+async def test_mail_send_renders_mailable_before_queueing(monkeypatch) -> None:
+    import sys
+
+    import fastplace.queue as queue_module
+    from fastplace.mail import Mail, message_from_dict
+
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    monkeypatch.setenv("QUEUE_DRIVER", "saq")
+
+    class StubQueue:
+        def __init__(self) -> None:
+            self.dispatched: list[tuple] = []
+
+        async def dispatch(self, name, **kwargs):
+            self.dispatched.append((name, kwargs))
+
+    stub = StubQueue()
+    monkeypatch.setattr(queue_module, "_default_queue", stub)
+
+    mailable = _welcome_mailable().attach(content=b"doc", filename="d.txt")
+    final = await Mail.to("queued@example.test").send(mailable)
+
+    assert stub.dispatched[0][0] == "mail_send"
+    payload = stub.dispatched[0][1]["message"]
+    # Final rendered content only — no template syntax, no placeholders dict.
+    assert payload["html"] == "<h1>Hello Kim &amp; &lt;team&gt;</h1>"
+    assert "{" not in payload["text"] and "placeholder" not in payload
+    assert message_from_dict(payload) == final  # queue round-trip is byte-honest
+    assert sys.modules["fastplace.mail"].mail_outbox() == []
+
+
+async def test_queued_mailable_payload_delivers_rendered_html(monkeypatch) -> None:
+    """The worker side: a queued mailable payload rebuilds and delivers rendered."""
+    import email as email_module
+
+    from fastplace.mail import Mail, message_from_dict
+
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")  # worker context: deliver directly
+
+    captured: list = []
+
+    async def _capture(message, **kwargs):
+        captured.append(message)
+
+    # Mail.deliver resolves the transport through the facade's own binding.
+    monkeypatch.setattr("fastplace.mail.transport_for", lambda: _capture)
+    await Mail.deliver(
+        message_from_dict(
+            {
+                "subject": "Welcome, Kim & <team>!",
+                "html": "<h1>Hello Kim &amp; &lt;team&gt;</h1>",
+                "text": "Hello Kim & <team>",
+                "to": "queued@example.test",
+            }
+        )
+    )
+    assert captured[0].html == "<h1>Hello Kim &amp; &lt;team&gt;</h1>"
+    assert email_module.message_from_string("") is not None  # email module sanity
+
+
+# -- the notification mail channel accepts a Mailable ---------------------------
+
+
+class _User:
+    email = "member@example.test"
+    id = 7
+
+
+class _InvoicePaid:
+    from fastplace.notifications import Notification
+
+    def via(self, notifiable):
+        return ["mail"]
+
+    def to_mail(self, notifiable):
+        return _welcome_mailable().add_cc("billing@example.test")
+
+
+class _AsyncInvoicePaid(_InvoicePaid):
+    async def to_mail(self, notifiable):
+        return _welcome_mailable()
+
+
+async def test_notification_to_mail_returning_mailable_sends_rendered(monkeypatch) -> None:
+    from fastplace.mail import clear_mail_outbox, mail_outbox
+    from fastplace.notifications.channels import MailChannel
+
+    clear_mail_outbox()
+    monkeypatch.setenv("MAIL_DRIVER", "memory")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")
+    result = await MailChannel().send(_User(), _InvoicePaid())
+    assert result.cc == ["billing@example.test"]  # envelope carried through the Mailable
+    stored = mail_outbox()[0]
+    assert stored.html == "<h1>Hello Kim &amp; &lt;team&gt;</h1>"
+    assert stored.subject == "Welcome, Kim & <team>!"
+    clear_mail_outbox()
+
+
+async def test_notification_to_mail_awaitable_mailable_also_works(monkeypatch) -> None:
+    from fastplace.mail import clear_mail_outbox, mail_outbox
+    from fastplace.notifications.channels import MailChannel
+
+    clear_mail_outbox()
+    monkeypatch.setenv("MAIL_DRIVER", "memory")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")
+    await MailChannel().send(_User(), _AsyncInvoicePaid())
+    assert "Hello Kim" in (mail_outbox()[0].html or "")
+    clear_mail_outbox()

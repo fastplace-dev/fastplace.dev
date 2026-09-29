@@ -54,6 +54,64 @@ msg = (
 - The log driver records attachment names and sizes only, never the
   bytes.
 
+## Rendered mailables
+
+A `Mailable` is a code-first template email that renders **into** a
+`MailMessage` — the dataclass stays the queue boundary, so nothing about
+queueing changes. `Mail.to(...).send(...)` accepts either:
+
+```python
+from fastplace.mail import Layout, Mail, Mailable
+
+welcome = Mailable(
+    subject="Welcome, {name}!",
+    html="<h1>Hello {name}</h1><p>Your order {order} has shipped.</p>",
+    placeholders={"name": user.name, "order": order.number},  # user data
+).layout(Layout(html="<html><body>{body}<footer>ACME Shop</footer></body></html>"))
+await Mail.to(user.email).send(welcome)
+```
+
+Rendering rules, all deliberate:
+
+- **Values are escaped, not trusted.** Every placeholder value is
+  `html.escape`d before it touches HTML — user data can never inject markup.
+  Subject lines substitute raw (a subject is not HTML; entities would read
+  literally). Pass text, not HTML, as placeholder values.
+- **Unknown names fail loud.** A template referencing a placeholder nobody
+  supplied raises `ValueError` at render time, not a silently-empty email.
+- **The text body falls back.** Without explicit `text=`, a best-effort
+  plain-text version is stripped from the final HTML (tags removed,
+  entities decoded, block boundaries becoming newlines). Pass explicit
+  `text=` when the wording matters.
+- **Layouts wrap, they don't re-render.** A `Layout` needs a `{body}` slot
+  (validated at construction); the rendered body is inserted already
+  escaped, the layout's own slots are escaped. Layouts are where
+  email-safe *inline* styles belong — email clients ignore `<style>` blocks
+  and CSS custom properties, so use table-based markup with inline
+  `style="..."` attributes and light-only colors (the repo's dark-mode
+  tokens cannot apply inside email clients).
+- **Rendering happens before the queue decision.** A queued mailable's
+  payload carries final `html`/`text` only — `mail:outbox` and
+  `mail:preview` show queued mailables exactly as the worker will send
+  them.
+
+The envelope builders (`attach` / `add_cc` / `add_bcc` / `set_reply_to`)
+work on a `Mailable` exactly as on a `MailMessage`, and a notification's
+`to_mail(notifiable)` may return either one (sync or awaitable):
+
+```python
+class InvoicePaid(Notification):
+    def via(self, notifiable):
+        return ["mail"]
+
+    def to_mail(self, notifiable):
+        return Mailable(
+            subject="Invoice {number} paid",
+            html="<p>Invoice {number} was paid.</p>",
+            placeholders={"number": self.invoice.number},
+        )
+```
+
 ## Notifications
 
 Subclass `Notification`, declare `via()` plus one `to_<channel>` builder

@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 
 from fastplace.config import config
+from fastplace.mail.mailable import Layout, Mailable
 from fastplace.mail.message import Attachment, MailMessage, message_as_dict, message_from_dict
 from fastplace.mail.transports import (
     clear_mail_outbox,
@@ -26,6 +27,8 @@ from fastplace.mail.transports import (
 
 __all__ = [
     "Attachment",
+    "Layout",
+    "Mailable",
     "Mail",
     "MailMessage",
     "clear_mail_outbox",
@@ -60,8 +63,15 @@ class Mail:
     def to(cls, address: str) -> Mail:
         return cls(address)
 
-    async def send(self, message: MailMessage) -> MailMessage:
-        """Address the message, then queue (smtp+saq) or deliver inline."""
+    async def send(self, message: MailMessage | Mailable) -> MailMessage:
+        """Address the message, then queue (smtp+saq) or deliver inline.
+
+        A :class:`~fastplace.mail.mailable.Mailable` renders HERE — before
+        the queue decision — so queued payloads carry final html/text and
+        never templates or placeholders.
+        """
+        if isinstance(message, Mailable):
+            message = await message.build(to=self._to)
         final = dataclasses.replace(message, to=self._to)
         if _should_queue():
             from fastplace.queue import queue

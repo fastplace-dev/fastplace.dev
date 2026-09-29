@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `all`); constructing the driver without it fails loud with the install hint.
   `config/storage.py` carries the commented disk entry; `.env.example` the S3
   variable block.
+- Mail: rendered mailables. `Mailable` (fastplace.mail.mailable) renders
+  str.format placeholders into a MailMessage — values html-escaped (user
+  data can never inject markup), subject raw, unknown names failing loud,
+  optional `Layout` with a required {body} slot, best-effort tag-stripped
+  text fallback. `Mail.send` and the notification mail channel accept a
+  Mailable; rendering happens before the queue decision so payloads carry
+  final html/text only.
 
 ## [0.2.1] - 2026-09-28
 

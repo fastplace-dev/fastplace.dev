@@ -14,7 +14,7 @@ import functools
 import inspect
 from typing import Any, Protocol, runtime_checkable
 
-from fastplace.mail import Mail, MailMessage
+from fastplace.mail import Mail, Mailable, MailMessage
 from fastplace.notifications.base import Notification, NotificationError, notifiable_key
 from fastplace.notifications.store import NotificationStore
 
@@ -43,10 +43,10 @@ class MailChannel:
         message = builder(notifiable)
         if inspect.isawaitable(message):
             message = await message
-        if not isinstance(message, MailMessage):
+        if not isinstance(message, (MailMessage, Mailable)):
             raise NotificationError(
-                f"{type(notification).__name__}.to_mail() must return a MailMessage, "
-                f"got {type(message).__name__}"
+                f"{type(notification).__name__}.to_mail() must return a MailMessage "
+                f"or Mailable, got {type(message).__name__}"
             )
         email = getattr(notifiable, "email", None)
         if not email:
