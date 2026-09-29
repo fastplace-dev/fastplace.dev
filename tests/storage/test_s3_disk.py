@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from fastplace.errors import ConfigurationError, NotFoundError
-from fastplace.storage import Storage, StoragePathError, reset_storage
+from fastplace.storage import Storage, StorageNotSupported, StoragePathError, reset_storage
 from fastplace.storage_s3 import S3Disk
 
 STAMP = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)
@@ -111,6 +111,16 @@ class FakeS3Client:
                     trimmed.append(key)
             contents = [{"Key": k} for k in trimmed]
         return {"Contents": contents, "CommonPrefixes": [{"Prefix": p} for p in common]}
+
+    async def generate_presigned_url(
+        self, *, ClientMethod: str, Params: dict[str, Any], ExpiresIn: int
+    ) -> str:
+        # aiobotocore's shape is a coroutine — the driver must await it.
+        self._record(
+            "generate_presigned_url",
+            {"ClientMethod": ClientMethod, "Params": Params, "ExpiresIn": ExpiresIn},
+        )
+        return f"https://s3.example.com/{Params['Key']}?exp={ExpiresIn}"
 
 
 class PagedFakeS3Client(FakeS3Client):
@@ -322,3 +332,67 @@ def test_disk_factory_s3_without_bucket_is_a_configuration_error(monkeypatch: py
     storage = Storage(disks={"s3": {"driver": "s3"}}, default="s3")
     with pytest.raises(ConfigurationError, match="bucket"):
         storage.disk()
+
+
+# -- presigned URLs & public URL policy ----------------------------------------
+
+
+async def test_s3_disk_temporary_url_presigns_a_scoped_get(fake: FakeS3Client) -> None:
+    s3 = make_disk(fake, prefix="tenants/7")
+    url = await s3.temporary_url("invoices/9.pdf", expires_in=300)
+    assert url == "https://s3.example.com/tenants/7/invoices/9.pdf?exp=300"
+    presign = [c for c in fake.calls if c[0] == "generate_presigned_url"]
+    assert presign[0][1] == {
+        "ClientMethod": "get_object",
+        "Params": {"Bucket": "app-bucket", "Key": "tenants/7/invoices/9.pdf"},
+        "ExpiresIn": 300,
+    }
+
+
+async def test_s3_disk_url_honors_public_base(fake: FakeS3Client) -> None:
+    s3 = make_disk(fake, prefix="app", public_base="https://cdn.example.com/assets/")
+    assert await s3.url("img/logo.png") == "https://cdn.example.com/assets/app/img/logo.png"
+
+
+async def test_s3_disk_url_public_bucket_uses_vhost_style(fake: FakeS3Client) -> None:
+    s3 = make_disk(fake, region="eu-west-1", public=True)
+    assert await s3.url("img/logo.png") == (
+        "https://app-bucket.s3.eu-west-1.amazonaws.com/img/logo.png"
+    )
+
+
+async def test_s3_disk_url_without_public_surface_refuses_with_hint(s3: S3Disk) -> None:
+    with pytest.raises(StorageNotSupported, match="temporary_url"):
+        await s3.url("img/logo.png")
+
+
+# -- optional dependency guard ---------------------------------------------------
+
+
+def test_s3_disk_without_aioboto3_fails_loud_with_extra_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(ConfigurationError, match=r"pip install 'fastplace\[s3\]'"):
+        S3Disk("app-bucket")  # no client_factory — the default path real apps take
+
+
+def test_disk_factory_s3_without_aioboto3_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    reset_storage()
+    storage = Storage(disks={"s3": {"driver": "s3", "bucket": "app-bucket"}}, default="s3")
+    with pytest.raises(ConfigurationError, match=r"fastplace\[s3\]"):
+        storage.disk()
+
+
+def test_s3_disk_injected_factory_never_checks_the_dependency(
+    monkeypatch: pytest.MonkeyPatch, fake: FakeS3Client
+) -> None:
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert S3Disk("app-bucket", client_factory=lambda: fake) is not None  # no raise — DI bypasses

@@ -23,6 +23,7 @@ disk-relative, so callers never see the prefix.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -303,3 +304,21 @@ class S3Disk(Disk):
             "this S3 disk serves private objects — configure public_base (or "
             "public=True) for stable URLs, or use temporary_url which presigns"
         )
+
+    async def temporary_url(self, path: str, *, expires_in: int) -> str:
+        """A real presigned GET — the authority local disks refuse to fake.
+
+        aiobotocore's ``generate_presigned_url`` is a coroutine (boto3's is
+        not), so the awaitable is detected and awaited — the injected fake
+        mirrors the coroutine shape.
+        """
+        key = self._key(path)
+        async with self._client_factory() as client:
+            result = client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=expires_in,
+            )
+            if inspect.isawaitable(result):
+                result = await result
+            return result
