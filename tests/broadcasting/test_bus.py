@@ -113,6 +113,23 @@ class TestParseChannel:
             with pytest.raises(BroadcastError):
                 parse_channel(raw)
 
+    def test_control_channel_names_are_refused(self):
+        # Presence plumbing rides shadow channels named "__presence::<raw>".
+        # The grammar must refuse those names so a client cannot subscribe
+        # to roster control traffic (join/leave/snapshot frames carrying
+        # user ids) as if it were a public channel — "_" prefixes and "::"
+        # separators never appear in the user grammar.
+        for raw in (
+            "__presence::presence.demo",
+            "__presence::presence.orders.42",
+            "__presence::company.7.presence.room",
+            "__presence::anything",
+            "_private.orders.42",
+            "orders::42",
+        ):
+            with pytest.raises(BroadcastError):
+                parse_channel(raw)
+
     def test_non_string_name_is_a_type_error(self):
         with pytest.raises(TypeError):
             parse_channel(42)  # type: ignore[arg-type]

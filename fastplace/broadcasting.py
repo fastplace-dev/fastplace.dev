@@ -116,6 +116,12 @@ def parse_channel(raw: str) -> Channel:
     """
     if not isinstance(raw, str):
         raise TypeError(f"channel name must be a str, got {type(raw).__name__}")
+    if raw.startswith("_") or "::" in raw:
+        # Presence control traffic rides shadow channels ("__presence::…").
+        # Those names must be unparseable here on both the subscribe and the
+        # publish path, or a client could listen to roster plumbing (join/
+        # leave/snapshot frames carrying user ids) under the public rule.
+        raise BroadcastError(f"malformed channel name {raw!r} — reserved control prefix")
     segments = raw.split(".")
     if not raw or any(segment == "" for segment in segments):
         raise BroadcastError(f"malformed channel name {raw!r} — empty segment")
