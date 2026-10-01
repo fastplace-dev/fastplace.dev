@@ -53,7 +53,7 @@ After=network.target postgresql.service redis.service
 Type=simple
 User=fastplace
 WorkingDirectory=/srv/app
-ExecStart=/srv/app/.venv/bin/fastplace serve --host 127.0.0.1 --port 8000
+ExecStart=/srv/app/.venv/bin/fastplace serve --host 127.0.0.1 --port 9000
 Restart=on-failure
 RestartSec=2
 # Hardening (adjust to your layout)

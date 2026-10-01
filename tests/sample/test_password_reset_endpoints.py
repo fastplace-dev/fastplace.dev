@@ -114,7 +114,7 @@ def _reset_link() -> str:
 
 
 def _token_and_email(link: str) -> tuple[str, str]:
-    token = link.removeprefix("http://localhost:8000/reset-password/").split("?")[0]
+    token = link.removeprefix("http://localhost:9000/reset-password/").split("?")[0]
     email = parse_qs(urlparse(link).query)["email"][0]
     return token, email
 

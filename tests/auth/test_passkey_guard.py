@@ -22,7 +22,7 @@ from fastplace.ratelimit import RateLimiter
 from tests.auth.webauthn_fixture import SimulatedAuthenticator, b64url
 
 RP_ID = "localhost"
-ORIGIN = "http://localhost:8000"
+ORIGIN = "http://localhost:9000"
 
 USER_A = SimpleNamespace(
     id=7, name="Firoz", email="firoz@example.test", two_factor_confirmed_at=None

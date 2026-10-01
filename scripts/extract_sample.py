@@ -223,7 +223,7 @@ cp .env.example .env           # zero-config SQLite to start
 npm install
 fastplace migrate
 fastplace db:seed
-fastplace run dev              # http://127.0.0.1:8000
+fastplace run dev              # http://127.0.0.1:9000
 ```
 
 ## Where things live

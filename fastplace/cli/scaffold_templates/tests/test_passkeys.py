@@ -25,7 +25,7 @@ pytest.importorskip(
 )
 
 RP_ID = "localhost"  # APP_URL host — config/auth.py derives rp_id from it
-ORIGIN = "http://localhost:8000"  # APP_URL
+ORIGIN = "http://localhost:9000"  # APP_URL
 
 REGISTER_PAYLOAD = {
     "name": "Firoz",

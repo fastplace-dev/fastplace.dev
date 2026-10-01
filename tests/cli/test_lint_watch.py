@@ -7,11 +7,8 @@ hard `lint:modules` gate.
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -118,59 +115,15 @@ def test_lint_watch_once_reports_violations(tmp_path, monkeypatch):
 # --- `run dev` wiring --------------------------------------------------------
 
 
-class _FakeProc:
-    """Just enough Popen for run_dev's child management."""
-
-    def __init__(self, command):
-        self.command = command
-        self.terminated = False
-
-    def wait(self, timeout=None):  # noqa: ARG002 — signature parity
-        return 0
-
-    def poll(self):
-        return None if not self.terminated else 0
-
-    def terminate(self):
-        self.terminated = True
+# The `spawned` tmp-project/captured-Popen fixture lives in tests/cli/conftest.py.
 
 
-@pytest.fixture()
-def spawned(monkeypatch, tmp_path):
-    """Capture run_dev's child spawns; cwd is a bare project (no package.json,
-    so no Vite child) with a fake `fastplace` binary next to sys.executable."""
-    commands: list[list[str]] = []
-
-    def fake_popen(command, *args, **kwargs):  # noqa: ANN002, ANN003
-        proc = _FakeProc(command)
-        commands.append([str(part) for part in command])
-        return proc
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    bare = tmp_path / "bare"
-    (bare / "config").mkdir(parents=True)
-    (bare / "config" / "app.py").write_text("APP_NAME = 'Bare'\n")
-    monkeypatch.chdir(bare)
-
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    (fake_bin / "fastplace").write_text("#!/bin/sh\nexit 0\n")
-    (fake_bin / "fastplace").chmod(0o755)
-    original_executable = sys.executable
-    monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
-    (fake_bin / "python").write_text("#!/bin/sh\nexit 0\n")
-    (fake_bin / "python").chmod(0o755)
-    yield commands
-    monkeypatch.setattr(sys, "executable", original_executable)
-
-
-def _invoked(commands, *extra):
+def _invoked(box, *extra):
     from fastplace.cli import app as cli_app
 
     result = runner.invoke(cli_app, ["run", "dev", *extra])
     assert result.exit_code == 0, result.output
-    return commands
+    return box.commands
 
 
 def test_run_dev_spawns_the_lint_watcher_by_default(spawned):

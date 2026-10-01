@@ -6,7 +6,7 @@ type. Access is declarative through the ``config`` helper::
 
     from fastplace.config import config
     name = config("APP_NAME")
-    url = config("APP_URL", default="http://localhost:8000")
+    url = config("APP_URL", default="http://localhost:9000")
 """
 
 from __future__ import annotations

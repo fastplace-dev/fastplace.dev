@@ -76,7 +76,7 @@ adapter.
 fastplace run dev      # Uvicorn (reload) + Vite (HMR) together
 ```
 
-Open <http://127.0.0.1:8000>. Asset requests are proxied to Vite in dev;
+Open <http://127.0.0.1:9000>. Asset requests are proxied to Vite in dev;
 for production see `fastplace serve` in the
 [deployment guide](/guides/deployment).
 
