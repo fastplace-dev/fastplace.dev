@@ -157,6 +157,26 @@ async def test_unhandled_exception_maps_to_500(routes):
     assert resp.json()["message"] == "Server error."
 
 
+async def test_unhandled_500_keeps_security_headers_and_request_id(routes):
+    # ServerErrorMiddleware wraps every middleware get_app installs, so its
+    # response never crosses _SecurityHeadersMiddleware or the request-id
+    # middleware — the kernel's own handler must stamp the baseline itself
+    # (the same mirror MaintenanceMiddleware keeps for its 503).
+    import httpx
+
+    from fastplace.http import get_app
+
+    app = get_app(routes=routes, config={"APP_DEBUG": False})
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/boom")
+    assert resp.status_code == 500
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+    assert resp.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert resp.headers["x-request-id"]  # correlation survives the 500
+
+
 # ---------------------------------------------------------------------------
 # render() — the Inertia-style bridge
 # ---------------------------------------------------------------------------
@@ -414,6 +434,34 @@ class TestKernelHardening:
         r = Router()
         r.get("/ping", ping)
         app = get_app(routes=r, config={"APP_ENV": "local", "APP_KEY": ""})
+        assert app is not None
+
+    async def test_production_rejects_a_brute_forceable_app_key(self):
+        # HS256 JWTs, signed URLs and encryption all key off APP_KEY — a
+        # short key is offline-brute-forceable (capture one token, recover
+        # the key, forge any sub), so production must not boot with one.
+        import pytest
+
+        from fastplace.errors import ConfigurationError
+        from fastplace.http import Router, get_app
+
+        async def ping(request):
+            return {"ok": True}
+
+        r = Router()
+        r.get("/ping", ping)
+        with pytest.raises(ConfigurationError, match="32"):
+            get_app(routes=r, config={"APP_ENV": "production", "APP_KEY": "short-key"})
+
+    async def test_production_accepts_a_32_byte_app_key(self):
+        from fastplace.http import Router, get_app
+
+        async def ping(request):
+            return {"ok": True}
+
+        r = Router()
+        r.get("/ping", ping)
+        app = get_app(routes=r, config={"APP_ENV": "production", "APP_KEY": "x" * 32})
         assert app is not None
 
 

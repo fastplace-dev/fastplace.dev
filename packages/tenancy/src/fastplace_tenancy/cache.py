@@ -47,6 +47,17 @@ class CompanyCacheStore:
         # legal call and must stay one through the wrapper.
         return await self._inner.remember(self._key(key), ttl, factory)
 
+    async def increment(self, key: str, ttl: int | float | None = None) -> int:
+        return await self._inner.increment(self._key(key), ttl)
+
+    async def ttl(self, key: str) -> float | None:
+        return await self._inner.ttl(self._key(key))
+
+    def lock(self, name: str, *, ttl: int | float) -> Any:
+        """A lock whose physical name carries the company prefix — two
+        tenants locking the same logical name never contend with each other."""
+        return self._inner.lock(self._key(name), ttl=ttl)
+
     async def flush(self) -> None:
         raise NotImplementedError(
             "flush() is refused on a company-scoped store — it would clear "

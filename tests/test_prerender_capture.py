@@ -225,3 +225,52 @@ async def test_startup_failure_raises_with_app_message():
     app = Starlette(routes=[Route("/boot", _startup_only)], lifespan=_lifespan)
     with pytest.raises(RuntimeError):
         await capture_all(app, ["/boot"])
+
+
+async def test_lifespan_handshake_timeout_is_a_named_error(monkeypatch):
+    """A boot slower than the handshake budget must not stringify to "".
+
+    Bare TimeoutError has an empty message — the CLI printed a message-less
+    "prerender failed:" line and the developer could not tell a slow boot
+    (model loads, migrations) from a hung route, or learn the budget. The
+    error names the phase, the seconds, and that --timeout does not govern it.
+    """
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    import fastplace.prerender.capture as capture_mod
+
+    monkeypatch.setattr(capture_mod, "LIFESPAN_HANDSHAKE_TIMEOUT", 0.05)
+
+    @asynccontextmanager
+    async def _lifespan(app):  # noqa: ANN001
+        await asyncio.sleep(1)
+        yield  # pragma: no cover
+
+    app = Starlette(routes=[Route("/boot", _startup_only)], lifespan=_lifespan)
+    with pytest.raises(RuntimeError) as excinfo:
+        await asyncio.wait_for(capture_all(app, ["/boot"]), timeout=5)
+    message = str(excinfo.value)
+    assert "lifespan startup timed out after 0.05s" in message
+    assert "--timeout" in message  # the two budgets are named apart
+
+
+async def test_lifespan_shutdown_timeout_is_a_named_error(monkeypatch):
+    """The shutdown handshake gets the same named error (it shared the bare
+    TimeoutError shape)."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    import fastplace.prerender.capture as capture_mod
+
+    monkeypatch.setattr(capture_mod, "LIFESPAN_HANDSHAKE_TIMEOUT", 0.05)
+
+    @asynccontextmanager
+    async def _lifespan(app):  # noqa: ANN001
+        yield
+        await asyncio.sleep(1)  # shutdown handshake never answers in time
+
+    app = Starlette(routes=[Route("/boot", _startup_only)], lifespan=_lifespan)
+    with pytest.raises(RuntimeError) as excinfo:
+        await asyncio.wait_for(capture_all(app, ["/boot"]), timeout=5)
+    assert "lifespan shutdown timed out after 0.05s" in str(excinfo.value)

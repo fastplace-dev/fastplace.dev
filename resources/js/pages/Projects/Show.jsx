@@ -10,6 +10,10 @@ export default function ProjectsShow() {
   const { props } = usePage();
   const project = props.project ?? { tasks: [] };
 
+  // Reads are a public demo surface, writes are authenticated (the route
+  // middleware enforces it) — a guest never sees controls that would bounce.
+  const user = props.auth?.user;
+
   // Native form posts cannot read the <meta> tag — the page props carry the
   // session CSRF token for the hidden _token field.
   const csrfToken = props.csrf_token ?? "";
@@ -29,20 +33,30 @@ export default function ProjectsShow() {
 
         <Card className="mb-6 gap-3 py-4">
           <CardContent className="px-4">
-            <form
-              method="post"
-              action={`/projects/${project.id}/tasks`}
-              className="flex flex-wrap items-end gap-3"
-            >
-              <input type="hidden" name="_token" value={csrfToken} />
-              <div className="min-w-48 flex-1">
-                <Label htmlFor="task-title" className="mb-1">
-                  Task title
-                </Label>
-                <Input id="task-title" name="title" required maxLength={255} />
-              </div>
-              <Button type="submit">Add task</Button>
-            </form>
+            {user ? (
+              <form
+                method="post"
+                action={`/projects/${project.id}/tasks`}
+                className="flex flex-wrap items-end gap-3"
+              >
+                <input type="hidden" name="_token" value={csrfToken} />
+                <div className="min-w-48 flex-1">
+                  <Label htmlFor="task-title" className="mb-1">
+                    Task title
+                  </Label>
+                  <Input id="task-title" name="title" required maxLength={255} />
+                </div>
+                <Button type="submit">Add task</Button>
+              </form>
+            ) : (
+              <p className="text-muted-foreground text-sm">
+                Browsing the demo as a guest.{" "}
+                <Link href="/login" className="text-accent">
+                  Log in to add
+                </Link>{" "}
+                a task.
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -57,13 +71,15 @@ export default function ProjectsShow() {
                     <span className={task.completed ? "line-through text-muted-foreground" : ""}>
                       {task.title}
                     </span>
-                    <Link
-                      href={`/tasks/${task.id}/toggle`}
-                      method="post"
-                      className="text-accent text-sm"
-                    >
-                      {task.completed ? "Reopen" : "Mark done"}
-                    </Link>
+                    {user ? (
+                      <Link
+                        href={`/tasks/${task.id}/toggle`}
+                        method="post"
+                        className="text-accent text-sm"
+                      >
+                        {task.completed ? "Reopen" : "Mark done"}
+                      </Link>
+                    ) : null}
                   </li>
                 ))}
               </ul>

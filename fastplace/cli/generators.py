@@ -140,7 +140,9 @@ def make_model(
     from fastplace.orm.fields import resolve_annotation  # noqa: F401 — import sanity
 
     root = _project_root()
-    module = _clean_module(name[0].lower() + name[1:])
+    # _snake matches make:module's entity/module split — BlogPost lands in
+    # blog_post/ with table blog_posts, not a mixed-case blogPost module.
+    module = _clean_module(_snake(name))
     model_path = root / "app" / "modules" / module / "models" / f"{module}.py"
 
     _write(
@@ -1832,6 +1834,9 @@ APP_ENV=local
 # output whenever APP_ENV=production regardless of this flag.
 APP_DEBUG=true
 APP_URL=http://localhost:9000
+# Bind interface: run dev defaults to 127.0.0.1 (loopback only), serve to
+# 0.0.0.0 (every interface, for reverse-proxy deploys).
+# APP_HOST=127.0.0.1
 # Bind port. Unset = 9000, and `run dev` auto-falls back to the next free
 # port; setting APP_PORT (or --port) pins it strictly instead.
 # APP_PORT=9000
@@ -1849,19 +1854,82 @@ SESSION_DRIVER=database
 # Per-process cache — fine for a single local process; serve refuses
 # CACHE_DRIVER=memory under APP_ENV=production (set redis there).
 CACHE_DRIVER=memory
+# Redis for CACHE_DRIVER=redis — keys are namespaced so the DB can be
+# shared with the queue; flush() clears only this app's prefix.
+# REDIS_URL=redis://localhost:6379/0
+# CACHE_PREFIX=fastplace:cache:
 
 # Database — SQLite zero-config default. Production examples:
 #   DATABASE_URL=postgresql://user:pass@localhost:5432/{slug}
 #   DATABASE_URL=mysql://user:pass@localhost:3306/{slug}
 DATABASE_URL=sqlite+aiosqlite:///./database.sqlite3
+# Statements slower than QUERY_SLOW_MS warn; one repeating
+# QUERY_N1_THRESHOLD times in a request flags the N+1 pattern.
+# QUERY_SLOW_MS=250
+# QUERY_N1_THRESHOLD=5
+
+# Queue — memory (dev default) or saq (production, redis-backed). The
+# retry knobs govern saq jobs: attempts, execution timeout (s), backoff
+# base (s), and result TTL (s).
+# QUEUE_DRIVER=memory
+# QUEUE_NAME=fastplace
+# QUEUE_REDIS_URL=redis://localhost:6379/0
+# QUEUE_TRIES=3
+# QUEUE_TIMEOUT=60
+# QUEUE_BACKOFF=0
+# QUEUE_TTL=600
+# SAQ web dashboard (OFF by default; mounts only under QUEUE_DRIVER=saq).
+# QUEUE_DASHBOARD_ENABLED=false
+# QUEUE_DASHBOARD_PATH=/queue-dashboard
+
+# Broadcasting — /ws/broadcast channel fan-out. memory (default, single
+# process) or redis (cross-process; reuses the queue's redis when
+# BROADCAST_REDIS_URL is empty).
+# BROADCAST_ENABLED=true
+# BROADCAST_DRIVER=memory
+# BROADCAST_REDIS_URL=
+# BROADCAST_CHANNEL_PREFIX=fastplace:broadcast:
+
+# S3 storage disk (uncomment the "s3" entry in config/storage.py and
+# pip install 'fastplace[s3]').
+# S3_BUCKET=app-bucket
+# S3_REGION=us-east-1
+# S3_ENDPOINT_URL=
+# S3_PUBLIC_BASE=
+# S3_PUBLIC=false
+
+# Mail (driver: log | memory | smtp)
+MAIL_DRIVER=log
+MAIL_FROM_ADDRESS=hello@example.com
+MAIL_FROM_NAME=Fastplace
+MAIL_HOST=127.0.0.1
+MAIL_PORT=2525
+MAIL_USERNAME=
+MAIL_PASSWORD=
+MAIL_ENCRYPTION=tls
 
 # i18n — default locale; LOCALES lists every lang/<locale>.json the app serves
 # (comma-separated). Requests pick one via ?locale= or Accept-Language.
 LOCALE=en
 LOCALES=en
+APP_LOCALE=en
+APP_FALLBACK_LOCALE=en
 
 # Bridge + assets (dev)
 VITE_DEV_URL=http://localhost:5173
+# Optional cache-busting suffix on built asset URLs (public/build manifest).
+# ASSET_VERSION=
+# Prerender (SSG) — comma-separated routes `fastplace prerender` captures.
+# Precedence: --route flags, then the PRERENDER_ROUTES list in asgi.py,
+# then this variable, then "/" by default.
+# PRERENDER_ROUTES=/
+
+# Logging — channels write to storage/logs/ (booted by `fastplace serve`).
+# single = rotating file | daily = midnight-rotated file | stderr | null |
+# stack = every channel in LOG_STACK.
+# LOG_CHANNEL=single
+# LOG_LEVEL=INFO
+# LOG_STACK=single,daily,stderr
 """
 
 _GITIGNORE_TEMPLATE = """\
@@ -1889,7 +1957,8 @@ database.sqlite3
 
 # Environment
 .env
-.env.bak
+.env.*
+!.env.example
 
 # OS / IDE
 .DS_Store

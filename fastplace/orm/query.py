@@ -173,6 +173,12 @@ class QueryBuilder:
 
     def _loaders(self) -> list[Any]:
         loaders: list[Any] = []
+        # Insertion-ordered set of every entity visited along the eager paths
+        # — intermediates included, not just each path's terminal. A hop's
+        # entity carries its own global scopes (soft delete, tenancy);
+        # criteria on the terminal alone would leak soft-deleted or
+        # cross-tenant rows through every intermediate hop of a dotted path.
+        visited: dict[type, None] = {}
         mapper = self.model.__mapper__
         for path in self._eager:
             chain: Any = None
@@ -189,13 +195,17 @@ class QueryBuilder:
                 # Chain through Load.__getattr__ (public API — no link_to).
                 chain = factory(attr) if chain is None else getattr(chain, factory.__name__)(attr)
                 current_mapper = rel.mapper
+                visited.setdefault(current_mapper.class_, None)
             if chain is not None:
                 loaders.append(chain)
-            # The path's terminal model carries its own global scopes — the
-            # eager load must filter by them, exactly like relation() does.
-            criteria = self._loader_criteria(current_mapper.class_)
+        # Scope criteria per entity, deduplicated across paths (criteria
+        # depend only on the entity and this builder's escape modes). The
+        # query root is absent unless a path actually revisits it as a hop —
+        # its own scopes already ride the WHERE clause via _global_scope_criteria.
+        for entity in visited:
+            criteria = self._loader_criteria(entity)
             if criteria is not None:
-                loaders.append(with_loader_criteria(current_mapper.class_, criteria))
+                loaders.append(with_loader_criteria(entity, criteria))
         return loaders
 
     def _loader_criteria(self, target: type) -> Any | None:

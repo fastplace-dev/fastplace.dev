@@ -47,8 +47,8 @@ SITE_PAGES = {
 # Pinned as headings, not loose keywords: the words "PyPI"/"npm" appear all
 # over the file, so a deleted section would otherwise go unnoticed.
 RUNBOOK_SECTIONS = (
-    "## 1. GitHub Pages",
-    "## 2. Domain",
+    "## 1. Docs site — the fastplace-docs app",
+    "## 2. Domain — point fastplace.dev at the docs app",
     "## 3. PyPI",
     "## 4. npm",
     "## 5. Secrets",
@@ -411,41 +411,54 @@ def test_docs_build_output_is_not_committed():
         assert result.returncode == 0, f"docs/site/.vitepress/{part} must be gitignored"
 
 
-def test_pages_workflow_builds_the_site_from_source():
-    """docs.yml is repo-side deploy config: it builds the site and hands the
-    artifact to Pages — activation (Pages source, custom domain) stays with
-    the user. Asserted as parsed YAML, not substrings: the permissions
-    scoping and artifact wiring are the security-relevant parts."""
-    yaml = pytest.importorskip("yaml")
-    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "docs.yml").read_text())
-    on = workflow[True] if True in workflow else workflow["on"]  # YAML 1.1: `on:` → True
-
-    # Never a push-to-any-branch fan-out: master only, docs-path scoped,
-    # plus a manual trigger.
-    assert on["push"]["branches"] == ["master"]
-    assert "docs/site/**" in on["push"]["paths"]
-    assert "workflow_dispatch" in on
-
-    build = workflow["jobs"]["build"]
-    assert any(step.get("run") == "npm run docs:build" for step in build["steps"]), (
-        "the site must build from source in CI"
+def test_no_pages_workflow_can_clobber_the_production_domain():
+    """G3: fastplace.dev is served by the separate fastplace-docs app —
+    this repo's GitHub Pages was never enabled (verified: the Pages API
+    404s under an admin token). A Pages workflow left in the tree
+    self-activates the day the repo flips public, and a stray docs/site
+    push would then publish a stale site (and fight the custom domain).
+    The VitePress site still compiles in CI (the frontend job's
+    docs:build step) — only the deploy path is retired."""
+    assert not (ROOT / ".github" / "workflows" / "docs.yml").exists(), (
+        "docs.yml must not exist: production docs deploy from the separate "
+        "fastplace-docs app, never from this repo's Pages"
     )
-    artifact = next(s for s in build["steps"] if "upload-pages-artifact" in str(s.get("uses", "")))
-    assert artifact["with"]["path"] == "docs/site/.vitepress/dist"
 
-    deploy = workflow["jobs"]["deploy"]
-    assert deploy["needs"] == "build"
-    assert any("actions/deploy-pages" in str(s.get("uses", "")) for s in deploy["steps"])
-    # The Pages/id-token write scopes live on the deploy job ONLY — the
-    # build job (npm ci over repo-controlled package.json) stays least-priv.
-    assert build["permissions"] == {"contents": "read"}
-    assert deploy["permissions"] == {
-        "contents": "read",
-        "pages": "write",
-        "id-token": "write",
-    }
-    # Node version is a named constant, greppable alongside ci.yml's.
-    assert workflow["env"]["NODE_VERSION"] == "20"
+
+def test_all_extra_composes_every_shippable_extra():
+    """#20: ``pip install fastplace[all]`` is the everything knob — every
+    optional extra must be composed into it (``dev`` excluded: tooling, not
+    shippable surface). pwdlib[argon2] shipped as an extra but never made it
+    into ``all``, so the argon2 password hasher silently missed the
+    everything install."""
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    extras = pyproject["project"]["optional-dependencies"]
+    for name, requirements in extras.items():
+        if name in ("all", "dev"):
+            continue
+        for requirement in requirements:
+            assert requirement in extras["all"], f"extra '{name}' missing from 'all': {requirement}"
+
+
+def test_community_health_files_pin_support_and_gates():
+    """G6: SECURITY.md and CONTRIBUTING.md exist and carry the essentials —
+    vulnerability reporting through GitHub's private channel (no plaintext
+    email addresses to harvest), and the exact dev gates a contributor is
+    held to. Asserted as content anchors, not filenames, so an emptied-out
+    stub cannot pass."""
+    security = (ROOT / "SECURITY.md").read_text()
+    assert "private vulnerability reporting" in security.lower()
+    assert "github.com/fastplace-dev/fastplace.dev/security" in security
+    assert "@" not in security.replace("https://", ""), "no plaintext emails"
+
+    contributing = (ROOT / "CONTRIBUTING.md").read_text()
+    for gate in ("pytest", "ruff", "mypy", "lint:modules", "npm run test:run"):
+        assert gate in contributing, gate
+    # The branding guardrail, restated neutrally: no other framework's name
+    # may appear in code, docs, or commits — pattern names only.
+    assert "neutral" in contributing.lower()
 
 
 def test_deployment_runbook_names_every_external_step():

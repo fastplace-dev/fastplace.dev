@@ -4,6 +4,7 @@
 import os
 import re
 import socket
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -20,18 +21,25 @@ def _out(result) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environ():
+def _hermetic_environ(tmp_path, monkeypatch):
     """Confine os.environ changes to the test that caused them.
 
     test:e2e bootstraps config via load_env(), and python-dotenv writes
     the cwd .env's keys straight into the REAL os.environ — a mutation no
     monkeypatch sees or undoes. Snapshot before, restore after (verbatim
-    pattern from tests/cli/test_cache_cmds.py:26-41).
+    pattern from tests/cli/test_cache_cmds.py:26-41). The config registry
+    gets the same treatment: test:e2e binds it to the tmp project root,
+    and a binding that outlives its directory makes later suites read a
+    vanished project's defaults.
     """
+    from fastplace.config import reset_config
+
+    original_cwd = os.getcwd()
     env_before = dict(os.environ)
     yield
     os.environ.clear()
     os.environ.update(env_before)
+    reset_config(Path(original_cwd))
 
 
 @pytest.fixture(autouse=True)
@@ -143,15 +151,15 @@ def test_busy_port_suggests_e2e_port_override_never_kill(tmp_path, monkeypatch, 
         lambda name: f"/bin/{name}" if name in ("npx", "node") else None,
         raising=False,
     )
-    # Occupy 127.0.0.1:8907 so the preflight sees it taken.
+    # Hold an OS-assigned ephemeral port and point E2E_PORT at it — the
+    # preflight sees exactly this port taken. (The test used to occupy the
+    # fixed default 8907, which a real dev server on this machine also
+    # wants, and skipped whenever it lost that race.)
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        blocker.bind(("127.0.0.1", 8907))
-    except OSError:
-        blocker.close()
-        pytest.skip("port 8907 occupied on this machine")
+    blocker.bind(("127.0.0.1", 0))
+    busy_port = blocker.getsockname()[1]
     blocker.listen(1)
+    monkeypatch.setenv("E2E_PORT", str(busy_port))
     try:
         result = runner.invoke(cli_app, ["test:e2e"])
     finally:
@@ -159,6 +167,7 @@ def test_busy_port_suggests_e2e_port_override_never_kill(tmp_path, monkeypatch, 
     assert result.exit_code == 1
     out = _out(result)
     assert "E2E_PORT" in out
+    assert str(busy_port) in out
     assert "kill" not in out.lower()  # we suggest the override, never killing processes
 
 

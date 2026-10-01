@@ -194,6 +194,11 @@ export function useBroadcast(
  */
 export function usePresence(name: string, options?: UseBroadcastOptions): PresenceMember[] {
   const [members, setMembers] = useState<PresenceMember[]>([]);
+  // A new room is a new roster — clear the moment the channel changes so a
+  // slow or denied subscribe never serves the previous room's members.
+  useEffect(() => {
+    setMembers([]);
+  }, [name]);
   const adopt = (frame: { channel: string; members?: unknown }) => {
     if (Array.isArray(frame.members)) setMembers(frame.members as PresenceMember[]);
   };

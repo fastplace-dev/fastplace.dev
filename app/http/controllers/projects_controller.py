@@ -9,15 +9,6 @@ from fastplace.errors import NotFoundError
 from fastplace.http import Controller, Redirect, Request, render
 
 
-async def _form_input(request: Request, schema: type) -> dict:
-    """Read the payload from a JSON bridge request or a native form POST."""
-    if request.is_bridge:
-        data = await request.validate(schema)
-        return data.model_dump()
-    form = await request.form()
-    return {key: form.get(key) for key in form.keys()}
-
-
 def _int_id(request: Request, name: str = "id") -> int:
     """Route ids are strings at the edge — `/projects/abc` is a 404, not a 500."""
     raw = request.param(name)
@@ -52,17 +43,17 @@ class ProjectsController(Controller):
         )
 
     async def store(self, request: Request):
-        data = await _form_input(request, CreateProjectRequest)
-        await self.service.create_project(
-            name=str(data.get("name") or ""),
-            description=str(data.get("description") or ""),
-        )
+        # request.validate parses JSON bridge and native form bodies alike,
+        # so the no-JS form path gets the same field contract (and
+        # redirect-back errors) as the bridge.
+        data = await request.validate(CreateProjectRequest)
+        await self.service.create_project(name=data.name, description=data.description)
         return Redirect("/projects", status_code=303)
 
     async def store_task(self, request: Request):
         project_id = _int_id(request)
-        data = await _form_input(request, CreateTaskRequest)
-        await self.service.add_task(project_id=project_id, title=str(data.get("title") or ""))
+        data = await request.validate(CreateTaskRequest)
+        await self.service.add_task(project_id=project_id, title=data.title, due_date=data.due_date)
         return Redirect(f"/projects/{project_id}", status_code=303)
 
     async def toggle_task(self, request: Request):

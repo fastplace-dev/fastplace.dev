@@ -70,11 +70,8 @@ class AuthApiController(Controller):
         )
         if outcome is None:
             return Redirect("/login", status_code=303)
-        if outcome is False:
-            # The error key tracks what was submitted: a recovery-code
-            # attempt fails under recovery_code, everything else under code.
-            field = "recovery_code" if recovery_code and not code else "code"
-            raise self.two_factor_service._invalid(field)
+        # A failed attempt raised the frozen 422 inside the service, keyed
+        # by the submitted field — the controller only sees success here.
         return Redirect(request.intended(), status_code=303)
 
     async def forgot_password(self, request: Request):

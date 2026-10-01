@@ -4,9 +4,9 @@ Register after ``ResolveUserMiddleware`` (the default resolution reads
 ``request.user``) and before ``CsrfMiddleware``::
 
     MIDDLEWARE = [
-        "app.http.middleware.resolve_user.ResolveUserMiddleware",
+        "fastplace.auth.middleware.ResolveUserMiddleware",
         "fastplace_tenancy.middleware.CompanyContextMiddleware",
-        "app.http.middleware.csrf.CsrfMiddleware",
+        "fastplace.auth.middleware.CsrfMiddleware",
     ]
 
 Resolution order (overridable via ``_resolve_company_id``):

@@ -27,7 +27,7 @@ root:
 pip install -U "fastplace[queue,webauthn]"
 
 # 2. Bump the npm pins — python and npm release in lockstep (see matrix below)
-npm install -D @fastplace/react@^0.3.1 @fastplace/ai-react@^0.3.1
+npm install @fastplace/react@^0.3.1 @fastplace/ai-react@^0.3.1
 
 # 3. Apply any new migrations the release ships
 fastplace migrate

@@ -14,19 +14,36 @@ def service():
     return KnowledgeService()
 
 
+async def _stored(item) -> object:
+    """The persisted row — the vector lives here, not on the public DTO."""
+    from app.modules.knowledge.models.knowledge_item import KnowledgeItem
+
+    return await KnowledgeItem.find(item.id)
+
+
 async def test_ingest_embeds_content_and_stores_it(service, sample_db, embedding_seam):
     item = await service.ingest(title="ORM design", content="Repositories own query construction.")
 
     assert item.title == "ORM design"
-    assert item.embedding == [0.001] * 1536  # persisted alongside the text
+    stored = await _stored(item)
+    assert stored.embedding == [0.001] * 1536  # persisted alongside the text
     assert embedding_seam and "Repositories" in embedding_seam[0]["input"][0]
+
+
+async def test_public_resources_never_carry_the_vector(service, sample_db, embedding_seam):
+    """The embedding stays module-internal: no DTO dump exposes it."""
+    item = await service.ingest(title="vector", content="kept internal")
+    assert "embedding" not in item.model_dump()
+
+    hits = await service.search("internal")
+    assert hits and "embedding" not in hits[0].model_dump()
 
 
 async def test_ingest_can_skip_embedding_when_no_provider(service, sample_db):
     # Seeding without an API key must still work — the vector can be
     # backfilled later by a job.
     item = await service.ingest(title="Notes", content="plain text", embed_vector=False)
-    assert item.embedding is None
+    assert (await _stored(item)).embedding is None
 
 
 async def test_ingest_rejects_empty_content(service, sample_db):
@@ -66,7 +83,8 @@ async def test_ingest_degrades_gracefully_without_an_embedding_provider(
 
     item = await service.ingest(title="Notes", content="plain text")
     assert item.title == "Notes"
-    assert item.embedding is None  # stored unvectored; search falls back to LIKE
+    # stored unvectored; search falls back to LIKE
+    assert (await _stored(item)).embedding is None
 
 
 async def test_ingest_rejects_mismatched_embedding_dimensions(service, sample_db, monkeypatch):

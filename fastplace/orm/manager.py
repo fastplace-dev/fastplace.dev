@@ -186,6 +186,9 @@ class DatabaseManager:
         self._session_factories: dict[str, async_sessionmaker[AsyncSession]] = {}
         self._replica_engines: dict[str, list[AsyncEngine]] = {}
         self._read_cycles: dict[str, Any] = {}
+        # Keyed by engine object: read_engine() rotates across replicas, so a
+        # per-name cache would collide — engines themselves are stable per name.
+        self._read_factories: dict[AsyncEngine, async_sessionmaker[AsyncSession]] = {}
 
     def config_for(self, name: str = "default") -> dict[str, Any]:
         if name not in self.connections:
@@ -274,12 +277,17 @@ class DatabaseManager:
 
     def read_session(self, name: str = "default") -> AsyncSession:
         """A session on the next read engine (replica when configured)."""
-        return async_sessionmaker(
-            self.read_engine(name),
-            class_=AsyncSession,
-            expire_on_commit=False,
-            autoflush=False,
-        )()
+        engine = self.read_engine(name)
+        factory = self._read_factories.get(engine)
+        if factory is None:
+            factory = async_sessionmaker(
+                engine,
+                class_=AsyncSession,
+                expire_on_commit=False,
+                autoflush=False,
+            )
+            self._read_factories[engine] = factory
+        return factory()
 
     def capabilities(self, name: str = "default") -> Capabilities:
         cfg = self.config_for(name)
@@ -296,6 +304,7 @@ class DatabaseManager:
                 await engine.dispose()
         self._replica_engines.clear()
         self._read_cycles.clear()
+        self._read_factories.clear()
 
     def _dispose_sync(self) -> None:
         """Best-effort engine disposal from sync contexts (test teardown).
@@ -324,3 +333,4 @@ class DatabaseManager:
         self._session_factories.clear()
         self._replica_engines.clear()
         self._read_cycles.clear()
+        self._read_factories.clear()

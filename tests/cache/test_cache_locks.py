@@ -144,16 +144,22 @@ async def test_memory_lock_context_manager_waits_for_the_holder():
     store = MemoryCache()
     holder = store.lock("job", ttl=30)
     await holder.acquire()
+    events: list[str] = []
 
     async def releaser() -> None:
         await asyncio.sleep(0.02)
+        events.append("released")
         await holder.release()
 
     async def enter_later() -> CacheLock:
         async with store.lock("job", ttl=30) as lock:
+            events.append("entered")
             return lock
 
     await asyncio.wait_for(asyncio.gather(releaser(), enter_later()), timeout=5)
+    # The waiter genuinely blocked on the holder: entry is observable only
+    # after the release — not merely "both coroutines finished in time".
+    assert events == ["released", "entered"]
 
 
 async def test_memory_lock_race_admits_exactly_one_holder():

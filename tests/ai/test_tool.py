@@ -1,5 +1,7 @@
 """@Tool decorator — JSON schema from type hints + docstrings (blueprint §9)."""
 
+import enum
+import json
 from typing import Literal
 
 import pytest
@@ -252,6 +254,40 @@ def test_mixed_type_literals_omit_the_type_key():
     prop = tool_registry["pick"].parameters["properties"]["value"]
     assert prop["enum"] == ["a", 1]
     assert "type" not in prop  # no contradictory "type"
+
+
+def test_enum_literals_ship_their_underlying_values():
+    """Literal[Enum] must derive a schema providers accept — Python enum
+    members are not JSON-serializable, so the wire enum carries each
+    member's underlying value and the type follows those values."""
+
+    class Color(enum.Enum):
+        RED = "red"
+        BLUE = "blue"
+
+    class Priority(enum.IntEnum):
+        HIGH = 1
+        LOW = 2
+
+    @Tool(description="d")
+    async def schedule(
+        color: Literal[Color.RED, Color.BLUE], priority: Literal[Priority.HIGH]
+    ) -> str:
+        """Schedule.
+
+        Args:
+            color: what to paint.
+            priority: how urgent.
+        """
+        return "x"
+
+    props = tool_registry["schedule"].parameters["properties"]
+    assert props["color"]["enum"] == ["red", "blue"]
+    assert props["color"]["type"] == "string"
+    assert props["priority"]["enum"] == [1]
+    assert props["priority"]["type"] == "integer"
+    # the whole parameters object goes on the wire — it must serialize
+    json.dumps(tool_registry["schedule"].parameters)
 
 
 def test_bare_dict_and_list_annotations_are_accepted():

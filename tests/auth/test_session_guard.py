@@ -325,6 +325,41 @@ class TestSessionGuardCredentials:
         assert SessionGuard.SESSION_KEY not in request.session
         assert failures == [{"email": "firoz@example.test"}]
 
+    async def test_attempt_when_sheds_a_locked_out_key_before_any_lookup(self, fake_remember):
+        # The throttle check must shed the work (DB lookup + equal-work
+        # scrypt) exactly like the bare attempt() path — otherwise a locked
+        # key becomes an unthrottled work amplifier on attempt_when
+        # endpoints: every request still pays lookup + scrypt before the 429.
+        from fastplace.errors import ThrottleRequestsError
+
+        lockout_guard = SessionGuard(DictUserProvider())
+        lockout_guard.provider.add(make_credentials_user())
+        for _ in range(5):
+            await lockout_guard.attempt(
+                make_request(), {"email": "firoz@example.test", "password": "wrong-pass"}
+            )
+
+        class CountingProvider(DictUserProvider):
+            def __init__(self):
+                super().__init__()
+                self.lookups = 0
+
+            async def retrieve_by_credentials(self, credentials):
+                self.lookups += 1
+                return await super().retrieve_by_credentials(credentials)
+
+        counting = CountingProvider()
+        counting.add(make_credentials_user())
+        guard = SessionGuard(counting)
+
+        with pytest.raises(ThrottleRequestsError):
+            await guard.attempt_when(
+                make_request(),
+                {"email": "firoz@example.test", "password": "secret123"},
+                lambda user: True,
+            )
+        assert counting.lookups == 0  # the limiter answered before the DB did
+
     async def test_five_failures_then_sixth_raises_throttle(self, fake_remember):
         from fastplace.errors import ThrottleRequestsError
 

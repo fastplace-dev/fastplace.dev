@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
+
 from fastplace.http.render import render
+from tests.auth.conftest import bootstrap_csrf, build_auth_app
 
 SECRET = "test-app-key-not-for-production-use-only"
 
@@ -137,6 +140,40 @@ class TestCsrfValidation:
         monkeypatch.setenv("CSRF_EXCEPT", "/webhook/*")
         response = await auth_client.post("/submit")
         assert response.status_code == 419
+
+    async def test_non_ascii_header_token_is_rejected_not_a_500(self):
+        # Starlette decodes header bytes as latin-1: byte 0xFC arrives as the
+        # str "ü", and hmac.compare_digest raises TypeError on non-ASCII strs
+        # (signing.py's encoded-bytes precedent). A forged token must
+        # mismatch with 419, never crash the request into a 500.
+        transport = httpx.ASGITransport(app=build_auth_app(), raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await bootstrap_csrf(client)
+            response = await client.post("/submit", headers={b"X-Fastplace-CSRF-Token": b"\xfc"})
+        assert response.status_code == 419
+
+    async def test_non_ascii_form_token_is_rejected_not_a_500(self, auth_client):
+        # Same bug class through the form field: a URL-decoded "%C3%BC"
+        # yields a non-ASCII str that must mismatch, not raise TypeError.
+        await bootstrap_csrf(auth_client)
+        response = await auth_client.post("/submit", data={"_token": "ü", "payload": 1})
+        assert response.status_code == 419
+
+    async def test_419_envelope_advertises_a_token_the_client_can_adopt(self, auth_client):
+        # adoptCsrfToken recovers from error responses: a mismatch must
+        # yield a 419 carrying a usable X-Fastplace-CSRF-Token, and the
+        # immediate retry with it succeeds — no manual page reload.
+        await bootstrap_csrf(auth_client)
+        rejected = await auth_client.post(
+            "/submit", headers={"X-Fastplace-CSRF-Token": "stale-token"}
+        )
+        assert rejected.status_code == 419
+        fresh = rejected.headers.get("X-Fastplace-CSRF-Token")
+        assert fresh and len(fresh) >= 32
+        retried = await auth_client.post(
+            "/submit", headers={"X-Fastplace-CSRF-Token": fresh}, data={"payload": 1}
+        )
+        assert retried.status_code == 200
 
     async def test_delete_and_patch_are_also_guarded(self, auth_client):
         for method in ("delete", "patch", "put"):

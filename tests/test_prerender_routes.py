@@ -147,3 +147,36 @@ def test_double_slash_segments_rejected_at_resolution(tmp_path):
 
     with pytest.raises(ValueError, match="route"):
         resolve_prerender_routes(None, ["/a//b"], root=tmp_root(tmp_path))
+
+
+def test_query_strings_rejected_at_resolution(tmp_path):
+    """A `?` route validates today but its output can never be served:
+    PrerenderStaticFiles only answers query-less requests, and a query-less
+    request maps to a different directory than `pricing?utm=1/index.html`."""
+    import pytest
+
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    with pytest.raises(ValueError, match="query or fragment"):
+        resolve_prerender_routes(None, ["/pricing?utm=1"], root=tmp_root(tmp_path))
+
+
+def test_fragments_rejected_at_resolution(tmp_path):
+    import pytest
+
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    with pytest.raises(ValueError, match="query or fragment"):
+        resolve_prerender_routes(None, ["/docs#toc"], root=tmp_root(tmp_path))
+
+
+def test_env_query_route_rejected_too(monkeypatch, tmp_path):
+    """The plausible pagination attempt (`PRERENDER_ROUTES=/blog?page=1`)
+    must die at the boundary with the same error, not pass green."""
+    import pytest
+
+    from fastplace.prerender.routes import resolve_prerender_routes
+
+    monkeypatch.setenv("PRERENDER_ROUTES", "/blog?page=1")
+    with pytest.raises(ValueError, match="query or fragment"):
+        resolve_prerender_routes(None, [], root=tmp_root(tmp_path))

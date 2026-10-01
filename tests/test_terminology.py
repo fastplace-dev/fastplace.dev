@@ -51,6 +51,10 @@ def test_no_tracked_text_mentions_dogfood():
         if rel in EXEMPT_FILES:
             continue
         path = ROOT / rel
+        if not path.exists():
+            # Tracked in the index but deleted from the working tree
+            # (mid-removal, pre-commit) — nothing to scan.
+            continue
         raw = path.read_bytes()
         if b"\0" in raw:  # binary
             continue

@@ -50,8 +50,9 @@ comes from explicit test config).
 python -m pytest -q
 ```
 
-A plain run is SQLite-only (about 2,600 tests and growing), plus a
-handful of env-gated tests that skip with self-explanatory reasons. The remaining backends are opt-in through
+A plain run is SQLite-only (the full framework suite — about 3,500 tests
+and growing), plus a handful of env-gated tests that skip with
+self-explanatory reasons. The remaining backends are opt-in through
 three environment variables:
 
 - **`TEST_POSTGRES_URL`** — the PostgreSQL dialect suite plus the tenancy
@@ -77,8 +78,8 @@ npm run test:run
 ```
 
 Tests are colocated in `__tests__/` directories (see `packages/react` and
-`packages/ai-react` for framework-package examples — 48 tests over the
-bridge router, page resolver, and stream hooks).
+`packages/ai-react` for framework-package examples — about 100 tests over
+the bridge router, form machinery, page resolver, and stream hooks).
 
 ```tsx
 import { render, screen } from "@testing-library/react";

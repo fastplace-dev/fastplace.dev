@@ -11,9 +11,12 @@ rather than returning every tenant's rows. Escape explicitly with
 ``without_global_scope("company")`` (cross-company admin work) — exactly the
 contract the core engine documents for ``soft_delete``.
 
-Both tenant columns are plain ``int`` foreign keys by default; an application
-using different key types redeclares them (own annotations win over the
-base's, same as any column inheritance).
+Both tenant columns are plain ``int`` foreign keys by default. An application
+can redeclare them with other key types (own annotations win over the base's,
+same as any column inheritance), but that affects the ORM layer only: storage
+paths (``company_<id>``) validate positive integers, broadcasting parses
+``company.{id}.`` channel ids as ``int``, and the RLS helpers cast the
+connection setting to ``int`` — keep tenant ids integer.
 """
 
 from __future__ import annotations
@@ -91,24 +94,46 @@ class CompanyScopedModel(Model):
         super().__init_subclass__(**kwargs)
 
     @classmethod
-    async def create(cls, **values: Any) -> Any:
-        """``create()`` stamps ``company_id`` from the bound context.
+    def _prepare_write_values(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Stamp ``company_id`` from the bound context into every write.
 
-        Passing ``company_id`` explicitly raises :class:`MassAssignmentError`
-        through the normal guard path — a caller who can name another company
-        must not be able to write into it.
+        The single seam the core routes all writes through — ``create``,
+        ``first_or_create``/``update_or_create``, and ``upsert`` each prepare
+        their payloads here, so every entry point lands inside the bound
+        company. An explicit ``company_id`` still hits the standard guard
+        (:class:`MassAssignmentError` — a caller who can name another company
+        must not be able to write into it); a missing binding fails closed
+        with :class:`MissingCompanyContext` at the call, not later.
         """
-        company_id = require_company_context()
         if "company_id" in values:
-            # Guarded column — delegate so the framework's standard
-            # MassAssignmentError (not a package variant) explains it.
-            return await super().create(**values)
-        instance = cls(**cls._mass_assignable(values))
-        # Framework stamp, not mass assignment — direct attribute set is the
-        # documented escape hatch for guarded columns.
-        instance.company_id = company_id
-        await instance.save()
-        return instance
+            # Guarded column — the base filter raises the framework's
+            # standard MassAssignmentError, not a package variant.
+            return super()._prepare_write_values(values)
+        prepared = dict(super()._prepare_write_values(values))
+        # Framework stamp, not mass assignment — applied after the guard.
+        prepared["company_id"] = require_company_context()
+        return prepared
+
+    @classmethod
+    async def upsert(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        unique_by: list[str],
+        update: list[str] | None = None,
+    ) -> int:
+        """Tenant-safe upsert — the company column joins the match keys.
+
+        Core ``upsert`` matches on physical unique keys with global scopes
+        off the table, so an unstamped match could land on (or create a
+        duplicate against) another company's row. Forcing ``company_id`` to
+        lead ``unique_by`` confines both the match and the insert to the
+        bound company: the per-company unique conventions
+        (``__unique_per_company__``) build exactly this composite, and the
+        values the base prepares carry the context stamp.
+        """
+        keys = ["company_id", *(k for k in unique_by if k != "company_id")]
+        return await super().upsert(rows, unique_by=keys, update=update)
 
 
 def _nearest_declaration(cls: type, name: str) -> Any:

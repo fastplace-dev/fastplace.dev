@@ -46,9 +46,12 @@ class Project(CompanyScopedModel):
 ```
 
 Every read now receives the tenant filter — `SELECT … WHERE company_id = ?` —
-and every `create()` stamps the column from the active company context. The
-`company_id` column is guarded from mass assignment: a payload cannot move a
-row into (or read it as) another company.
+and every write stamps the column from the active company context: `create`,
+`first_or_create`/`update_or_create`, and `upsert` (which also forces
+`company_id` into its match keys, so a batch never lands on — or duplicates
+against — another company's row). The `company_id` column is guarded from
+mass assignment: a payload cannot move a row into (or read it as) another
+company.
 
 ### Fail-closed by design
 
@@ -67,9 +70,9 @@ async with company_context(company.id):  # bind a context
 ```python
 # config/app.py
 MIDDLEWARE = [
-    "app.http.middleware.resolve_user.ResolveUserMiddleware",
+    "fastplace.auth.middleware.ResolveUserMiddleware",
     "fastplace_tenancy.middleware.CompanyContextMiddleware",
-    "app.http.middleware.csrf.CsrfMiddleware",
+    "fastplace.auth.middleware.CsrfMiddleware",
 ]
 ```
 

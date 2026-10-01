@@ -10,6 +10,10 @@ export default function ProjectsIndex() {
   const { props } = usePage();
   const projects = props.projects ?? [];
 
+  // Reads are a public demo surface, writes are authenticated (the route
+  // middleware enforces it) — a guest never sees a form that would bounce.
+  const user = props.auth?.user;
+
   // Native form posts cannot read the <meta> tag — the page props carry the
   // session CSRF token for the hidden _token field.
   const csrfToken = props.csrf_token ?? "";
@@ -26,22 +30,32 @@ export default function ProjectsIndex() {
 
         <Card className="mb-6 gap-3 py-4">
           <CardContent className="px-4">
-            <form method="post" action="/projects" className="flex flex-wrap items-end gap-3">
-              <input type="hidden" name="_token" value={csrfToken} />
-              <div className="min-w-48 flex-1">
-                <Label htmlFor="project-name" className="mb-1">
-                  Project name
-                </Label>
-                <Input id="project-name" name="name" required maxLength={255} />
-              </div>
-              <div className="min-w-48 flex-1">
-                <Label htmlFor="project-description" className="mb-1">
-                  Description
-                </Label>
-                <Input id="project-description" name="description" maxLength={2000} />
-              </div>
-              <Button type="submit">Add project</Button>
-            </form>
+            {user ? (
+              <form method="post" action="/projects" className="flex flex-wrap items-end gap-3">
+                <input type="hidden" name="_token" value={csrfToken} />
+                <div className="min-w-48 flex-1">
+                  <Label htmlFor="project-name" className="mb-1">
+                    Project name
+                  </Label>
+                  <Input id="project-name" name="name" required maxLength={255} />
+                </div>
+                <div className="min-w-48 flex-1">
+                  <Label htmlFor="project-description" className="mb-1">
+                    Description
+                  </Label>
+                  <Input id="project-description" name="description" maxLength={2000} />
+                </div>
+                <Button type="submit">Add project</Button>
+              </form>
+            ) : (
+              <p className="text-muted-foreground text-sm">
+                Browsing the demo as a guest.{" "}
+                <Link href="/login" className="text-accent">
+                  Log in to add
+                </Link>{" "}
+                a project.
+              </p>
+            )}
           </CardContent>
         </Card>
 

@@ -184,7 +184,14 @@ class CsrfMiddleware(Middleware):
 
         expected = request.session.get(CSRF_SESSION_KEY)
         supplied = await self._supplied_token(request)
-        if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        # Compare encoded bytes: compare_digest raises TypeError on non-ASCII
+        # strs, and a forged "\xfc" header (Starlette decodes latin-1) must
+        # mismatch, not crash the request — the signing.py precedent.
+        if (
+            not expected
+            or not supplied
+            or not hmac.compare_digest(expected.encode("utf-8"), supplied.encode("utf-8"))
+        ):
             # A browser form post with a stale/expired token gets the same
             # no-JS redirect-back treatment as a validation failure — the
             # visitor keeps their typed input and sees the expiry message.
@@ -195,7 +202,14 @@ class CsrfMiddleware(Middleware):
                 return redirect_back_with_errors(
                     request, {CSRF_SESSION_KEY: [CSRF_EXPIRED_MESSAGE]}
                 )
-            return Json({"message": "CSRF token mismatch."}, status_code=419)
+            return Json(
+                {"message": "CSRF token mismatch."},
+                status_code=419,
+                # The bridge adopts the advertised token from error responses
+                # (adoptCsrfToken) — without the header a stale token retries
+                # forever; _ensure_token mints one if the session lost it.
+                headers={CSRF_HEADER: self._ensure_token(request)},
+            )
 
         response = await call_next(request)
         # Re-read: login() rotates the token across the privilege boundary,

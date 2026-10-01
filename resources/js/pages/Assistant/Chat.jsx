@@ -1,5 +1,5 @@
 import React from "react";
-import { usePage } from "@fastplace/react";
+import { Link, usePage } from "@fastplace/react";
 import { useAIStream } from "@fastplace/ai-react";
 import { Card } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -8,6 +8,9 @@ import AppLayout from "@/layouts/app-layout";
 
 export default function AssistantChat() {
   const { props } = usePage();
+  // The assistant endpoint is authenticated — a guest gets the login
+  // prompt instead of a composer whose every send would bounce.
+  const user = props.auth?.user;
   const endpoint = props.endpoint ?? "/ai/assistant";
   const { messages, input, handleInputChange, handleSubmit, isStreaming } = useAIStream({
     endpoint,
@@ -47,18 +50,28 @@ export default function AssistantChat() {
         )}
       </Card>
 
-      <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
-        <Input
-          value={input}
-          onChange={handleInputChange}
-          placeholder="Ask the Fastplace AI agent..."
-          aria-label="Message"
-          className="flex-1"
-        />
-        <Button type="submit" disabled={isStreaming}>
-          Send
-        </Button>
-      </form>
+      {user ? (
+        <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
+          <Input
+            value={input}
+            onChange={handleInputChange}
+            placeholder="Ask the Fastplace AI agent..."
+            aria-label="Message"
+            className="flex-1"
+          />
+          <Button type="submit" disabled={isStreaming}>
+            Send
+          </Button>
+        </form>
+      ) : (
+        <p className="text-muted-foreground mt-4 text-sm">
+          The assistant spends real model calls, so chatting needs an account.{" "}
+          <Link href="/login" className="text-accent">
+            Log in to chat
+          </Link>
+          .
+        </p>
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import {
   FastplaceProvider,
+  Head,
   Link,
   createFastplaceApp,
   createPageResolver,
@@ -846,5 +847,141 @@ describe("createFastplaceApp", () => {
     await router.visit("/about");
     await waitFor(() => expect(screen.getByText("About: fastplace")).toBeInTheDocument());
     expect(screen.queryByText("Dashboard: Firoz")).not.toBeInTheDocument();
+  });
+});
+
+describe("document.title across bridge navigations", () => {
+  const TitledPage = () => (
+    <>
+      <Head title="Room A" />
+      <h1>titled page</h1>
+    </>
+  );
+  const TitledPageB = () => (
+    <>
+      <Head title="Room B" />
+      <h1>titled page b</h1>
+    </>
+  );
+  const PlainPage = () => <h1>plain page</h1>;
+
+  const titlePages: Record<string, () => React.ReactNode> = {
+    "Rooms/A": TitledPage,
+    "Rooms/B": TitledPageB,
+    "Rooms/Plain": PlainPage,
+  };
+
+  function renderTitleApp(initial: any) {
+    const App = () => {
+      const { component } = usePage();
+      const Page = titlePages[component];
+      return (
+        <div>
+          <Link href="/plain">Go plain</Link>
+          <Link href="/elsewhere" preserveState>
+            Go preserve-state
+          </Link>
+          {Page ? <Page /> : null}
+        </div>
+      );
+    };
+    return render(
+      <FastplaceProvider initialPage={initial}>
+        <App />
+      </FastplaceProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    document.title = "";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    window.history.replaceState(null, "", "/");
+    router.reset();
+  });
+
+  it("resets the title to the baseline when the new page has no <Head>", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "Rooms/Plain",
+          props: {},
+          url: "/plain",
+          version: "v1",
+        }),
+      ),
+    );
+    renderTitleApp({
+      component: "Rooms/A",
+      props: {},
+      url: "/rooms/a",
+      version: "v1",
+    });
+    await waitFor(() => expect(document.title).toBe("Room A"));
+
+    await userEvent.click(screen.getByText("Go plain"));
+    await waitFor(() => expect(screen.getByText("plain page")).toBeInTheDocument());
+
+    // No <Head> on the new page — the previous page's title must not survive.
+    expect(document.title).not.toBe("Room A");
+    expect(document.title).toBe("");
+  });
+
+  it("lets the new page's <Head> title win over the reset", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "Rooms/B",
+          props: {},
+          url: "/rooms/b",
+          version: "v1",
+        }),
+      ),
+    );
+    renderTitleApp({
+      component: "Rooms/A",
+      props: {},
+      url: "/rooms/a",
+      version: "v1",
+    });
+    await waitFor(() => expect(document.title).toBe("Room A"));
+
+    await router.visit("/rooms/b");
+    await waitFor(() => expect(screen.getByText("titled page b")).toBeInTheDocument());
+    expect(document.title).toBe("Room B");
+  });
+
+  it("keeps the current title on a preserve-state visit", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockBridgeResponse({
+          component: "Rooms/Plain",
+          props: {},
+          url: "/elsewhere",
+          version: "v1",
+        }),
+      ),
+    );
+    renderTitleApp({
+      component: "Rooms/A",
+      props: {},
+      url: "/rooms/a",
+      version: "v1",
+    });
+    await waitFor(() => expect(document.title).toBe("Room A"));
+
+    await userEvent.click(screen.getByText("Go preserve-state"));
+    await waitFor(() =>
+      expect(window.location.pathname + window.location.search).toBe("/elsewhere"),
+    );
+
+    // Same component stays mounted — its title must survive the URL change.
+    expect(screen.getByText("titled page")).toBeInTheDocument();
+    expect(document.title).toBe("Room A");
   });
 });

@@ -124,7 +124,10 @@ async def _events(agent: Any, messages: list[dict[str, Any]]) -> Any:
                 done: dict[str, Any] = {"content": final_text}
                 if agent.response_model is not None:
                     structured = await agent._structured(messages)
-                    done["data"] = structured.model_dump()
+                    # mode="json": datetime/UUID/Decimal/Enum fields must be
+                    # JSON-safe here — sse_event has no fallback encoder, so
+                    # python-mode dumps would surface as a stream error.
+                    done["data"] = structured.model_dump(mode="json")
                 yield sse_event("done", done)
                 return
             rounds += 1

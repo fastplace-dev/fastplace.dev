@@ -50,8 +50,9 @@ cp .env.example .env
 ```
 
 Defaults are runnable as-is: SQLite, local env, a generated app key. Every
-value is documented inline in `.env.example` — it is the canonical list of
-configuration keys, kept in sync by the framework itself.
+value is documented inline in `.env.example` — a runnable starter subset of
+the keys. The canonical list of configuration keys is the `config/*.py`
+modules; each default there applies whenever the matching env var is unset.
 
 ## Database
 

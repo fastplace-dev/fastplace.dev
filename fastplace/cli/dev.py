@@ -15,8 +15,8 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from types import FrameType
-from typing import overload
+from types import FrameType, ModuleType
+from typing import Any, overload
 
 import typer
 
@@ -157,6 +157,21 @@ def _cfg_port() -> int | None:
     if port is not None and not 1 <= port <= 65535:
         raise ConfigurationError(f"APP_PORT must be between 1 and 65535, got {port}")
     return port
+
+
+def _require_min(name: str, value: int, *, minimum: int = 1) -> None:
+    """Shared floor check for the CLI family's integer options and env knobs.
+
+    Zero is a real value, not "unset": `--workers 0` and `--steps 0` name
+    requests the command cannot honor (a zero-worker server, a zero-step
+    revert) and used to be swallowed by `or`-style defaults or clamped
+    downstream — reject them here with the value named. Options where 0 is
+    a valid value never route through this check.
+    """
+    from fastplace.errors import ConfigurationError
+
+    if value < minimum:
+        raise ConfigurationError(f"{name} must be at least {minimum}, got {value}")
 
 
 def _fastplace_bin() -> str | None:
@@ -316,6 +331,61 @@ def _serve_preflight(workers: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Prerender tree vs. the Vite build
+# ---------------------------------------------------------------------------
+
+
+def _prerender_manifest_path(root: Path) -> Path:
+    return root / "public" / "build" / "prerender" / "prerender-manifest.json"
+
+
+def _recapture_prerender(root: Path, *, had_tree: bool) -> bool:
+    """Rebuild the prerender tree a `npm run build` just wiped.
+
+    The scaffold's Vite config empties public/build wholesale
+    (``emptyOutDir``), taking ``public/build/prerender`` with it. An app
+    that ships prerendered — a pre-build manifest — or configures routes
+    explicitly (``PRERENDER_ROUTES`` on the asgi module, or the env var
+    of the same name) gets the tree recaptured in-process through the
+    same ``fastplace.prerender`` path the CLI command uses. A
+    never-prerendered app with no explicit routes is left alone.
+
+    Returns True when a capture ran; any failure raises to the caller.
+    """
+    import asyncio
+    import os
+
+    from fastplace.cli.prerender_cmd import _load_app
+    from fastplace.prerender.capture import capture_all
+    from fastplace.prerender.routes import resolve_prerender_routes
+    from fastplace.prerender.writer import write_pages
+
+    loaded: tuple[Any, ModuleType] | None = None
+    if not had_tree and not os.environ.get("PRERENDER_ROUTES", "").strip():
+        # No tree, no env routes: prerender only if the asgi module opted
+        # in. An import failure here reads as "no explicit routes" — the
+        # uvicorn child reports the real boot error, serve must not
+        # pre-empt it with a wrapper-time one.
+        try:
+            loaded = _load_app(root, None)
+        except Exception:  # noqa: BLE001 — boot diagnostics belong to uvicorn
+            return False
+        if not hasattr(loaded[1], "PRERENDER_ROUTES"):
+            return False
+
+    app, app_module = loaded if loaded is not None else _load_app(root, None)
+    routes = resolve_prerender_routes(app_module, [], root=root)
+    if not routes:
+        return False
+    pages = asyncio.run(capture_all(app, routes))
+    out_dir = root / "public" / "build" / "prerender"
+    manifest = write_pages(pages, out_dir)
+    if manifest.routes:
+        manifest.write(out_dir)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
 
@@ -468,10 +538,14 @@ def serve(
         # Same precedence as run dev: the CLI flag wins before .env is
         # parsed, so an explicit --port escapes a broken APP_PORT. The
         # workers parse lives here too — a malformed APP_WORKERS gets the
-        # same clean one-line error instead of a traceback.
+        # same clean one-line error instead of a traceback. An explicit
+        # `--workers 0`/`APP_WORKERS=0` is rejected (is None, not `or`):
+        # 0 is falsy and used to silently become the CPU-count default.
         configured = None if port is not None else _cfg_port()
         port = port if port is not None else (DEFAULT_PORT if configured is None else configured)
-        workers = workers or _cfg_int("APP_WORKERS", max(1, (os.cpu_count() or 2) - 1))
+        if workers is None:
+            workers = _cfg_int("APP_WORKERS", max(1, (os.cpu_count() or 2) - 1))
+        _require_min("workers", workers)
         _serve_preflight(workers)
         # Production binds never auto-fallback: a server that silently moves
         # one port up breaks every reverse proxy aimed at the expected one.
@@ -486,11 +560,21 @@ def serve(
     if not skip_build and (Path.cwd() / "package.json").exists():
         npm = shutil.which("npm")
         if npm:
+            # Snapshot before the build: Vite's emptyOutDir wipes
+            # public/build wholesale, taking the prerender tree with it.
+            had_prerender_tree = _prerender_manifest_path(_project_root()).is_file()
             console.print("[info]Building frontend assets…[/]")
             result = subprocess.run([npm, "run", "build"], cwd=_project_root())
             if result.returncode != 0:
                 console.print("[error]Frontend build failed.[/]")
                 raise typer.Exit(code=1)
+            try:
+                if _recapture_prerender(_project_root(), had_tree=had_prerender_tree):
+                    console.print("[green]prerender tree rebuilt[/] after the Vite build")
+            except Exception as exc:  # noqa: BLE001 — the tree is part of the deploy
+                # markup=False: exception text is data, never Rich tags.
+                console.print(f"prerender recapture failed: {exc}", style="red", markup=False)
+                raise typer.Exit(code=1) from exc
 
     console.print(
         f"[fastplace]Fastplace[/fastplace] serving http://{host}:{port} ({workers} workers)"

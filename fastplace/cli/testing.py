@@ -578,7 +578,19 @@ def test_e2e(
         )
         raise typer.Exit(code=1)
 
-    port = int(os.environ.get("E2E_PORT", "8907"))
+    try:
+        port = int(os.environ.get("E2E_PORT", "8907"))
+    except ValueError:
+        # markup=False: the raw env value is data, never Rich tags.
+        console.print(
+            f"E2E_PORT must be an integer, got {os.environ.get('E2E_PORT')!r}",
+            style="red",
+            markup=False,
+        )
+        raise typer.Exit(code=1) from None
+    if not 1 <= port <= 65535:
+        console.print(f"E2E_PORT must be between 1 and 65535, got {port}", style="red")
+        raise typer.Exit(code=1)
     if not _port_free(port):
         console.print(
             f"[red]port 127.0.0.1:{port} is busy[/] — Playwright boots its own server there "

@@ -6,8 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01
+
 ### Added
 
+- No-JS form verb override: the bridge `Form` component injects a hidden
+  `_method` field for put/patch/delete intents, and the kernel's new
+  `MethodOverrideMiddleware` rewrites the routing verb after CSRF has
+  validated the real POST — so browsers without JavaScript drive the full
+  REST surface. Only form-encoded/multipart posts are honored (a JSON
+  `_method` key stays payload data), and GET/HEAD can never be spoofed.
+- SECURITY.md and CONTRIBUTING.md: supported-versions + private
+  vulnerability-reporting policy, and the dev-setup / test-gate / PR
+  workflow for contributors.
+- CI hardening: a Python 3.13 leg joins 3.12 (the shipped classifier is
+  now actually tested), pip-audit and `npm audit --audit-level=high`
+  supply-chain gates, and a redis service container so the redis
+  integration lane runs on every push instead of never.
+- The `all` extra now includes `pwdlib[argon2]` — the one optional
+  dependency an everything-installed environment expects.
 - Static prerendering (SSG): `fastplace prerender` captures configured GET
   routes to static HTML under `public/build/prerender` (in-process ASGI
   capture with full lifecycle boot; `prerender-manifest.json` with sha256
@@ -43,6 +60,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   error, and child exits propagate to the wrapper with signal deaths
   normalized to the shell's 128+N convention. Scaffolded `.env` / config
   defaults and the WebAuthn origin fallback follow the new port.
+- `fastplace serve` protects the prerender tree: the frontend build's
+  `emptyOutDir` used to wipe `public/build/prerender` wholesale. Serve now
+  snapshots the manifest before `npm run build` and re-captures the tree
+  in-process afterwards whenever the app ships prerendered (pre-build
+  manifest) or configures routes explicitly — a recapture failure fails
+  serve loudly instead of deploying a half-wiped tree. A never-prerendered
+  app with no explicit routes is left untouched.
+- Scaffold polish: `make:model` snake-cases the module name (`BlogPost`
+  lands in `blog_post/`, not a mixed-case module), the scaffolded `.env`
+  template carries the full commented key blocks (queue retry knobs,
+  broadcasting, S3, mail, logging, prerender routes), the scaffold
+  `.gitignore` excludes every `.env.*` variant while keeping
+  `.env.example` trackable, and the framework `.env.example` documents
+  APP_HOST and the QUEUE_TRIES / QUEUE_TIMEOUT / QUEUE_BACKOFF / QUEUE_TTL
+  retry knobs.
+- Migration tooling: the reflected ANN-index exclusion (hnsw/ivfflat) that
+  the generated migration env applies is now one shared hook used by both
+  the env template and `fastplace migrate:check`, so autogenerate parity
+  cannot drift.
+
+### Fixed
+
+- Security — ORM: multi-hop eager loads (`with_("a.b")`) skipped global
+  scopes on intermediate entities, leaking soft-deleted and cross-tenant
+  rows. Loader criteria are now applied per visited entity on the dotted
+  path. Covered by a new invariant suite walking every SQL-emitting Model
+  and query path.
+- Security — tenancy: `first_or_create` / `update_or_create` / `upsert`
+  now stamp the company scope on every write path (including the
+  IntegrityError-race retry), and tenant queue jobs carry the tenant id
+  through `job()` deferral and `dispatch_many` batches — background work
+  can no longer run unscoped.
+- Security — starter app: the knowledge search API required no
+  authentication and no rate limit (spending real embedding calls) and
+  returned the raw embedding vector; routes now sit behind auth + a named
+  throttle and the vector is stripped from responses.
+- Security — HTTP: CSRF token comparison no longer raises a TypeError on
+  non-ASCII tokens (it compares on encoded bytes), 500 responses carry the
+  security headers and request id instead of bypassing them, and
+  production refuses an APP_KEY shorter than 32 bytes (offline-brute-
+  forceable across HS256 JWTs, signed URLs, and encrypted secrets).
+- AI: structured streaming serializes with `model_dump(mode="json")` so
+  datetime/UUID/Decimal/Enum fields stream instead of surfacing as a
+  stream failure; `Literal`/enum tool parameters derive provider-accepted
+  JSON schemas; the agent forwards its temperature to structured calls;
+  and a docstring `Args:` line like "Note: …" no longer hijacks parameter
+  parsing.
+- Bridge: the clicked submit button's name/value rides the submission
+  (matching native forms); a form with a file input submits native
+  multipart instead of corrupting the File into `{}`; `usePresence` drops
+  the old room's roster the moment the channel changes; and
+  `document.title` resets on bridge navigation so a page without `<Head>`
+  no longer shows the previous page's title.
+- Events: a broadcast-leg failure after commit no longer rolls back the
+  committed write — the leg is best-effort with the failure logged.
+- Cache: the sliding-window rate limiter behaves the same across drivers
+  (redis expiry is unconditional; the database store slides `expires_at`).
+- ORM: `read_session()` caches its session factory per engine instead of
+  building one on every read call.
+- Prerender: query/fragment routes are rejected up front (the output could
+  never be served), and a hung lifespan startup/shutdown surfaces as a
+  named timeout error instead of a message-less failure.
+- CLI: `migrate:rollback --steps 0` is rejected instead of silently
+  reverting one revision; a malformed E2E_PORT fails with a clean error;
+  `make:model` module names snake-case (see above).
+
+### Removed
+
+- The docs.yml GitHub Pages workflow: production docs (fastplace.dev) are
+  served from the separate fastplace-docs application repository, and a
+  stray docs push from this repo could clobber the live site.
 
 ## [0.3.1] - 2026-09-29
 

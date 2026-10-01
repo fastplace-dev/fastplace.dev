@@ -33,13 +33,24 @@ class TwoFactorService:
         return ValidationError(errors={field: [self.INVALID_CODE_MESSAGE]})
 
     async def verify_challenge(self, request: Any, *, code: str, recovery_code: str) -> bool | None:
-        """Fulfill a parked challenge. None = no challenge; False = wrong code."""
+        """Fulfill a parked challenge. None = no challenge in flight.
+
+        A failed attempt raises the frozen invalid-code 422 itself, keyed
+        by what was submitted: a recovery-code attempt fails under
+        recovery_code, everything else under code. Callers never need to
+        reach into the service's error internals.
+        """
         challenge_user = request.session.get(TWO_FACTOR_CHALLENGE_KEY)
         if challenge_user is None:
             return None
+
+        def invalid() -> ValidationError:
+            field = "recovery_code" if recovery_code and not code else "code"
+            return self._invalid(field)
+
         user = await self.users.find_by_id(challenge_user)
         if user is None or user.two_factor_secret is None or user.two_factor_confirmed_at is None:
-            return False
+            raise invalid()
 
         ok = False
         if code:
@@ -61,7 +72,7 @@ class TwoFactorService:
                 ok = True
 
         if not ok:
-            return False
+            raise invalid()
         remember = bool(request.session.get(TWO_FACTOR_REMEMBER_KEY))
         await guard().login_using_id(request, user.id, remember=remember)
         return True

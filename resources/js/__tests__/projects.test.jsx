@@ -14,6 +14,10 @@ afterEach(() => {
 
 const STATS = { projects: 2, open_tasks: 3, completed_tasks: 1 };
 
+// The write controls render for authenticated visitors only — reads stay
+// public. Guest gating has its own suite (pages/__tests__/Projects).
+const AUTH = { auth: { user: { id: 1, name: "Jane", email: "jane@example.com" } } };
+
 describe("Dashboard/Index", () => {
   it("renders the module stats from the dashboard service", () => {
     render(
@@ -75,6 +79,7 @@ describe("Projects/Index", () => {
         initialPage={{
           component: "Projects/Index",
           props: {
+            ...AUTH,
             projects: [
               { id: 7, name: "Alpha", description: "first", task_count: 2, open_task_count: 1 },
             ],
@@ -112,6 +117,7 @@ describe("Projects/Show", () => {
   const PAGE = {
     component: "Projects/Show",
     props: {
+      ...AUTH,
       project: {
         id: 3,
         name: "Framework build",
@@ -157,7 +163,7 @@ describe("native form posts carry the CSRF token", () => {
       <FastplaceProvider
         initialPage={{
           component: "Projects/Index",
-          props: { projects: [], csrf_token: "tok-abc123" },
+          props: { ...AUTH, projects: [], csrf_token: "tok-abc123" },
           url: "/projects",
         }}
       >
@@ -177,6 +183,7 @@ describe("native form posts carry the CSRF token", () => {
         initialPage={{
           component: "Projects/Show",
           props: {
+            ...AUTH,
             project: { id: 3, name: "P", description: "", tasks: [] },
             csrf_token: "tok-def456",
           },

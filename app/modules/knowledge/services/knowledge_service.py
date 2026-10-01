@@ -15,12 +15,15 @@ from fastplace.errors import ValidationError
 
 
 class KnowledgeItemResource(BaseModel):
-    """Serialization contract for KnowledgeItem records leaving the module."""
+    """Serialization contract for KnowledgeItem records leaving the module.
+
+    The stored embedding vector stays module-internal: search uses it in the
+    database, but no public payload (API response or bridge props) carries it.
+    """
 
     id: int
     title: str
     content: str
-    embedding: list[float] | None = None
 
 
 def item_resource(item: KnowledgeItem) -> KnowledgeItemResource:
@@ -28,7 +31,6 @@ def item_resource(item: KnowledgeItem) -> KnowledgeItemResource:
         id=item.id,
         title=item.title,
         content=item.content,
-        embedding=item.embedding,
     )
 
 

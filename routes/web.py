@@ -10,6 +10,7 @@ from app.http.controllers.dashboard_controller import DashboardController
 from app.http.controllers.home_controller import HomeController
 from app.http.controllers.knowledge_controller import KnowledgeController
 from app.http.controllers.projects_controller import ProjectsController
+from app.http.controllers.settings_api_controller import SettingsApiController
 from app.http.controllers.settings_appearance_controller import SettingsAppearanceController
 from app.http.controllers.settings_pages_controller import SettingsPagesController
 from fastplace.http import Router
@@ -44,8 +45,16 @@ router.post(
 router.get("/assistant", AssistantPageController, "index", name="assistant")
 router.get("/knowledge", KnowledgeController, "index", name="knowledge.index")
 
-# Account settings pages — authenticated GETs (the settings section renders
-# the app's authenticated shell); their form targets ship in later phases.
+# Account settings — authenticated GETs (the settings section renders the
+# app's authenticated shell) plus the write targets the shipped settings UI
+# posts to (spec §4.14).
+router.get(
+    "/settings",
+    SettingsApiController,
+    "index",
+    name="settings.index",
+    middleware=["auth"],
+)
 router.get(
     "/settings/appearance",
     SettingsAppearanceController,
@@ -66,6 +75,31 @@ router.get(
     "security",
     name="settings.security",
     middleware=["auth"],
+)
+router.patch(
+    "/settings/profile",
+    SettingsApiController,
+    "update_profile",
+    name="settings.profile.update",
+    # A changed email re-enters verification, so the section stays gated on it.
+    middleware=["auth", "verified", "throttle:6,60"],
+)
+router.put(
+    "/settings/password",
+    SettingsApiController,
+    "update_password",
+    name="settings.password.update",
+    middleware=["auth", "throttle:6,60"],
+)
+router.delete(
+    "/settings/profile",
+    SettingsApiController,
+    "destroy",
+    name="settings.profile.destroy",
+    # The posted password IS the confirmation — the DeleteUser dialog sends
+    # it. Throttled like the password form: it takes a password, so guesses
+    # get the same brake.
+    middleware=["auth", "throttle:6,60"],
 )
 
 # Guest auth pages — anonymous GET renders behind `guest`; the credential

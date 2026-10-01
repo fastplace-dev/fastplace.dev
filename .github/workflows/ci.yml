@@ -64,6 +64,13 @@ jobs:
     name: Backend matrix
     needs: boundary
     runs-on: ubuntu-latest
+    # pyproject ships 3.12 + 3.13 classifiers — the suite runs on both so
+    # every classifier is a verified claim, not a hope. fail-fast off: a
+    # 3.12-only failure must not mask whether 3.13 also breaks.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     services:
       postgres:
         # pgvector image: the PostgreSQL dialect suite exercises real
@@ -103,6 +110,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # The redis integration lane (real saq worker + real pub/sub fan-out)
+      # socket-probes localhost:6379 and skips when silent — presence of the
+      # broker is the only switch it reads, no env URL. Tests self-isolate
+      # on DB index 11 with per-test fftest- namespaces and never FLUSH.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       TEST_POSTGRES_URL: postgresql://fastplace:fastplace@localhost:5432/fastplace_test
       TEST_MYSQL_URL: mysql://fastplace:fastplace@localhost:3306/fastplace_test
@@ -112,7 +132,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install package (all database extras)
@@ -172,6 +192,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Supply-chain gate, npm half. --audit-level=high is the scoping:
+      # moderate advisories in dev-only tooling must not block the build;
+      # high and above anywhere in the installed tree must.
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high
+
       - name: Types (tsc)
         run: npm run types
 
@@ -186,6 +212,42 @@ jobs:
 
       - name: Docs site build
         run: npm run docs:build
+
+  supply-chain:
+    name: Supply chain (wheel + deps audit)
+    needs: boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # Audit what we SHIP, not what we develop with: the built wheel goes
+      # into a clean venv and pip-audit weighs that resolved tree. The tool
+      # install gets retries (an index hiccup is not a vulnerability);
+      # --strict then makes any collection failure fatal, and any known
+      # vulnerability in the shipped tree fails the gate.
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Install the built wheel into a clean venv
+        run: |
+          python -m venv /tmp/audit
+          /tmp/audit/bin/pip install --upgrade pip
+          /tmp/audit/bin/pip install dist/fastplace-*.whl
+
+      - name: Install pip-audit
+        run: python -m pip install --retries 5 pip-audit
+
+      - name: Audit the wheel's resolved dependencies
+        run: |
+          /tmp/audit/bin/pip freeze > /tmp/wheel-freeze.txt
+          pip-audit --strict --no-deps --requirement /tmp/wheel-freeze.txt
 
   e2e:
     name: Playwright E2E
@@ -223,12 +285,18 @@ jobs:
     name: Release smoke (wheel boots a fresh app)
     needs: [boundary, backend]
     runs-on: ubuntu-latest
+    # The wheel is built per supported python — a 3.13-only packaging or
+    # runtime break must surface here, before PyPI, on both classifiers.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
 
       # The release gate: everything below runs against the BUILT wheel, never
       # the checkout — the exact artifact `twine upload` would ship. A wheel the

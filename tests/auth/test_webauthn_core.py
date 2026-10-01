@@ -76,6 +76,41 @@ def test_from_config_without_app_url_falls_back_to_default_port(monkeypatch):
     assert config.origins == ["http://localhost:9000"]
 
 
+def test_from_config_with_explicit_rp_id_but_no_app_url_fails_loud(monkeypatch):
+    # A guessed http://{rp_id}:9000 origin would fail every browser ceremony
+    # for an HTTPS-on-443 deployment — refuse instead of guessing, matching
+    # the fail-fast posture of the enabled=false case.
+    import fastplace.config as config_module
+    from fastplace.errors import ConfigurationError
+
+    values = {
+        "AUTH_PASSKEYS": {"enabled": True, "rp_id": "example.com", "origins": None},
+        "APP_URL": "",
+        "APP_NAME": "Demo",
+    }
+    monkeypatch.setattr(config_module, "config", lambda key, default=None: values.get(key, default))
+    with pytest.raises(ConfigurationError, match="APP_URL"):
+        PasskeyConfig.from_config()
+
+
+def test_from_config_explicit_origins_survive_an_empty_app_url(monkeypatch):
+    import fastplace.config as config_module
+
+    values = {
+        "AUTH_PASSKEYS": {
+            "enabled": True,
+            "rp_id": "example.com",
+            "origins": ["https://example.com"],
+        },
+        "APP_URL": "",
+        "APP_NAME": "Demo",
+    }
+    monkeypatch.setattr(config_module, "config", lambda key, default=None: values.get(key, default))
+    config = PasskeyConfig.from_config()
+    assert config.rp_id == "example.com"
+    assert config.origins == ["https://example.com"]
+
+
 def test_env_overrides_block_values(monkeypatch):
     """Env vars win over the AUTH_PASSKEYS block — the config/auth.py rule."""
     import fastplace.config as config_module
