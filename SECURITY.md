@@ -8,10 +8,10 @@ we will fix it.
 
 Fastplace tracks a single supported line during the 0.x beta:
 
-| Version | Supported |
-| ------- | --------- |
-| latest 0.x minor | Yes — security fixes land in the next patch release |
-| anything older | No — upgrade first, then re-report if it still reproduces |
+| Version          | Supported                                                 |
+| ---------------- | --------------------------------------------------------- |
+| latest 0.x minor | Yes — security fixes land in the next patch release       |
+| anything older   | No — upgrade first, then re-report if it still reproduces |
 
 ## Reporting a vulnerability
 

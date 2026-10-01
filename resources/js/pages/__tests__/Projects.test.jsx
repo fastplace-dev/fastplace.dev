@@ -41,10 +41,7 @@ describe("Projects index", () => {
     renderPage("Projects/Index", "/projects", { projects: [] });
 
     expect(screen.queryByRole("button", { name: "Add project" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /log in to add/i })).toHaveAttribute(
-      "href",
-      "/login",
-    );
+    expect(screen.getByRole("link", { name: /log in to add/i })).toHaveAttribute("href", "/login");
   });
 });
 
@@ -68,10 +65,7 @@ describe("Projects show", () => {
 
     expect(screen.queryByRole("button", { name: "Add task" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Mark done" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /log in to add/i })).toHaveAttribute(
-      "href",
-      "/login",
-    );
+    expect(screen.getByRole("link", { name: /log in to add/i })).toHaveAttribute("href", "/login");
     // The read surface stays: the task itself is still listed.
     expect(screen.getByText("a task")).toBeInTheDocument();
   });

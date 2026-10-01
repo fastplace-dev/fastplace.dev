@@ -42,9 +42,6 @@ describe("Assistant chat", () => {
     renderChat();
 
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /log in to chat/i })).toHaveAttribute(
-      "href",
-      "/login",
-    );
+    expect(screen.getByRole("link", { name: /log in to chat/i })).toHaveAttribute("href", "/login");
   });
 });
