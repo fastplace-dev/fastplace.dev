@@ -322,4 +322,39 @@ describe("usePresence", () => {
     expect(screen.queryByText("7:1")).not.toBeInTheDocument();
     expect(screen.getByText("9:1")).toBeInTheDocument();
   });
+
+  it("drops the roster the moment the channel changes", () => {
+    const { rerender } = render(<PresenceProbe name="orders.9" />);
+    const first = MockWebSocket.last;
+    act(() => first.serverOpen());
+    act(() => {
+      first.serverMessage({
+        type: "subscribed",
+        channel: "presence.orders.9",
+        members: [{ user_id: 7, metadata: null, connections: 1 }],
+      });
+    });
+    expect(screen.getByText("7:1")).toBeInTheDocument();
+
+    rerender(<PresenceProbe name="orders.10" />);
+
+    // Room B has not even acked yet — the roster must already be empty,
+    // never room A's members (a denied subscribe would show them forever).
+    expect(screen.queryByText("7:1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("members")).toBeEmptyDOMElement();
+
+    // The fresh socket for room B seeds its own roster when it acks.
+    const second = MockWebSocket.last;
+    expect(second).not.toBe(first);
+    act(() => second.serverOpen());
+    act(() => {
+      second.serverMessage({
+        type: "subscribed",
+        channel: "presence.orders.10",
+        members: [{ user_id: 12, metadata: null, connections: 3 }],
+      });
+    });
+    expect(screen.getByText("12:3")).toBeInTheDocument();
+    expect(screen.queryByText("7:1")).not.toBeInTheDocument();
+  });
 });

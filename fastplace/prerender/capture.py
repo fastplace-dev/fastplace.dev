@@ -30,6 +30,12 @@ _BASE_URL = "http://prerender.internal"
 CAPTURE_MARKER = "x-fastplace-prerender-capture"
 _HEADERS = {"accept": "text/html", CAPTURE_MARKER: "1"}
 
+#: Budget for the lifespan startup/shutdown handshake. A fixed constant,
+#: deliberately separate from the per-route ``timeout`` the CLI threads —
+#: slow boots (model loads, migrations) need a faster startup, not a
+#: longer route budget.
+LIFESPAN_HANDSHAKE_TIMEOUT = 30.0
+
 
 @dataclass(frozen=True)
 class CapturedPage:
@@ -121,7 +127,7 @@ async def _lifespan(app: Any) -> AsyncIterator[None]:
     that never answers (or dies mid-handshake) fails via timeout instead of
     hanging the CLI forever.
     """
-    handshake_timeout = 30.0
+    handshake_timeout = LIFESPAN_HANDSHAKE_TIMEOUT
 
     scope: dict[str, Any] = {
         "type": "lifespan",
@@ -142,9 +148,24 @@ async def _lifespan(app: Any) -> AsyncIterator[None]:
         task.result()
         raise RuntimeError("app exited during lifespan handshake")
 
+    async def _handshake(phase: str) -> dict[str, Any]:
+        """One lifespan message under the handshake budget, or a named error.
+
+        A bare ``TimeoutError`` stringifies to ``""`` — the CLI would print
+        a message-less "prerender failed:" line and the developer could
+        not tell a slow boot from a hung route, or find the budget.
+        """
+        try:
+            return await asyncio.wait_for(_receive(), timeout=handshake_timeout)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"app lifespan {phase} timed out after {handshake_timeout}s — a fixed "
+                "startup/shutdown budget, separate from --timeout"
+            ) from exc
+
     async def _shutdown() -> None:
         await to_app.put({"type": "lifespan.shutdown"})
-        message = await asyncio.wait_for(_receive(), timeout=handshake_timeout)
+        message = await _handshake("shutdown")
         if message["type"] == "lifespan.shutdown.failed":
             raise RuntimeError(
                 "app lifespan shutdown failed: " + _failure_summary(message.get("message", ""))
@@ -153,7 +174,7 @@ async def _lifespan(app: Any) -> AsyncIterator[None]:
 
     try:
         await to_app.put({"type": "lifespan.startup"})
-        message = await asyncio.wait_for(_receive(), timeout=handshake_timeout)
+        message = await _handshake("startup")
         if message["type"] == "lifespan.startup.failed":
             raise RuntimeError(
                 "app lifespan startup failed: " + _failure_summary(message.get("message", ""))

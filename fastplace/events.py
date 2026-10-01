@@ -204,7 +204,7 @@ async def dispatch(event: DomainEvent, *, to_queue: bool | None = None) -> None:
         if scope is not None:
             scope.deferred_broadcasts.append((channel, dict(event.payload)))
         else:
-            await _broadcast_leg(channel, event.payload)
+            await _broadcast_leg_best_effort(channel, event.payload)
 
 
 async def _broadcast_leg(channel: str | None, payload: dict[str, Any]) -> None:
@@ -214,6 +214,16 @@ async def _broadcast_leg(channel: str | None, payload: dict[str, Any]) -> None:
     from fastplace.broadcasting import broadcast
 
     await broadcast(channel, payload)
+
+
+async def _broadcast_leg_best_effort(channel: str | None, payload: dict[str, Any]) -> None:
+    """Publish, or log and give up — the write that caused the broadcast is
+    already durable, so a broker outage must not surface as a client-visible
+    error (the queue leg's auto path follows the same rule)."""
+    try:
+        await _broadcast_leg(channel, payload)
+    except Exception:
+        logger.exception("broadcast on channel %r lost: broker dispatch failed", channel)
 
 
 async def _invoke(handler: Listener, event: DomainEvent) -> None:
@@ -250,13 +260,10 @@ async def flush_deferred_domain_events(state: Any) -> None:
         await _enqueue(name, payload, to_queue)
     broadcasts, state.deferred_broadcasts = state.deferred_broadcasts, []
     for channel, payload in broadcasts:
-        # The write is already durable — a broker outage at flush time is
-        # logged, never raised into the caller of a committed transaction
-        # (the queue leg's auto path follows the same rule).
-        try:
-            await _broadcast_leg(channel, payload)
-        except Exception:
-            logger.exception("buffered broadcast on channel %r lost", channel)
+        # Same outage posture as the inline leg above — the write is already
+        # durable, so a broker failure here is logged, never raised into the
+        # caller of a committed transaction.
+        await _broadcast_leg_best_effort(channel, payload)
 
 
 def discard_deferred_domain_events(state: Any) -> None:

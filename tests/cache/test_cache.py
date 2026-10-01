@@ -171,6 +171,22 @@ class TestMemoryIncrement:
         assert await store.get("hits") is None  # expired row reads as missing
         assert await store.increment("hits") == 1
 
+    async def test_increment_re_arms_the_window_on_every_hit(self):
+        # The rate limiter documents a "sliding-decay attempt counter over
+        # any cache store" — each hit must push the deadline back out to the
+        # full horizon, not leave the first hit's window to expire mid-run.
+        import time
+
+        store = MemoryCache()
+        await store.increment("hits", ttl=60)
+        # Shrink the entry to ~5s left (still live) — a hit must re-arm it.
+        store._entries["hits"] = store._entries["hits"].__class__(
+            store._entries["hits"].value, time.monotonic() + 5
+        )
+        assert await store.increment("hits", ttl=60) == 2
+        remaining = await store.ttl("hits")
+        assert remaining is not None and remaining > 30  # re-armed, not the dying 5
+
 
 # ---------------------------------------------------------------------------
 # RedisCache — injected fake client only, never a live server
@@ -323,16 +339,19 @@ def test_redis_lazy_client_construction_is_offline_safe():
     assert store._client is None  # not even built yet
 
 
-async def test_redis_increment_sets_expiry_once():
-    # Counters stay plain int text (INCR-compatible) and only the first INCR
-    # arms the TTL — the decay window is fixed, not slid by every hit.
+async def test_redis_increment_re_arms_the_window_on_every_hit():
+    # Counters stay plain int text (INCR-compatible) and every hit re-arms
+    # the TTL — the sliding-decay contract the rate limiter documents
+    # ("sliding-decay attempt counter over any cache store"), matching the
+    # memory driver instead of a first-hit fixed window.
     client = FakeRedis()
     store = RedisCache(client=client)
     assert await store.increment("hits", ttl=60) == 1
     assert await store.increment("hits", ttl=60) == 2
     assert await store.increment("hits", ttl=60) == 3
     assert client.store["fastplace:cache:hits"] == "3"
-    assert client.expire_calls == 1
+    assert client.expire_calls == 3  # each hit slides the window
+    assert client.deadline["fastplace:cache:hits"] == 60
 
 
 async def test_redis_ttl_reports_remaining():

@@ -321,7 +321,7 @@ def ai_embed(
 
 #: Known output dimensions for shipped embedding models. Anything outside
 #: this table cannot be statically checked — the live check is `ai:embed
-#: --verify`, which embeds and measures.
+#: --check`, which embeds and measures.
 _EMBEDDING_DIMS: dict[str, int] = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
@@ -434,7 +434,7 @@ def _check_dimensions(root) -> Check:  # noqa: ANN001 — Path, imported lazily
             "dimensions",
             "warn",
             f"unknown output dimensions for {model} — verify VectorField sizes",
-            "check the provider docs, or run fastplace ai:embed --verify",
+            "check the provider docs, or run fastplace ai:embed --check",
         )
     mismatched = [
         f"{name}({dims})" for name, dims in declared if dims is not None and dims != expected

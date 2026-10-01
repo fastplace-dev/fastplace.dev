@@ -33,7 +33,9 @@ function renderChat({ messages = [], isStreaming = false, endpoint = "/ai/assist
     <FastplaceProvider
       initialPage={{
         component: "Assistant/Chat",
-        props: { endpoint },
+        // The composer renders for authenticated visitors only; the guest
+        // login prompt has its own suite (pages/__tests__/AssistantChat).
+        props: { endpoint, auth: { user: { id: 1, name: "Jane", email: "jane@example.com" } } },
         url: "/assistant",
       }}
     >

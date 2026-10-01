@@ -1,5 +1,7 @@
 """Agent.stream_response — SSE token/tool/done events over ASGI (T5.3)."""
 
+import datetime as dt
+import uuid
 from typing import Any
 
 import pytest
@@ -169,6 +171,39 @@ async def test_structured_stream_appends_data_to_done():
     # parity with Agent.run: the structured call sees the drafted answer as
     # the closing assistant turn, not a transcript ending on a tool result
     assert captured["messages"][-1] == {"role": "assistant", "content": "draft"}
+
+
+class _Scheduled(BaseModel):
+    when: dt.datetime
+    run_id: uuid.UUID
+
+
+async def test_structured_stream_serializes_datetime_and_uuid_done_data():
+    """done.data must be JSON-safe — datetime/UUID fields must not turn a
+    successful structured call into a terminal ``error`` event."""
+    seam = _ScriptedStreams(_text_round("draft"))
+    agent_module._completion_fn = seam
+
+    async def fake_structured(**kwargs: Any) -> _Scheduled:
+        return _Scheduled(
+            when=dt.datetime(2026, 1, 1, 12, 30),
+            run_id=uuid.UUID("12345678-1234-5678-1234-567812345678"),
+        )
+
+    agent_module._structured_fn = fake_structured
+
+    events = await _drain(Agent(model="m", response_model=_Scheduled), "q")
+
+    assert events[-1] == (
+        "done",
+        {
+            "content": "draft",
+            "data": {
+                "when": "2026-01-01T12:30:00",
+                "run_id": "12345678-1234-5678-1234-567812345678",
+            },
+        },
+    )
 
 
 async def test_provider_failure_emits_an_error_event_not_an_exception(monkeypatch):

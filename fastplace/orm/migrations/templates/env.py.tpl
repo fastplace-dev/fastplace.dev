@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastplace.config import config, load_env  # noqa: E402
+from fastplace.orm.migrations.include import include_object  # noqa: E402
 from fastplace.orm.manager import normalize_database_url  # noqa: E402
 from fastplace.orm import Model  # noqa: E402
 from fastplace.orm.registry import import_all_models  # noqa: E402
@@ -45,27 +46,9 @@ database_url = normalize_database_url(
 )
 alembic_config.set_main_option("sqlalchemy.url", database_url)
 
-# Framework bookkeeping tables live beside the schema but are not part of it —
-# autogenerate must neither drop nor recreate them.
-_FRAMEWORK_TABLES = frozenset({"fastplace_migrations", "alembic_version"})
-
-
-def _include_object(obj, name, type_, reflected, compare_to):
-    if type_ == "table" and name in _FRAMEWORK_TABLES:
-        return False
-    # Reflected ANN indexes (pgvector HNSW/IVF) with no metadata counterpart
-    # must not be dropped: Alembic cannot order/compare their opclass and
-    # build options, so autogenerate reads them as unknown and would emit a
-    # destructive drop on every diff. Indexes the metadata DOES declare diff
-    # normally (compare_to is not None).
-    if type_ == "index" and reflected and compare_to is None:
-        try:
-            using = obj.dialect_options["postgresql"].get("using")
-        except Exception:
-            using = None
-        if using in ("hnsw", "ivfflat"):
-            return False
-    return True
+# Framework bookkeeping tables and reflected ANN indexes are excluded by the
+# one shared hook (fastplace.orm.migrations.include) — the same policy
+# `fastplace migrate:check` diffs with, so the two can never disagree.
 
 
 def _render_item(type_, obj, autogen_context):
@@ -106,7 +89,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        include_object=_include_object,
+        include_object=include_object,
         render_item=_render_item,
         # SQLite needs batch mode for ALTER TABLE operations.
         render_as_batch=url.startswith("sqlite"),
@@ -120,7 +103,7 @@ def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        include_object=_include_object,
+        include_object=include_object,
         render_item=_render_item,
         render_as_batch=connection.dialect.name == "sqlite",
     )

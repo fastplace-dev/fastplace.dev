@@ -60,6 +60,33 @@ class TestDatabaseCache:
         remaining = await cache.ttl("hits")
         assert remaining is not None and 0 < remaining <= 60
 
+    async def test_increment_re_arms_the_window_on_every_hit(self):
+        # Sliding-decay parity with the memory/redis drivers: a hit on a
+        # still-live counter pushes its deadline back out to now + ttl
+        # instead of letting the first hit's window expire mid-sequence.
+        import time as time_module
+
+        from sqlalchemy import update
+
+        from fastplace.cache import _cache_table
+        from fastplace.db import db
+
+        cache = DatabaseCache()
+        await cache.increment("hits", ttl=60)
+
+        # Shrink the row's deadline to ~10s left (still live).
+        engine = db.manager.engine("default")
+        async with engine.begin() as conn:
+            await conn.execute(
+                update(_cache_table)
+                .where(_cache_table.c.key == cache._key("hits"))
+                .values(expires_at=time_module.time() + 10)
+            )
+
+        assert await cache.increment("hits", ttl=60) == 2
+        remaining = await cache.ttl("hits")
+        assert remaining is not None and remaining > 30  # re-armed, not the dying 10
+
     async def test_increment_restarts_after_expiry(self):
         # An expired row reads as missing, not as a stale integer — the next
         # increment restarts at 1 (Review Focus #5, at the row level).

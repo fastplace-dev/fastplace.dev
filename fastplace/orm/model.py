@@ -282,7 +282,7 @@ class Model(AsyncAttrs, DeclarativeBase):
             return found
 
         async def action(session: Any) -> Any:
-            instance = cls(**cls._mass_assignable(values))
+            instance = cls._instantiate(values)
             await fire(instance, "creating")
             try:
                 # The add happens INSIDE the savepoint: begin_nested() takes
@@ -375,8 +375,31 @@ class Model(AsyncAttrs, DeclarativeBase):
         return filtered
 
     @classmethod
+    def _prepare_write_values(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """The single seam every write path routes through before construction.
+
+        The base layer is the mass-assignment filter alone; subclasses with
+        structural columns the payload must not carry (a tenant id, say)
+        override this to stamp them from their own ambient context AFTER the
+        guard runs — an explicit payload key still hits the guard, a stamp is
+        a framework write, not mass assignment.
+        """
+        return cls._mass_assignable(values)
+
+    @classmethod
+    def _instantiate(cls, values: dict[str, Any]) -> Any:
+        """Construct an instance from a write payload, stamps included.
+
+        :meth:`create`, :meth:`_first_or_write`, and :meth:`upsert` all build
+        their instances here so an overriding :meth:`_prepare_write_values`
+        covers every write entry point — no path can construct around the
+        stamp.
+        """
+        return cls(**cls._prepare_write_values(values))
+
+    @classmethod
     async def create(cls, **values: Any) -> Any:
-        instance = cls(**cls._mass_assignable(values))
+        instance = cls._instantiate(values)
         await instance.save()
         return instance
 
@@ -411,7 +434,9 @@ class Model(AsyncAttrs, DeclarativeBase):
         the match/write runs on the physical key — global scopes (soft
         delete, tenancy) are query-side, so they neither hide a row from
         ``upsert`` nor constrain what it writes. Partition multi-tenant data
-        by putting the tenant column in ``unique_by``; never rely on a scope
+        by putting the tenant column in ``unique_by`` (or deriving from a
+        base that forces it — the ``_prepare_write_values`` hook stamps the
+        column into every row this method prepares); never rely on a scope
         to scope a batch write.
         """
         if not rows:
@@ -426,10 +451,13 @@ class Model(AsyncAttrs, DeclarativeBase):
         async def action(session: Any) -> int:
             written = 0
             for raw_row in rows:
+                # Prepared (guard-filtered, framework stamps applied) BEFORE
+                # the unique-key completeness check: a stamp can supply a key
+                # the raw payload omits — a scoped model's tenant column, say.
+                row = cls._prepare_write_values(raw_row)
                 for key in unique_keys:
-                    if key not in raw_row:
+                    if key not in row:
                         raise ValueError(f"upsert row {raw_row!r} is missing unique key {key!r}")
-                row = cls._mass_assignable(raw_row)
                 criteria = [getattr(cls, key) == row[key] for key in unique_keys]
                 payload_keys = (
                     list(update)

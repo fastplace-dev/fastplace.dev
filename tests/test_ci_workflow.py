@@ -44,9 +44,22 @@ def test_boundary_job_gates_the_matrix_and_runs_first(ci):
 
 def test_backend_job_services_every_dialect_database(ci):
     services = ci["jobs"]["backend"]["services"]
-    assert set(services) == {"postgres", "mysql", "mongo"}
+    assert set(services) == {"postgres", "mysql", "mongo", "redis"}
     # Real pgvector image — the PostgreSQL dialect suite asserts VECTOR columns.
     assert services["postgres"]["image"].startswith("pgvector/pgvector:")
+
+
+def test_backend_job_runs_the_redis_integration_lane(ci):
+    """#31: the redis lane (queue + broadcasting socket-probe tests) skipped
+    silently in CI for its whole life — no broker on the job, so the only
+    tests that exercise the real saq worker and real pub/sub fan-out never
+    executed anywhere. The lane hardcodes ``localhost:6379`` (socket probe,
+    DB index 11, ``fftest-`` namespaces) — a service container on that port
+    is all it takes; no env URL is read."""
+    redis = ci["jobs"]["backend"]["services"]["redis"]
+    assert redis["image"].startswith("redis:")
+    assert "6379:6379" in redis["ports"]
+    assert "redis-cli ping" in redis["options"]
 
 
 def test_backend_job_exports_the_env_gated_suite_urls(ci):
@@ -111,6 +124,51 @@ def test_e2e_job_runs_playwright_after_tests(ci):
     jobs = ci["jobs"]
     assert set(jobs["e2e"]["needs"]) == {"backend", "frontend"}
     assert "npx playwright test" in _run_steps(ci, "e2e")
+
+
+def test_backend_and_release_smoke_matrix_both_supported_pythons(ci):
+    """G1: pyproject ships 3.12 and 3.13 classifiers, but CI only ever ran
+    3.12 — an untested classifier is a compatibility claim nobody verifies.
+    Both python versions exercise the full backend suite and the wheel
+    boot path (the two places a 3.13 break would ship from)."""
+    import tomllib
+
+    pyproject = tomllib.loads((WORKFLOW.parents[2] / "pyproject.toml").read_text())
+    classifiers = pyproject["project"]["classifiers"]
+    supported = [
+        c.rsplit(":: ", 1)[-1]
+        for c in classifiers
+        if c.startswith("Programming Language :: Python :: 3.")
+    ]
+    for job in ("backend", "release-smoke"):
+        matrix = ci["jobs"][job]["strategy"]["matrix"]
+        assert matrix["python-version"] == supported, job
+
+
+def test_supply_chain_job_audits_the_built_wheel(ci):
+    """G2: the release artifact's resolved dependency tree is audited for
+    known vulnerabilities before anything ships. The audit runs against a
+    clean venv that installed the BUILT wheel — what a user installs, not
+    the dev environment (whose tooling noise is not what we ship)."""
+    jobs = ci["jobs"]
+    assert "supply-chain" in jobs
+    assert "boundary" in jobs["supply-chain"]["needs"]
+    script = _run_steps(ci, "supply-chain")
+    for needle in (
+        "python -m build",
+        "pip-audit",
+        "--strict",
+        "dist/fastplace-*.whl",
+    ):
+        assert needle in script, needle
+
+
+def test_frontend_job_audits_the_npm_tree(ci):
+    """G2: npm side of the supply-chain gate. ``--audit-level=high`` is the
+    scoping: moderate advisories in dev-only tooling must not block, high
+    and above anywhere in the installed tree must."""
+    script = _run_steps(ci, "frontend")
+    assert "npm audit --audit-level=high" in script
 
 
 def test_release_smoke_job_boots_a_scaffold_from_the_built_wheel(ci):

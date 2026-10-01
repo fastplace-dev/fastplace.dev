@@ -64,6 +64,10 @@ function subscribe(listener: Listener): () => void {
 }
 
 function setPage(page: Page, opts: { history?: HistoryMode } = {}): void {
+  // Swapping the page component resets the title to the browser default
+  // before the next render, so a page without <Head> never inherits the
+  // previous page's title. (Full fix: carry the title in the bridge payload.)
+  const componentSwapped = currentPage?.component !== page.component;
   currentPage = page;
   // Every bridge payload carries the session CSRF token (render() embeds
   // it for the no-JS hidden inputs) — keep the meta tag in step with it.
@@ -80,6 +84,7 @@ function setPage(page: Page, opts: { history?: HistoryMode } = {}): void {
       }
     }
   }
+  if (componentSwapped && typeof document !== "undefined") document.title = "";
   emit();
 }
 
@@ -723,12 +728,46 @@ function isFieldErrorMap(value: unknown): value is FormErrors {
   );
 }
 
+/** True when the value is a File or an array carrying one (repeated key). */
+function carriesFile(value: unknown): boolean {
+  if (value instanceof File) return true;
+  return Array.isArray(value) && value.some((item) => item instanceof File);
+}
+
+/**
+ * JSON.stringify corrupts a File to {} — any body carrying one must travel
+ * as native multipart instead. Returns the FormData to send, or null when
+ * the data is file-free (JSON is fine then).
+ */
+function toMultipartBody(data: unknown): FormData | null {
+  if (data instanceof FormData) return data;
+  if (data == null || typeof data !== "object") return null;
+  const hasFile = Object.values(data).some(carriesFile);
+  if (!hasFile) return null;
+  const formData = new FormData();
+  for (const [key, value] of Object.entries(data)) {
+    if (value == null) continue; // JSON.stringify drops these too
+    if (Array.isArray(value)) {
+      for (const item of value) formData.append(key, item as string | File);
+    } else if (value instanceof Blob) {
+      formData.append(key, value);
+    } else {
+      formData.append(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+    }
+  }
+  return formData;
+}
+
 async function submitBridge(
   url: string,
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   data: unknown,
   headers?: Record<string, string>,
 ): Promise<SubmitOutcome> {
+  // A FormData body travels as native multipart (uploads intact); anything
+  // else goes as JSON. The multipart Content-Type is left to the browser —
+  // it carries the boundary only it knows.
+  const multipart = toMultipartBody(data);
   const token = csrfToken();
   let response: Response;
   try {
@@ -738,10 +777,10 @@ async function submitBridge(
         [BRIDGE_HEADER]: "true",
         Accept: "application/json",
         ...(token ? { "X-Fastplace-CSRF-Token": token } : {}),
-        "Content-Type": "application/json",
+        ...(multipart ? {} : { "Content-Type": "application/json" }),
         ...(headers ?? {}),
       },
-      body: JSON.stringify(data),
+      body: multipart ?? JSON.stringify(data),
     });
   } catch {
     // Network-level failure — nothing to map onto fields.
@@ -824,9 +863,12 @@ export interface FormProps extends Omit<
 
 /**
  * A native `<form>` whose submit is intercepted for the bridge. Without JS
- * it still posts to `action` — the no-JS fallback keeps working. The DOM
- * owns the field values (uncontrolled); on submit the entries are collected
- * from the live form element and sent as JSON.
+ * it still posts to `action` — with the intended verb carried as a hidden
+ * `_method` field for put/patch/delete (the backend's method-override layer
+ * translates it before routing). The DOM owns the field values
+ * (uncontrolled); on submit the entries are collected from the live form
+ * element and sent as JSON — or as native multipart when the form carries
+ * a file input, so uploads survive the bridge too.
  */
 export function Form({
   action,
@@ -843,6 +885,21 @@ export function Form({
   const [errors, setErrors] = React.useState<FormErrors>({});
   const [failure, setFailure] = React.useState<{ message?: string; status?: number }>({});
   const formRef = React.useRef<HTMLFormElement | null>(null);
+  // Selects have no `defaultValue` IDL to restore from — the initial value
+  // lives in React props (client render) or the `selected` attribute (SSR
+  // markup). Capture what the DOM actually shows once, right after mount.
+  const initialSelectValues = React.useRef<Map<HTMLSelectElement, string[]> | null>(null);
+  React.useLayoutEffect(() => {
+    if (initialSelectValues.current) return;
+    const snapshot = new Map<HTMLSelectElement, string[]>();
+    for (const select of formRef.current?.querySelectorAll("select") ?? []) {
+      snapshot.set(
+        select,
+        Array.from(select.selectedOptions).map((option) => option.value),
+      );
+    }
+    initialSelectValues.current = snapshot;
+  }, []);
 
   const clearErrors = React.useCallback(() => {
     setErrors({});
@@ -870,7 +927,25 @@ export function Form({
         } else if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) {
           control.value = control.defaultValue;
         } else if (control instanceof HTMLSelectElement) {
-          control.selectedIndex = 0;
+          const remembered = initialSelectValues.current?.get(control);
+          if (remembered) {
+            // Restore the values the page shipped with — even when no
+            // option carries a `selected` attribute (client-rendered).
+            for (const option of Array.from(control.options)) {
+              option.selected = remembered.includes(option.value);
+            }
+          } else {
+            // Late-mounted select (missed the snapshot): fall back to the
+            // default-selected option, then the spec default (option 0).
+            let hasDefault = false;
+            for (const option of Array.from(control.options)) {
+              option.selected = option.defaultSelected;
+              if (option.defaultSelected) hasDefault = true;
+            }
+            if (!hasDefault && !control.multiple && control.options.length > 0) {
+              control.selectedIndex = 0;
+            }
+          }
         }
       }
     }
@@ -879,19 +954,36 @@ export function Form({
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = event.currentTarget;
-    const collected = serializeForm(new FormData(form));
-    // The auto-injected token rides the X-Fastplace-CSRF-Token header; it
-    // stays out of the JSON body (native no-JS posts still carry it — the
-    // input remains in the DOM).
-    if (form.querySelector('input[data-fastplace-csrf][name="_token"]')) {
-      delete collected._token;
+    // The clicked submit button contributes its name/value entry — matching
+    // what a native no-JS submission sends.
+    const submitter = (event.nativeEvent as SubmitEvent).submitter;
+    const formData = new FormData(form, submitter instanceof HTMLElement ? submitter : undefined);
+    const hasAutoToken = form.querySelector('input[data-fastplace-csrf][name="_token"]') !== null;
+    const hasAutoMethod =
+      form.querySelector('input[data-fastplace-method][name="_method"]') !== null;
+    // A file input makes JSON.stringify corrupt the File into {} — submit
+    // native multipart instead, exactly like the no-JS post would.
+    const multipart = Array.from(formData.values()).some((value) => value instanceof File);
+    // The auto token rides the X-Fastplace-CSRF-Token header and the real
+    // verb rides the method line, so the no-JS-only fields stay out of the
+    // bridge body (native posts still carry them — the inputs remain).
+    let body: FormData | Record<string, unknown>;
+    if (multipart) {
+      if (hasAutoToken) formData.delete("_token");
+      if (hasAutoMethod) formData.delete("_method");
+      body = formData;
+    } else {
+      const collected = serializeForm(formData);
+      if (hasAutoToken) delete collected._token;
+      if (hasAutoMethod) delete collected._method;
+      body = collected;
     }
     setProcessing(true);
     try {
       const outcome = await submitBridge(
         action,
         method.toUpperCase() as "POST" | "PUT" | "PATCH" | "DELETE",
-        collected,
+        body,
         headers,
       );
       if (outcome.kind === "errored") {
@@ -928,8 +1020,15 @@ export function Form({
         // Without JavaScript the browser posts this form natively; the
         // session token must ride along as a field. First child, so a
         // developer-rendered duplicate resolves to it (first value wins
-        // server-side). Excluded from the bridge JSON body at submit time.
+        // server-side). Excluded from the bridge body at submit time.
         <input type="hidden" name="_token" value={noJsToken} data-fastplace-csrf />
+      ) : null}
+      {method !== "post" ? (
+        // HTML knows no put/patch/delete — the no-JS post carries the verb
+        // here for the backend's method-override layer to translate. The
+        // bridge request itself uses the real verb, so this stays out of
+        // its body.
+        <input type="hidden" name="_method" value={method} data-fastplace-method />
       ) : null}
       {typeof children === "function"
         ? (children as (state: FormRenderState) => React.ReactNode)({

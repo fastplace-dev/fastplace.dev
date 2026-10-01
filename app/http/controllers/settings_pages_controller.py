@@ -2,9 +2,9 @@
 
 GET-only page routes behind the ``auth`` route middleware: the settings
 section nav links to both pages and each renders fully client-side,
-reading optional props with graceful degradation. The account backend
-itself (profile updates, password changes, passkeys, two-factor) stays
-in the later auth phases — those form targets are unrouted until then.
+reading optional props with graceful degradation. The section's write
+targets (profile, password, account deletion) live in
+SettingsApiController over the accounts module's SettingsService.
 """
 
 from __future__ import annotations

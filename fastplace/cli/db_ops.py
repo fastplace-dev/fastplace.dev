@@ -18,6 +18,10 @@ import typer
 
 from fastplace.config import config, load_env
 
+# The env.py/migrate:check schema-exclusion policy lives in one shared hook
+# so the two diff paths cannot drift (fastplace/orm/migrations/include.py).
+from fastplace.orm.migrations.include import include_object as _include_object
+
 if TYPE_CHECKING:  # annotations stay lazy; runtime imports remain function-local
     from fastplace.cli._doctor import Check
 
@@ -106,19 +110,6 @@ def _describe_op(op: tuple) -> tuple[str, str, str]:
     if kind.startswith("modify_"):
         return kind.replace("_", " "), str(op[2]), f"{op[3]}: {op[5]} → {op[6]}"
     return kind, "-", "-"
-
-
-#: Framework bookkeeping tables that live beside the schema but are not part
-#: of it — the same set the scaffolded Alembic env excludes (env.py.tpl), so
-#: migrate:check reports exactly the drift `make:migration` would generate.
-#: (alembic_version is also auto-excluded by Alembic itself; kept for parity.)
-_FRAMEWORK_TABLES = frozenset({"fastplace_migrations", "alembic_version"})
-
-
-def _include_object(obj, name, type_, reflected, compare_to):  # noqa: ARG001 — alembic hook
-    if type_ == "table" and name in _FRAMEWORK_TABLES:
-        return False
-    return True
 
 
 @db_ops_app.command("migrate:check")

@@ -78,26 +78,31 @@ async def test_dashboard_bridge_page_gets_the_same_props(sample_client, embeddin
 
 
 async def test_knowledge_ingest_via_api(sample_client, embedding_seam):
+    # The knowledge API is authenticated (audit T6) — log in first.
+    await _login_verified_user(sample_client)
     resp = await sample_client.post(
         "/api/v1/knowledge", json={"title": "note", "content": "body text"}
     )
     assert resp.status_code == 201
-    assert resp.json()["embedding"] == [0.001] * 1536
+    assert "embedding" not in resp.json()  # the vector never leaves the module
 
 
 async def test_knowledge_search_rejects_runaway_queries(sample_client):
     """An unbounded `q` would embed megabytes — capped at the edge (422)."""
+    await _login_verified_user(sample_client)
     resp = await sample_client.get("/api/v1/knowledge/search", params={"q": "x" * 501})
     assert resp.status_code == 422
     assert "q" in resp.json()["errors"]
 
 
 async def test_knowledge_ingest_requires_content(sample_client):
+    await _login_verified_user(sample_client)
     resp = await sample_client.post("/api/v1/knowledge", json={"title": "", "content": ""})
     assert resp.status_code == 422
 
 
 async def test_knowledge_search_filters_in_the_database(sample_client, embedding_seam):
+    await _login_verified_user(sample_client)
     await sample_client.post(
         "/api/v1/knowledge", json={"title": "pgvector", "content": "postgres vectors"}
     )

@@ -202,3 +202,28 @@ def test_dimension_match_passes(tmp_path, monkeypatch, park_project_modules):  #
     assert result.exit_code == 0, _out(result)
     out = _out(result)
     assert "FAIL" not in out
+
+
+def test_unknown_model_remedy_names_the_real_flag(tmp_path, monkeypatch, park_project_modules):  # noqa: F811 — fixture param
+    """The dimension check's fix hint must name a shipped option.
+
+    It used to say `fastplace ai:embed --verify` — a flag that does not
+    exist (the real one is --check), so following the doctor's own repair
+    instruction produced `No such option: --verify`.
+    """
+    root = _make_project(
+        tmp_path,
+        monkeypatch,
+        env_text=(
+            "DATABASE_URL=postgresql+asyncpg://u:p@localhost/db\n"
+            "AI_EMBEDDING_MODEL=made-up-embedder\n"
+        ),
+    )
+    _declare_vector_model(root, dimensions=8, name="ai_doctor_docs_unknown")
+
+    result = runner.invoke(cli_app, ["ai:doctor"])
+
+    assert result.exit_code == 0, _out(result)  # warn, not fail
+    out = _out(result)
+    assert "ai:embed --check" in out
+    assert "--verify" not in out

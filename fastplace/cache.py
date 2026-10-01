@@ -464,15 +464,16 @@ class RedisCache:
         return value
 
     async def increment(self, key: str, ttl: int | float | None = None) -> int:
-        """INCR-compatible counter — only the first hit arms the expiry.
+        """INCR-compatible counter; every hit re-arms the expiry window.
 
         Counters are stored as plain int text (what INCR itself writes), never
-        JSON-quoted, so the value stays INCR-compatible across clients.
+        JSON-quoted, so the value stays INCR-compatible across clients. Each
+        hit slides the window — memory-driver parity, the rate limiter's
+        documented sliding-decay contract.
         """
         namespaced = self._namespaced(key)
         value = await self.client.incr(namespaced)
-        if await self.client.ttl(namespaced) == -1:  # exists, no expiry armed yet
-            await self.client.expire(namespaced, int(_counter_horizon(ttl)))
+        await self.client.expire(namespaced, int(_counter_horizon(ttl)))
         return int(value)
 
     async def ttl(self, key: str) -> float | None:
@@ -667,7 +668,8 @@ class DatabaseCache:
         return value
 
     async def increment(self, key: str, ttl: int | float | None = None) -> int:
-        """Expiry-aware +1: first hit stores 1; a hit past expiry restarts at 1."""
+        """Expiry-aware +1: every live hit re-arms the window, a hit past
+        expiry restarts at 1 (memory/redis parity — sliding decay)."""
         await self._ensure_table()
         horizon = int(_counter_horizon(ttl))
         stored = self._key(key)
@@ -677,7 +679,10 @@ class DatabaseCache:
                 update(_cache_table)
                 .where(_cache_table.c.key == stored)
                 .where((_cache_table.c.expires_at.is_(None)) | (_cache_table.c.expires_at > now))
-                .values(value=cast(_cache_table.c.value, Integer) + 1)
+                .values(
+                    value=cast(_cache_table.c.value, Integer) + 1,
+                    expires_at=now + horizon,  # each hit slides the window
+                )
             )
             if int(result.rowcount or 0) == 0:
                 # Absent or stale (expired) row — restart the window at 1.

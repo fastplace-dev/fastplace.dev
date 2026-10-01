@@ -159,6 +159,57 @@ async def test_bridge_project_show_page(sample_client):
     assert [t["title"] for t in body["props"]["project"]["tasks"]] == ["only task"]
 
 
+async def test_native_form_posts_flow_through_the_request_schema(sample_client):
+    """The no-JS form path validates against the same schema as the bridge.
+
+    A native form POST must not bypass the field constraints: oversized
+    values redirect back with flashed errors instead of being stored.
+    """
+    await _login_projects_user(sample_client)
+
+    resp = await sample_client.post(
+        "/projects",
+        data={"name": "x" * 300, "description": "d" * 2001},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml",
+            "Referer": "http://test/projects",
+        },
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "http://test/projects"
+
+    listed = await sample_client.get("/api/v1/projects")
+    assert listed.json()["total"] == 0  # nothing was persisted
+
+
+async def test_native_task_form_posts_flow_through_the_request_schema(sample_client):
+    await _login_projects_user(sample_client)
+    project = (await sample_client.post("/api/v1/projects", json={"name": "Schema"})).json()
+
+    oversize = await sample_client.post(
+        f"/projects/{project['id']}/tasks",
+        data={"title": "x" * 300},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    bad_date = await sample_client.post(
+        f"/projects/{project['id']}/tasks",
+        data={"title": "fine title", "due_date": "not-a-date"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "text/html,application/xhtml+xml",
+        },
+    )
+    assert oversize.status_code == 303
+    assert bad_date.status_code == 303
+
+    detail = (await sample_client.get(f"/api/v1/projects/{project['id']}")).json()
+    assert detail["tasks"] == []
+
+
 async def test_web_store_redirects_back_to_the_page(sample_client):
     await _login_projects_user(sample_client)
     resp = await sample_client.post(

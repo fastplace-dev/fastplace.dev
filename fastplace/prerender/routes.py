@@ -28,6 +28,11 @@ def _normalize(route: str) -> str:
         raise ValueError(
             f"prerender routes must be absolute paths starting with '/', got {route!r}"
         )
+    # Query/fragment routes capture "fine" but the output can never be
+    # served: PrerenderStaticFiles only answers query-less requests, which
+    # map to a different directory than `pricing?utm=1/index.html`.
+    if "?" in cleaned or "#" in cleaned:
+        raise ValueError(f"prerender routes must be path-only, no query or fragment, got {route!r}")
     # Root stays "/" (rstrip would empty it); every other path loses its
     # trailing slash so "/docs" and "/docs/" map to one output directory.
     normalized = cleaned.rstrip("/") or "/"

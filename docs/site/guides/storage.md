@@ -5,7 +5,7 @@
 ```python
 from fastplace.storage import disk
 
-disk().put("invoices/2026/first.pdf", pdf_bytes)  # parent dirs auto-created
+await disk().put("invoices/2026/first.pdf", pdf_bytes)  # parent dirs auto-created
 pdf = await disk().get("invoices/2026/first.pdf")  # bytes; missing -> NotFoundError
 await disk().text("notes/readme.txt")  # str (UTF-8)
 await disk().exists("invoices/2026/first.pdf")

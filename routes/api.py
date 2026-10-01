@@ -35,5 +35,20 @@ router.patch(
     middleware=["auth"],
 )
 
-router.post("/knowledge", KnowledgeApiController, "store", name="api.knowledge.store")
-router.get("/knowledge/search", KnowledgeApiController, "search", name="api.knowledge.search")
+# Knowledge ingest/search spend a provider-backed embedding call per
+# request (audit T6) — the assistant route's guardrails, mirrored: an
+# anonymous visitor must not spend real money or mutate the demo corpus.
+router.post(
+    "/knowledge",
+    KnowledgeApiController,
+    "store",
+    name="api.knowledge.store",
+    middleware=["auth", "throttle:10,60"],
+)
+router.get(
+    "/knowledge/search",
+    KnowledgeApiController,
+    "search",
+    name="api.knowledge.search",
+    middleware=["auth", "throttle:10,60"],
+)

@@ -170,6 +170,63 @@ def test_new_env_pins_session_and_cache_drivers(tmp_path, monkeypatch):
     assert "CACHE_DRIVER=memory" in example
 
 
+def test_new_env_example_carries_the_guide_documented_knobs(tmp_path, monkeypatch):
+    """The guides tell users to set queue/redis/mail/broadcast/S3/log knobs
+    in .env — the scaffolded .env.example must list them. It used to ship a
+    ~20-key subset, so every switch the deployment and background-and-cache
+    guides name was unfindable in the file the getting-started page points
+    at. Every new entry stays commented: defaults keep living in config/*.py
+    and a fresh project boots exactly as before. Mail is the one exception —
+    the block ships active and byte-identical to make:auth's `_augment_env`
+    append, whose "already present" guard then stays a true no-op instead of
+    duplicating (or, with a commented block, silently skipping) the keys."""
+    _, root = _invoke(tmp_path, monkeypatch, "blog")
+    env = (root / "blog" / ".env").read_text()
+    example = (root / "blog" / ".env.example").read_text()
+
+    for key in (
+        "APP_HOST",  # bind interface (run dev: 127.0.0.1, serve: 0.0.0.0)
+        "ASSET_VERSION",
+        "PRERENDER_ROUTES",
+        "QUEUE_DRIVER",
+        "QUEUE_REDIS_URL",
+        "QUEUE_TRIES",
+        "QUEUE_TIMEOUT",
+        "QUEUE_BACKOFF",
+        "QUEUE_TTL",
+        "QUEUE_DASHBOARD_ENABLED",
+        "REDIS_URL",
+        "BROADCAST_DRIVER",
+        "S3_BUCKET",
+        "LOG_LEVEL",
+        "QUERY_SLOW_MS",
+    ):
+        assert f"{key}=" in example, f".env.example missing {key}"
+        # Documented, never switched on: an uncommented line would land in
+        # the generated .env and change how a fresh project boots.
+        active = [line for line in env.splitlines() if line.startswith(f"{key}=")]
+        assert active == [], f"{key} must ship commented, not active"
+
+    # Mail: active exactly once, matching make:auth's own block verbatim.
+    mail_lines = [line for line in env.splitlines() if line.startswith("MAIL_DRIVER=")]
+    assert mail_lines == ["MAIL_DRIVER=log"]
+
+
+def test_new_gitignore_covers_encrypted_env_variants(tmp_path, monkeypatch):
+    """``fastplace key:rotate`` writes ``.env.encrypted`` and keeps
+    ``.env.encrypted.bak`` on drift — a scaffold ignoring only ``.env`` and
+    ``.env.bak`` leaves the ciphertext committable. The Environment block
+    mirrors the framework repo's own: ``.env.*`` covers every variant,
+    ``!.env.example`` keeps the starter template trackable."""
+    result, root = _invoke(tmp_path, monkeypatch, "blog")
+    assert result.exit_code == 0, result.output
+
+    gitignore = (root / "blog" / ".gitignore").read_text()
+    block = gitignore.split("# Environment", 1)[1].split("# OS", 1)[0]
+    assert ".env.*" in block
+    assert "!.env.example" in block
+
+
 def test_new_refuses_a_non_empty_directory(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 

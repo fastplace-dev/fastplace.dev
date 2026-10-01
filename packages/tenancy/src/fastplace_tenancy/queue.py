@@ -25,19 +25,53 @@ COMPANY_META_KEY = "_company_id"
 
 
 class TenantQueue:
-    """QueueDriver wrapper stamping every dispatch with the bound company."""
+    """QueueDriver wrapper stamping every dispatch with the bound company.
+
+    Every entry point that can enqueue is overridden — ``dispatch``, the
+    batch ``dispatch_many``, and the reliability builder ``job(...)`` (whose
+    ``PendingDispatch.dispatch`` hands off through ``_dispatch_pending``) —
+    because the wrapper is installed process-wide
+    (``set_queue(TenantQueue(driver))``) and any of the three left to
+    ``__getattr__`` delegation would enqueue an unstamped job that fails at
+    the worker instead of at dispatch.
+    """
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
 
-    async def dispatch(self, name: str, **kwargs: Any) -> None:
+    async def dispatch(self, name: str, **kwargs: Any) -> Any:
         company_id = require_company_context()
         kwargs[COMPANY_META_KEY] = company_id
-        await self._inner.dispatch(name, **kwargs)
+        return await self._inner.dispatch(name, **kwargs)
+
+    async def dispatch_many(self, jobs: list[tuple[str, dict[str, Any]]]) -> list[Any]:
+        """Stamp every payload in the batch (same failure mode as dispatch)."""
+        company_id = require_company_context()
+        stamped = [(name, {**kwargs, COMPANY_META_KEY: company_id}) for name, kwargs in jobs]
+        return await self._inner.dispatch_many(stamped)
+
+    def job(self, name: str, **options: Any) -> Any:
+        """Builder entry returning a PendingDispatch bound to THIS wrapper.
+
+        Its ``dispatch()`` routes through :meth:`_dispatch_pending` below, so
+        reliability options (retries/backoff/delay/unique) flow to the inner
+        driver with the stamp applied on the way in.
+        """
+        from fastplace.queue import PendingDispatch
+
+        return PendingDispatch(self, name, **options)
+
+    async def _dispatch_pending(self, pending: Any, kwargs: dict[str, Any]) -> Any:
+        # PendingDispatch hands the wrapper itself back as the driver —
+        # stamp here and let the inner driver own the envelope from the
+        # pending state it received at construction.
+        company_id = require_company_context()
+        kwargs[COMPANY_META_KEY] = company_id
+        return await self._inner._dispatch_pending(pending, kwargs)  # noqa: SLF001
 
     def __getattr__(self, name: str) -> Any:
-        # Everything the wrapped driver exposes (run_pending, size, …) stays
-        # reachable — the wrapper only rewrites dispatch.
+        # Everything else the wrapped driver exposes (run_pending, size, …)
+        # stays reachable — the wrapper only rewrites the enqueue surface.
         return getattr(self._inner, name)
 
 

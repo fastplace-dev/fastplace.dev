@@ -87,14 +87,28 @@ class PasskeyConfig:
                 "AUTH_PASSKEYS.enabled is false — passkey ceremonies are not routed."
             )
         host = urlsplit(app_url).hostname if app_url else None
-        rp_id = str(resolve("APP_PASSKEYS_RP_ID", "rp_id", None) or host or "localhost")
+        explicit_rp_id = resolve("APP_PASSKEYS_RP_ID", "rp_id", None)
+        rp_id = str(explicit_rp_id or host or "localhost")
         origins_raw = resolve("APP_PASSKEYS_ORIGINS", "origins", None)
         if isinstance(origins_raw, str):
             origins = [o.strip() for o in origins_raw.split(",") if o.strip()]
         elif isinstance(origins_raw, (list, tuple)):
             origins = [str(o) for o in origins_raw]
+        elif app_url:
+            origins = [app_url]
+        elif not explicit_rp_id:
+            # No APP_URL and no rp_id: the implicit dev default (localhost on
+            # the framework's own port) keeps local ceremonies aligned.
+            origins = [f"http://{rp_id}:9000"]
         else:
-            origins = [app_url] if app_url else [f"http://{rp_id}:9000"]
+            # An explicit rp_id without APP_URL cannot be guessed into a
+            # scheme/port — a wrong origin fails every browser ceremony, so
+            # refuse (the disabled-passkeys posture) instead of guessing.
+            raise ConfigurationError(
+                "AUTH_PASSKEYS needs APP_URL (or AUTH_PASSKEYS.origins) when "
+                "APP_PASSKEYS_RP_ID is set without APP_URL — a guessed origin "
+                "would fail every passkey ceremony."
+            )
         return cls(
             rp_id=rp_id,
             rp_name=str(resolve("APP_PASSKEYS_RP_NAME", "rp_name", None) or app_name),

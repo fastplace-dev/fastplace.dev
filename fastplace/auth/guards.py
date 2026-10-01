@@ -99,9 +99,19 @@ class SessionGuard:
         Hash.check(str(credentials.get("password") or ""), dummy_digest())
 
     async def attempt(
-        self, request: Any, credentials: dict[str, Any], *, remember: bool = False
+        self,
+        request: Any,
+        credentials: dict[str, Any],
+        *,
+        remember: bool = False,
+        gate: Any = None,
     ) -> bool:
-        """Rate-limited credential login. Raises ThrottleRequestsError on lockout."""
+        """Rate-limited credential login. Raises ThrottleRequestsError on lockout.
+
+        ``gate`` — attempt_when's callback — runs after the throttle check and
+        the user lookup but before the credential check, so conditional-login
+        endpoints shed locked-out keys exactly like the bare path.
+        """
         email = str(credentials.get("email") or "")
         await dispatch(DomainEvent("Attempting", {"email": email.lower(), "remember": remember}))
         limiter = self._rate_limiter()
@@ -124,6 +134,15 @@ class SessionGuard:
         user = await self.provider.retrieve_by_credentials(credentials)
         if user is None:
             await self._equal_work_for_unknown_user(credentials)
+        if user is not None and gate is not None:
+            outcome = gate(user)
+            if inspect.isawaitable(outcome):
+                outcome = await outcome
+            if not outcome:
+                # Gate denial is not a credential failure — no Failed event.
+                # The attempt still consumed its limiter hit, matching the
+                # bare path's accounting.
+                return False
         if user is None or not await self._validate_and_rehash(user, credentials):
             await dispatch(DomainEvent("Failed", {"email": email.lower()}))
             return False
@@ -161,17 +180,13 @@ class SessionGuard:
         *,
         remember: bool = False,
     ) -> bool:
-        """attempt() behind an extra gate — ``callback(user)`` must be truthy."""
-        user = await self.provider.retrieve_by_credentials(credentials)
-        if user is None:
-            await self._equal_work_for_unknown_user(credentials)
-            return False
-        outcome = callback(user)
-        if inspect.isawaitable(outcome):
-            outcome = await outcome
-        if not outcome:
-            return False
-        return await self.attempt(request, credentials, remember=remember)
+        """attempt() behind an extra gate — ``callback(user)`` must be truthy.
+
+        Delegates into attempt() so the throttle check sheds a locked-out key
+        BEFORE the user lookup and the equal-work dummy hash — the same
+        load-shedding order the bare path guarantees.
+        """
+        return await self.attempt(request, credentials, remember=remember, gate=callback)
 
     async def once(self, request: Any, credentials: dict[str, Any]) -> bool:
         """One-off credential check — no session write, no events."""

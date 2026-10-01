@@ -291,6 +291,124 @@ describe("Form", () => {
       expect((form.querySelector("[name=email]") as HTMLInputElement).value).toBe("a@b.c");
     });
   });
+
+  it("restores a <select> to its initial option after success, not option 0", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockJsonResponse({ ok: true })));
+
+    renderWithProvider(
+      <Form action="/filters" resetOnSuccess={["status", "plain"]}>
+        <select name="status" aria-label="Status" defaultValue="archived">
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+          <option value="archived">Archived</option>
+        </select>
+        <select name="plain" aria-label="Plain">
+          <option value="a">A</option>
+          <option value="b">B</option>
+        </select>
+        <button type="submit">Apply</button>
+      </Form>,
+    );
+    const status = screen.getByLabelText("Status");
+    const plain = screen.getByLabelText("Plain");
+    expect(status).toHaveValue("archived"); // preselected away from option 0
+    await user.selectOptions(status, "active");
+    await user.selectOptions(plain, "b");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => {
+      expect(status).toHaveValue("archived");
+      // No initial selection of its own → back to the first option.
+      expect(plain).toHaveValue("a");
+    });
+  });
+
+  it("includes the clicked submit button's name/value in the bridge body", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProvider(
+      <Form action="/posts">
+        <input type="text" name="title" defaultValue="Hello" />
+        <button type="submit" name="action" value="draft">
+          Save Draft
+        </button>
+        <button type="submit" name="action" value="publish">
+          Publish
+        </button>
+      </Form>,
+    );
+    await user.click(screen.getByRole("button", { name: "Publish" }));
+    let [, init] = fetchMock.mock.calls[0];
+    // Native no-JS posts carry the submitter's entry — the bridge must match.
+    expect(JSON.parse(init.body)).toEqual({ title: "Hello", action: "publish" });
+
+    await user.click(screen.getByRole("button", { name: "Save Draft" }));
+    [, init] = fetchMock.mock.calls[1];
+    expect(JSON.parse(init.body)).toEqual({ title: "Hello", action: "draft" });
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * <Form> file inputs — multipart submissions preserve uploads
+ * ------------------------------------------------------------------ */
+
+describe("Form file uploads", () => {
+  it("submits native multipart FormData when the form carries a file input", async () => {
+    const user = userEvent.setup();
+    const meta = document.createElement("meta");
+    meta.name = "csrf-token";
+    meta.content = "tok-123";
+    document.head.appendChild(meta);
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProvider(
+      <Form action="/uploads">
+        <input type="text" name="title" defaultValue="Doc" />
+        <input type="file" name="avatar" aria-label="Avatar" />
+        <button type="submit">Upload</button>
+      </Form>,
+    );
+    const file = new File(["file-bytes"], "avatar.png", { type: "image/png" });
+    await user.upload(screen.getByLabelText("Avatar"), file);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/uploads");
+    expect(init.method).toBe("POST");
+    expect(init.headers["X-Fastplace-Request"]).toBe("true");
+    expect(init.headers["X-Fastplace-CSRF-Token"]).toBe("tok-123");
+    // No JSON content type — the browser sets the multipart boundary.
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    const body = init.body as FormData;
+    expect(body.get("title")).toBe("Doc");
+    expect(body.get("avatar")).toBeInstanceOf(File);
+    // The auto CSRF input stays out — the header carries the token.
+    expect(body.get("_token")).toBeNull();
+    meta.remove();
+  });
+
+  it("keeps JSON bodies for forms without file inputs", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProvider(
+      <Form action="/projects">
+        <input type="text" name="name" defaultValue="Apollo" />
+        <button type="submit">Save</button>
+      </Form>,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body)).toEqual({ name: "Apollo" });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -362,6 +480,54 @@ describe("Form no-JS CSRF token", () => {
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(init.headers["X-Fastplace-CSRF-Token"]).toBe("tok-123");
     expect(JSON.parse(init.body)).toEqual({ name: "Apollo" });
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * <Form> no-JS method override
+ * ------------------------------------------------------------------ */
+
+describe("Form no-JS method override", () => {
+  it("injects a hidden _method field for non-post methods", () => {
+    renderWithProvider(
+      <Form action="/posts/3" method="delete">
+        <button type="submit">Delete</button>
+      </Form>,
+    );
+    const form = document.querySelector("form")!;
+    // HTML only knows post/get — the intended verb rides as _method.
+    expect(form).toHaveAttribute("method", "post");
+    const override = form.querySelector('input[type="hidden"][name="_method"]');
+    expect(override).not.toBeNull();
+    expect(override).toHaveValue("delete");
+  });
+
+  it("omits _method for plain post forms", () => {
+    renderWithProvider(
+      <Form action="/posts">
+        <button type="submit">Save</button>
+      </Form>,
+    );
+    expect(document.querySelector('input[name="_method"]')).toBeNull();
+  });
+
+  it("keeps the auto _method out of the bridge JSON body — the real verb carries it", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithProvider(
+      <Form action="/posts/3" method="patch">
+        <input type="text" name="title" defaultValue="Hello" />
+        <button type="submit">Update</button>
+      </Form>,
+    );
+    await user.click(screen.getByRole("button", { name: "Update" }));
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/posts/3");
+    expect(init.method).toBe("PATCH"); // the bridge request uses the real verb
+    expect(JSON.parse(init.body)).toEqual({ title: "Hello" });
   });
 });
 
@@ -486,6 +652,68 @@ describe("useForm", () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(init.body).toBe(JSON.stringify({ name: "spaced" })); // trimmed by transform()
+  });
+
+  it("sends multipart instead of JSON when the data carries a File", async () => {
+    const user = userEvent.setup();
+    const file = new File(["file-bytes"], "avatar.png", { type: "image/png" });
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // JSON.stringify would corrupt the File to {} — the submission must
+    // travel as native multipart instead, upload intact.
+    const UploadForm = () => {
+      const form = useForm({ title: "Doc", avatar: file });
+      return (
+        <button type="button" onClick={() => void form.post("/uploads")}>
+          Upload
+        </button>
+      );
+    };
+    renderWithProvider(<UploadForm />);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    const body = init.body as FormData;
+    expect(body.get("title")).toBe("Doc");
+    const sent = body.get("avatar");
+    expect(sent).toBeInstanceOf(File);
+    expect((sent as File).name).toBe("avatar.png");
+    expect((sent as File).size).toBe(file.size);
+  });
+
+  it("sends multipart when a File sits inside an array value (multi-upload)", async () => {
+    const user = userEvent.setup();
+    const files = [
+      new File(["one"], "a.png", { type: "image/png" }),
+      new File(["two"], "b.png", { type: "image/png" }),
+    ];
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // A File nested in an array must not slip through to JSON.stringify,
+    // which corrupts it to [{}].
+    const MultiUploadForm = () => {
+      const form = useForm({ attachments: files });
+      return (
+        <button type="button" onClick={() => void form.post("/uploads")}>
+          Upload
+        </button>
+      );
+    };
+    renderWithProvider(<MultiUploadForm />);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    const sent = (init.body as FormData).getAll("attachments");
+    expect(sent).toHaveLength(2);
+    expect(sent.every((entry) => entry instanceof File)).toBe(true);
+    expect((sent[0] as File).name).toBe("a.png");
+    expect((sent[1] as File).name).toBe("b.png");
   });
 });
 

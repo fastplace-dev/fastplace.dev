@@ -157,6 +157,13 @@ def get_app(
         ai_routes=ai_routes,
         route_middleware=_route_middleware_registry(route_middleware, cfg),
     )
+    # No-JS form verb override: added before the configured middleware so it
+    # lands innermost — CsrfMiddleware validates the real POST first, then the
+    # override rewrites the verb, and the router matches the intended method.
+    from fastplace.http.method_override import MethodOverrideMiddleware
+
+    override_mw = MethodOverrideMiddleware()
+    app.add_middleware(wrap_middleware(override_mw), mw=override_mw)  # type: ignore[arg-type]
     _install_middleware(app, middleware or [])
     app.add_middleware(_SecurityHeadersMiddleware)
     # Request-scoped locale: ?locale= -> Accept-Language -> LOCALE default,
@@ -515,12 +522,14 @@ def _install_session_middleware(app: FastAPI, cfg: _ConfigShim, *, app_env: str)
     from fastplace.http.session import session_store
     from fastplace.http.session.middleware import ServerSessionMiddleware
 
-    if app_env == "production" and not str(cfg.get("APP_KEY", default="") or ""):
+    if app_env == "production" and len(str(cfg.get("APP_KEY", default="") or "")) < 32:
         # An ephemeral per-process key silently invalidates signed URLs and
-        # JWTs across workers/restarts — production must fail fast.
+        # JWTs across workers/restarts, and a short one is offline-brute-
+        # forceable (HS256 JWTs, signed URLs and encrypted secrets all key
+        # off APP_KEY) — production must fail fast on both.
         raise ConfigurationError(
-            "APP_KEY is required in production — set it in .env "
-            "(generate: python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+            "APP_KEY must be set to at least 32 bytes in production — set it "
+            "in .env (generate: python -c 'import secrets; print(secrets.token_urlsafe(48))')"
         )
     store = session_store(config_get=cfg.get)
     # The broadcast ws endpoint cannot see the middleware's store (it skips
@@ -562,6 +571,21 @@ def _error_page_override(
         # ValueError) — fall back to the framework page.
         return None
     return None
+
+
+def _stamp_outermost_error_headers(response: Response, request: Any) -> None:
+    """Baseline hardening + correlation id on kernel-produced 500 responses.
+
+    ServerErrorMiddleware sits OUTSIDE every middleware get_app installs, so
+    its response never crosses _SecurityHeadersMiddleware or the request-id
+    middleware — stamp the same baseline here, the way MaintenanceMiddleware
+    mirrors the headers on its own 503.
+    """
+    for name, value in _SECURITY_HEADERS:
+        response.headers.setdefault(name.decode("latin-1"), value.decode("latin-1"))
+    request_id = (getattr(request, "scope", None) or {}).get("fastplace_request_id")
+    if request_id:
+        response.headers.setdefault("x-request-id", str(request_id))
 
 
 def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
@@ -663,10 +687,15 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
         if wants_html(request):
             override = _error_page_override(root, 500, None)
             if override is not None:
+                _stamp_outermost_error_headers(override, request)
                 return override
+            response: Response
             if debug:
-                return debug_error_page(request, exc)
-            return production_error_page(request)
+                response = debug_error_page(request, exc)
+            else:
+                response = production_error_page(request)
+            _stamp_outermost_error_headers(response, request)
+            return response
         detail = repr(exc) if debug else "Server error."
         payload: dict[str, Any] = {"message": "Server error."}
         if debug:
@@ -678,7 +707,9 @@ def _install_error_handlers(app: FastAPI, *, debug: bool, root: Path) -> None:
             stats = request_query_stats(request)
             if stats is not None:
                 payload["queries"] = stats.summary()
-        return Json(payload, status_code=500)
+        response = Json(payload, status_code=500)
+        _stamp_outermost_error_headers(response, request)
+        return response
 
 
 class CachedStaticFiles(StaticFiles):

@@ -68,7 +68,7 @@ and `/passkeys/*` routes. Config: `AUTH_PASSKEYS`.
   (process-wide install), `reset_queue()`.
 - `DomainEvent` + `Model.__dispatches__` for event→queue dispatch.
 - `cache()` (configured store), `CacheStore` protocol (`get/put/forget/
-  flush/remember`), `MemoryCache`, `RedisCache`.
+  flush/remember`), `MemoryCache`, `RedisCache`, `DatabaseCache`.
 
 ## fastplace.db
 

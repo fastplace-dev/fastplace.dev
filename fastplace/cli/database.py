@@ -287,10 +287,22 @@ def migrate_rollback(
     ),
 ) -> None:
     """Revert the latest migration batch, or --steps individual revisions."""
+    from fastplace.cli.dev import _require_min
+    from fastplace.errors import ConfigurationError
+
     manager = _manager()
     if not manager.configured:
         console.print(_MIGRATIONS_NOT_CONFIGURED)
         raise typer.Exit(code=1)
+    if steps is not None:
+        # The manager clamps a non-positive count to "one revision" while
+        # the CLI would report the raw number — reject here so a zero-step
+        # probe cannot revert anything.
+        try:
+            _require_min("--steps", steps)
+        except ConfigurationError as exc:
+            console.print(str(exc), style="red", markup=False)
+            raise typer.Exit(code=1) from exc
     reverted = manager._last_batch_size() if steps is None else steps
     manager.downgrade(steps)
     console.print(f"[green]rolled back[/] {reverted} migration(s)")

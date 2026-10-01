@@ -9,6 +9,7 @@ schemas for LLM function calling using type hints and docstrings").
 
 from __future__ import annotations
 
+import enum
 import importlib
 import inspect
 import pkgutil
@@ -231,7 +232,12 @@ def _docstring_summary(docstring: str) -> str:
 def _parameters_schema(fn: ToolFn, hints: dict[str, Any], docstring: str) -> dict[str, Any]:
     """Build the OpenAI ``parameters`` object from annotations + docstring."""
     sig = inspect.signature(fn)
-    descriptions = _parse_args_section(docstring)
+    declared = {
+        name
+        for name, param in sig.parameters.items()
+        if param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
+    descriptions = _parse_args_section(docstring, declared)
     properties: dict[str, Any] = {}
     required: list[str] = []
     for param_name, param in sig.parameters.items():
@@ -275,7 +281,9 @@ def _schema_for_type(hint: Any) -> dict[str, Any]:
 
     origin = get_origin(hint)
     if origin is typing.Literal:
-        values = list(get_args(hint))
+        # Enum members ship as their underlying value — providers (and plain
+        # json.dumps) reject Python enum objects on the wire.
+        values = [arg.value if isinstance(arg, enum.Enum) else arg for arg in get_args(hint)]
         schema: dict[str, Any] = {"enum": values}
         # Only claim a "type" when every member agrees — bool first, since
         # isinstance(True, int) would mistype booleans as integers.
@@ -316,10 +324,13 @@ def _schema_for_type(hint: Any) -> dict[str, Any]:
     )
 
 
-def _parse_args_section(docstring: str) -> dict[str, str]:
+def _parse_args_section(docstring: str, declared: set[str]) -> dict[str, str]:
     """Extract ``param: description`` pairs from a Google-style Args section.
 
     Handles multi-line descriptions and the optional ``name (type):`` form.
+    A colon line only opens a parameter when the word before the colon is a
+    declared parameter name — anything else ("Note: …", "Units: …") is
+    description text of the parameter above it.
     """
     descriptions: dict[str, str] = {}
     lines = docstring.splitlines()
@@ -337,22 +348,12 @@ def _parse_args_section(docstring: str) -> dict[str, str]:
         if not indented:
             in_args = False  # a new top-level section (Returns:, Raises:, …)
             continue
-        if current is not None and not _looks_like_param_line(stripped):
+        name, sep, rest = stripped.partition(":")
+        name = name.split("(")[0].strip()  # drop the optional "(type)" hint
+        if sep and name in declared:
+            descriptions[name] = rest.strip()
+            current = name
+        elif current is not None:
             # continuation of the previous parameter's description
             descriptions[current] = f"{descriptions[current]} {stripped}".strip()
-            continue
-        name, sep, rest = stripped.partition(":")
-        if not sep:
-            continue
-        name = name.split("(")[0].strip()  # drop the optional "(type)" hint
-        if not name.isidentifier():
-            current = None
-            continue
-        descriptions[name] = rest.strip()
-        current = name
     return descriptions
-
-
-def _looks_like_param_line(stripped: str) -> bool:
-    name = stripped.split(":", 1)[0].split("(", 1)[0].strip()
-    return bool(name) and name.isidentifier()

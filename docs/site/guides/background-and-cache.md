@@ -26,6 +26,40 @@ Drivers follow configuration (`QUEUE_DRIVER`): the in-process **memory**
 driver (default — drains at graceful shutdown, fine for dev and small
 apps) and **SAQ + Redis** for real workers (`pip install "fastplace[queue]"`).
 
+### The retry envelope
+
+Every dispatch carries a reliability envelope — how many times a job may
+run, how long each attempt gets, how attempts space out, how long the
+result is kept. The four `QUEUE_*` env keys set the framework defaults:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `QUEUE_TRIES` | `3` | Total attempts per job (>= 1) — a job swept up by a worker crash stays retryable |
+| `QUEUE_TIMEOUT` | `60` | Per-attempt seconds (> 0) — replaces SAQ's hidden 10s default |
+| `QUEUE_BACKOFF` | `0` | Exponential base delay in seconds between attempts (>= 0; `0` = off) |
+| `QUEUE_TTL` | `600` | Result retention seconds (>= 1) |
+
+Each layer can override: builder (per dispatch) > `@Job(...)` params >
+`QUEUE_*` env > framework default. `@Job(retries=..., timeout=...,
+backoff=...)` pins one handler's envelope without touching global config:
+
+```python
+@Job(retries=5, timeout=120, backoff=2)
+async def rebuild_report(project_id: int): ...
+```
+
+One dispatch can raise the envelope further still — the builder entry
+(handler kwargs and reliability options never collide there):
+
+```python
+await queue().job("rebuild_report", retries=8, backoff=5).dispatch(project_id=42)
+```
+
+Misconfigured values (a zero timeout, `QUEUE_TRIES=0`, `QUEUE_TTL=0`)
+fail loudly at dispatch with a `ConfigurationError` instead of
+misbehaving server-side. `fastplace queue:health` surfaces the resolved
+values.
+
 ### Domain events → queue
 
 Models declare which events dispatch where:
@@ -54,8 +88,9 @@ re-binds it.
 
 ## Cache
 
-One protocol, several stores (`CACHE_DRIVER`: `memory`, `redis`) —
-`config/cache.py` and `.env.example` are the canonical key list:
+One protocol, several stores (`CACHE_DRIVER`: `memory`, `redis`,
+`database`) — `config/cache.py` and `.env.example` are the canonical key
+list:
 
 ```python
 from fastplace.cache import cache

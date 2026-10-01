@@ -251,6 +251,42 @@ def test_serve_clean_child_exit_is_success(spawned, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
+# --- npm child wiring (dev vite leg + serve build leg) ------------------------
+
+
+def test_run_dev_spawns_npm_run_dev_with_vite_port(spawned, monkeypatch):
+    # package.json present and npm resolvable → the Vite dev server must be
+    # spawned as exactly `npm run dev`, with PORT carrying VITE_PORT's value.
+    (spawned.root / "package.json").write_text("{}\n")
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/fakebin/npm" if name == "npm" else None, raising=False
+    )
+    _write_env(spawned, "APP_ENV=local\nSESSION_DRIVER=database\nVITE_PORT=5199\n")
+    result = runner.invoke(cli_app, ["run", "dev", "--skip-lint"])
+    assert result.exit_code == 0, result.output
+    assert ["/fakebin/npm", "run", "dev"] in spawned.commands
+    index = spawned.commands.index(["/fakebin/npm", "run", "dev"])
+    assert spawned.envs[index].get("PORT") == "5199"
+
+
+def test_serve_fails_loudly_when_frontend_build_fails(spawned, monkeypatch):
+    # A failing `npm run build` must stop serve with exit 1 and a readable
+    # failure line — never spawn uvicorn against stale assets.
+    (spawned.root / "package.json").write_text("{}\n")
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/fakebin/npm" if name == "npm" else None, raising=False
+    )
+    monkeypatch.setattr(
+        "fastplace.cli.dev.subprocess.run",
+        lambda *a, **k: SimpleNamespace(returncode=1),
+    )
+    _write_env(spawned, "APP_ENV=local\nSESSION_DRIVER=database\n")
+    result = runner.invoke(cli_app, ["serve"])
+    assert result.exit_code == 1
+    assert "Frontend build failed" in result.output
+    assert not any("uvicorn" in cmd for cmd in spawned.commands)
+
+
 # --- child-tree supervision (supp-2-G1 / serve-G3) ---------------------------
 
 
