@@ -84,7 +84,7 @@ def _verification_link() -> str:
 
 
 def _link_path(link: str) -> str:
-    return link.removeprefix("http://localhost:8000")
+    return link.removeprefix("http://localhost:9000")
 
 
 async def _user():

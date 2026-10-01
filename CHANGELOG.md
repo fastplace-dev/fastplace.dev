@@ -27,6 +27,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   capture-time crash exits 1 with the cause in a one-line red message.
   `httpx` moves from dev dependency to core.
 
+### Changed
+
+- Default server port: `fastplace run dev` / `fastplace serve` now bind 9000
+  instead of 8000 (`--port` / APP_PORT still pin any port). The dev default
+  also auto-falls back to the next free port (9000, 9001, ...) when nothing
+  pins one; explicitly chosen ports and every `serve` bind stay strict — a
+  busy port is an error naming the nearest free port. Out-of-range or
+  non-integer `--port` / APP_PORT values fail with a clean one-line error
+  instead of a traceback (an explicit `--port` wins without APP_PORT ever
+  being parsed, so the flag is the escape hatch for a broken `.env` value),
+  error and notice lines escape Rich markup so hostile env values cannot
+  crash the console, the fallback walk never crosses 65535, the port probe
+  follows IPv6 host literals, a malformed APP_WORKERS gets the same clean
+  error, and child exits propagate to the wrapper with signal deaths
+  normalized to the shell's 128+N convention. Scaffolded `.env` / config
+  defaults and the WebAuthn origin fallback follow the new port.
+
 ## [0.3.1] - 2026-09-29
 
 ### Changed

@@ -1668,7 +1668,7 @@ APP_ENV = "local"
 # Safe by default — flip to True in .env for local debugging. The kernel also
 # force-disables debug details whenever APP_ENV=production.
 APP_DEBUG = False
-APP_URL = "http://localhost:8000"
+APP_URL = "http://localhost:9000"
 
 # Bridge + assets (dev)
 VITE_DEV_URL = "http://localhost:5173"
@@ -1688,7 +1688,7 @@ APP_ENV = "local"
 # Safe by default — flip to True in .env for local debugging. The kernel also
 # force-disables debug details whenever APP_ENV=production.
 APP_DEBUG = False
-APP_URL = "http://localhost:8000"
+APP_URL = "http://localhost:9000"
 
 # Bridge + assets (dev)
 VITE_DEV_URL = "http://localhost:5173"
@@ -1831,7 +1831,10 @@ APP_ENV=local
 # Flip to true locally for verbose errors; the kernel force-disables debug
 # output whenever APP_ENV=production regardless of this flag.
 APP_DEBUG=true
-APP_URL=http://localhost:8000
+APP_URL=http://localhost:9000
+# Bind port. Unset = 9000, and `run dev` auto-falls back to the next free
+# port; setting APP_PORT (or --port) pins it strictly instead.
+# APP_PORT=9000
 # 32+ byte secret: signs sessions, mints JWTs, signs CSRF tokens.
 # Generate: python -c 'import secrets; print(secrets.token_urlsafe(48))'
 APP_KEY={app_key}
@@ -2400,7 +2403,7 @@ def _next_steps_panel(
     if auth:
         lines += [
             "",
-            "  The FIRST account at http://localhost:8000/register becomes the admin.",
+            "  The FIRST account at http://localhost:9000/register becomes the admin.",
         ]
     if install_failed:
         title, border = "[bold]Project created — finish setup below[/]", "yellow"

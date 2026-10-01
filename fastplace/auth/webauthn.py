@@ -94,7 +94,7 @@ class PasskeyConfig:
         elif isinstance(origins_raw, (list, tuple)):
             origins = [str(o) for o in origins_raw]
         else:
-            origins = [app_url] if app_url else [f"http://{rp_id}:8000"]
+            origins = [app_url] if app_url else [f"http://{rp_id}:9000"]
         return cls(
             rp_id=rp_id,
             rp_name=str(resolve("APP_PASSKEYS_RP_NAME", "rp_name", None) or app_name),

@@ -30,7 +30,7 @@ from fastplace.http.router import Router
 from tests.auth.webauthn_fixture import SimulatedAuthenticator
 
 RP_ID = "localhost"
-ORIGIN = "http://localhost:8000"
+ORIGIN = "http://localhost:9000"
 
 USER = SimpleNamespace(
     id=7,

@@ -52,7 +52,7 @@ class TestSendLink:
 
         user = await _make_user(users_db)
         url = await VerificationService().send_link(user.id, user.email)
-        assert url.startswith("http://localhost:8000/email/verify/")
+        assert url.startswith("http://localhost:9000/email/verify/")
         match = _URL_RE.search(url)
         assert match is not None
         assert match.group(1) == str(user.id)

@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import FrameType
+from typing import overload
 
 import typer
 
@@ -44,6 +45,118 @@ def _cfg(key: str, default: str) -> str:
 
 def _uvicorn_command(*args: str) -> list[str]:
     return [sys.executable, "-m", "uvicorn", *args]
+
+
+# ---------------------------------------------------------------------------
+# Bind-port resolution
+# ---------------------------------------------------------------------------
+
+#: The bind port used when neither ``--port`` nor APP_PORT names one.
+DEFAULT_PORT = 9000
+
+#: How many consecutive ports the auto-fallback walks before giving up.
+_PORT_FALLBACK_ATTEMPTS = 10
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    """True unless a live listener already holds ``(host, port)``.
+
+    Bind-only probe with ``SO_REUSEADDR`` — the same posture uvicorn binds
+    with — so the probe agrees with the server on TIME_WAIT sockets while a
+    live listener still reports busy. Only EADDRINUSE counts as busy: bind
+    errors about the host itself (EADDRNOTAVAIL, EACCES, ...) are left for
+    the server to surface, so the probe never invents a conflict uvicorn
+    would not hit. Parity is best-effort — a listener on another address
+    family, or SO_REUSEADDR double-binds on Windows, can read as free — so
+    the server's own bind stays authoritative for races the probe cannot
+    see, and its exit code propagates to the wrapper.
+    """
+    import errno
+    import socket
+
+    busy = {errno.EADDRINUSE}
+    if hasattr(errno, "WSAEADDRINUSE"):  # pragma: no cover — Windows
+        busy.add(errno.WSAEADDRINUSE)
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+    except OverflowError:
+        # Out-of-range port (not an OSError): nothing can ever bind it.
+        return False
+    except OSError as exc:
+        return exc.errno not in busy
+    finally:
+        sock.close()
+    return True
+
+
+def _first_free_port(host: str, start: int, attempts: int) -> int | None:
+    for candidate in range(start, min(start + attempts, 65536)):
+        if _port_is_free(host, candidate):
+            return candidate
+    return None
+
+
+def _resolve_bind_port(host: str, preferred: int, *, fallback: bool) -> int:
+    """Pick the port the server will actually bind.
+
+    Strict mode (an explicit ``--port``/APP_PORT, and every ``serve`` bind)
+    treats a busy port as an error naming the nearest free alternative.
+    Fallback mode — only for the dev server's built-in default — walks
+    9000, 9001, ... so a second dev server simply moves up one slot.
+    """
+    from fastplace.errors import ConfigurationError
+
+    if not 1 <= preferred <= 65535:
+        raise ConfigurationError(f"port must be between 1 and 65535, got {preferred}")
+    if _port_is_free(host, preferred):
+        return preferred
+    if not fallback:
+        nearest = _first_free_port(host, preferred + 1, _PORT_FALLBACK_ATTEMPTS)
+        hint = f" — nearest free port: {nearest} (pass --port {nearest})" if nearest else ""
+        raise ConfigurationError(f"port {preferred} on {host} is already in use{hint}")
+    shifted = _first_free_port(host, preferred + 1, _PORT_FALLBACK_ATTEMPTS - 1)
+    if shifted is None:
+        last = min(preferred + _PORT_FALLBACK_ATTEMPTS - 1, 65535)
+        raise ConfigurationError(
+            f"no free port on {host} from {preferred} through {last} — pass --port to name one"
+        )
+    return shifted
+
+
+@overload
+def _cfg_int(key: str) -> int | None: ...
+
+
+@overload
+def _cfg_int(key: str, default: int) -> int: ...
+
+
+def _cfg_int(key: str, default: int | None = None) -> int | None:
+    """An integer-valued config entry, ``default`` when unset; malformed
+    values are a clean ConfigurationError naming the key."""
+    from fastplace.config import config
+    from fastplace.errors import ConfigurationError
+
+    raw = config(key, None)
+    if raw is None:
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        raise ConfigurationError(f"{key} must be an integer, got {raw!r}") from None
+
+
+def _cfg_port() -> int | None:
+    """APP_PORT validated to the bind range, None when unset."""
+    from fastplace.errors import ConfigurationError
+
+    port = _cfg_int("APP_PORT")
+    if port is not None and not 1 <= port <= 65535:
+        raise ConfigurationError(f"APP_PORT must be between 1 and 65535, got {port}")
+    return port
 
 
 def _fastplace_bin() -> str | None:
@@ -210,7 +323,10 @@ def _serve_preflight(workers: int) -> None:
 @run_app.command("dev")
 def run_dev(
     host: str = typer.Option(None, help="Bind host (default: APP_HOST or 127.0.0.1)."),
-    port: int = typer.Option(None, help="Bind port (default: APP_PORT or 8000)."),
+    port: int = typer.Option(
+        None,
+        help="Bind port (default: APP_PORT or 9000; the default auto-falls back to the next free port).",
+    ),
     skip_vite: bool = typer.Option(False, "--skip-vite", help="Do not start the Vite dev server."),
     skip_lint: bool = typer.Option(
         False, "--skip-lint", help="Do not start the module-boundary lint watcher."
@@ -219,7 +335,22 @@ def run_dev(
     """Run the ASGI backend (Uvicorn reload) + Vite dev server (HMR) together."""
     _load_project_env()
     host = host or _cfg("APP_HOST", "127.0.0.1")
-    port = port or int(_cfg("APP_PORT", "8000"))
+
+    from fastplace.errors import ConfigurationError
+
+    try:
+        # The CLI flag wins before .env is even parsed — an explicit --port
+        # is how a user escapes a broken APP_PORT, not something it vetoes.
+        configured = None if port is not None else _cfg_port()
+        requested = (
+            port if port is not None else (DEFAULT_PORT if configured is None else configured)
+        )
+        explicit_port = port is not None or configured is not None
+        port = _resolve_bind_port(host, requested, fallback=not explicit_port)
+    except ConfigurationError as exc:
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(code=1) from exc
+
     vite_port = _cfg("VITE_PORT", "5173")
     vite_url = f"http://localhost:{vite_port}"
 
@@ -235,9 +366,26 @@ def run_dev(
 
     console.print("[fastplace]Fastplace[/fastplace] development server")
     console.print(f"  backend  → http://{host}:{port}")
+    if port != requested:
+        # markup=False: host comes from APP_HOST — interpolated values are
+        # data, never Rich tags.
+        console.print(
+            f"  port {requested} on {host} is busy — using {port}",
+            style="warning",
+            markup=False,
+        )
+        console.print(
+            "  APP_URL-derived URLs (passkey origins, signed links) still honor "
+            "APP_URL, not the shifted port",
+            style="warning",
+        )
     console.print(f"  vite     → {vite_url}  [dim](serves bridge assets in dev)[/]")
 
     children: list[subprocess.Popen] = []
+    # A backend that dies on its own (bad bind from a lost race, import
+    # crash under reload) must fail the wrapper — supervisors key on this
+    # exit code, not the child's.
+    exit_code = 0
     # The dev runtime never resolves serve-style assets, whatever the shell
     # happened to export — the Vite dev server owns asset URLs here, and
     # declaring "dev" also keeps PrerenderStaticFiles out of the stack so a
@@ -280,18 +428,22 @@ def run_dev(
             else:
                 console.print("[warning]npm not found — skipping Vite dev server.[/]")
 
-        children[0].wait()
+        exit_code = children[0].wait()
     except KeyboardInterrupt:
         pass
     finally:
         _stop_children(children)
         _restore_signal_handlers(saved_signals)
+    if exit_code:
+        # wait() reports a signal death negative; shells encode it 128+N —
+        # meet supervisors on the convention they actually key on.
+        raise typer.Exit(code=128 - exit_code if exit_code < 0 else exit_code)
 
 
 @serve_app.command("serve")
 def serve(
     host: str = typer.Option(None, help="Bind host (default: APP_HOST or 0.0.0.0)."),
-    port: int = typer.Option(None, help="Bind port (default: APP_PORT or 8000)."),
+    port: int = typer.Option(None, help="Bind port (default: APP_PORT or 9000)."),
     workers: int = typer.Option(None, help="Worker count (default: APP_WORKERS or CPU count)."),
     skip_build: bool = typer.Option(False, "--skip-build", help="Skip the Vite production build."),
     forwarded_allow_ips: str = typer.Option(
@@ -309,15 +461,26 @@ def serve(
     _load_project_env()
 
     host = host or _cfg("APP_HOST", "0.0.0.0")
-    port = port or int(_cfg("APP_PORT", "8000"))
-    workers = workers or int(_cfg("APP_WORKERS", str(max(1, (os.cpu_count() or 2) - 1))))
 
     from fastplace.errors import ConfigurationError
 
     try:
+        # Same precedence as run dev: the CLI flag wins before .env is
+        # parsed, so an explicit --port escapes a broken APP_PORT. The
+        # workers parse lives here too — a malformed APP_WORKERS gets the
+        # same clean one-line error instead of a traceback.
+        configured = None if port is not None else _cfg_port()
+        port = port if port is not None else (DEFAULT_PORT if configured is None else configured)
+        workers = workers or _cfg_int("APP_WORKERS", max(1, (os.cpu_count() or 2) - 1))
         _serve_preflight(workers)
+        # Production binds never auto-fallback: a server that silently moves
+        # one port up breaks every reverse proxy aimed at the expected one.
+        # The probe is advisory — a race can still lose the port mid-build —
+        # so uvicorn's own bind stays authoritative and its exit code
+        # propagates below.
+        port = _resolve_bind_port(host, port, fallback=False)
     except ConfigurationError as exc:
-        console.print(f"[red]{exc}[/]")
+        console.print(str(exc), style="red", markup=False)
         raise typer.Exit(code=1) from exc
 
     if not skip_build and (Path.cwd() / "package.json").exists():
@@ -359,9 +522,10 @@ def serve(
         _restore_signal_handlers(saved_signals)
     # A supervised stop should read as success; any other child exit —
     # crash, bind failure, bad config — propagates to the caller (systemd,
-    # deploy script) instead of always looking like 0.
+    # deploy script) instead of always looking like 0. Signal deaths are
+    # normalized to the shell's 128+N convention, as in run dev.
     if exit_code:
-        raise typer.Exit(code=exit_code)
+        raise typer.Exit(code=128 - exit_code if exit_code < 0 else exit_code)
 
 
 def _quiet_exit() -> None:

@@ -20,7 +20,7 @@ from fastplace.auth.webauthn import (
 from tests.auth.webauthn_fixture import SimulatedAuthenticator, b64url
 
 RP_ID = "localhost"
-ORIGIN = "http://localhost:8000"
+ORIGIN = "http://localhost:9000"
 USER = SimpleNamespace(id=7, name="Firoz", email="firoz@example.test")
 
 
@@ -50,14 +50,30 @@ def test_from_config_defaults_from_app_url(monkeypatch):
 
     values = {
         "AUTH_PASSKEYS": {"enabled": True, "rp_id": None, "origins": None, "rp_name": None},
-        "APP_URL": "http://localhost:8000",
+        "APP_URL": "http://localhost:9000",
         "APP_NAME": "Demo",
     }
     monkeypatch.setattr(config_module, "config", lambda key, default=None: values.get(key, default))
     config = PasskeyConfig.from_config()
     assert config.rp_id == "localhost"  # APP_URL host
     assert config.rp_name in ("Test", "Demo")  # falls back to APP_NAME
-    assert config.origins == ["http://localhost:8000"]
+    assert config.origins == ["http://localhost:9000"]
+
+
+def test_from_config_without_app_url_falls_back_to_default_port(monkeypatch):
+    # Empty APP_URL: the origin is derived from the RP ID on the framework's
+    # default port, keeping the ceremony origins aligned with `run dev`.
+    import fastplace.config as config_module
+
+    values = {
+        "AUTH_PASSKEYS": {"enabled": True, "rp_id": None, "origins": None, "rp_name": None},
+        "APP_URL": "",
+        "APP_NAME": "Demo",
+    }
+    monkeypatch.setattr(config_module, "config", lambda key, default=None: values.get(key, default))
+    config = PasskeyConfig.from_config()
+    assert config.rp_id == "localhost"
+    assert config.origins == ["http://localhost:9000"]
 
 
 def test_env_overrides_block_values(monkeypatch):
@@ -66,7 +82,7 @@ def test_env_overrides_block_values(monkeypatch):
 
     values = {
         "AUTH_PASSKEYS": {"enabled": True, "rp_id": "block.example", "rp_name": None},
-        "APP_URL": "http://localhost:8000",
+        "APP_URL": "http://localhost:9000",
         "APP_NAME": "Demo",
         "APP_PASSKEYS_RP_ID": "env.example",
     }

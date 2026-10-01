@@ -26,7 +26,7 @@ fastplace migrate          # Alembic migrations (db.create_all() also works loca
 fastplace db:seed          # projects, tasks, knowledge items
 
 # 4. Full-stack dev — Uvicorn (reload) + Vite (HMR) together
-fastplace run dev          # → http://127.0.0.1:8000
+fastplace run dev          # → http://127.0.0.1:9000
 ```
 
 What you get on first boot:
