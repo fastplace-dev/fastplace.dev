@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from fastplace.cli._interp import project_python
 from fastplace.console import console
 
 if TYPE_CHECKING:
@@ -178,7 +178,7 @@ def _run_backend(root: Path, backend: str, spec: dict, keep: bool, extra_args: l
 
         suite = _subprocess_run(
             [
-                sys.executable,
+                project_python(root),
                 "-m",
                 "pytest",
                 "-q",
@@ -429,7 +429,7 @@ def test_coverage(
     json_path.parent.mkdir(parents=True, exist_ok=True)
     proc = _subprocess_run(
         [
-            sys.executable,
+            project_python(root),
             "-m",
             "pytest",
             "--cov=fastplace",
@@ -472,10 +472,8 @@ def _suite_for(path: Path) -> list[str]:
     return ["-x"]
 
 
-def _run_suite(extra: list[str]) -> int:
-    import sys
-
-    proc = _subprocess_run([sys.executable, "-m", "pytest", "-q", *extra])
+def _run_suite(root: Path, extra: list[str]) -> int:
+    proc = _subprocess_run([project_python(root), "-m", "pytest", "-q", *extra])
     return proc.returncode
 
 
@@ -498,7 +496,7 @@ def test_watch(
 
     def _pass() -> int:
         console.print("[dim]running full suite (-x)…[/]")
-        return _run_suite(["-x"])
+        return _run_suite(root, ["-x"])
 
     if once:
         raise typer.Exit(code=_pass())
@@ -518,7 +516,7 @@ def test_watch(
                 target = Path(path)
                 if _relevant_change(str(target)):
                     console.print(f"[bold]changed:[/] {target}")
-                    code = _run_suite(_suite_for(target))
+                    code = _run_suite(root, _suite_for(target))
                     console.print(f"[dim]exit {code}[/]")
     except KeyboardInterrupt:
         pass

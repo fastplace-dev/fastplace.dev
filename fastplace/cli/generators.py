@@ -14,6 +14,7 @@ import typer
 from rich.panel import Panel
 from rich.text import Text
 
+from fastplace.cli._interp import project_python
 from fastplace.console import console
 
 generators_app = typer.Typer(help="Generate framework scaffolding.")
@@ -2482,6 +2483,44 @@ def _next_steps_panel(
     console.print("[dim]Build something great![/]")
 
 
+def _bootstrap_users_migration(target: Path) -> tuple[str, str]:
+    """Create the fresh project's users-table migration via its own env.
+
+    Returns (migration filename, error text — the filename is empty on
+    failure, the error text empty on success). The users table ships with
+    the scaffold — `fastplace migrate` on a fresh project creates it, no
+    make:auth follow-up needed. Autogenerate runs in a subprocess on the
+    project's interpreter: env.py's model discovery imports every app.*
+    module of the project it generates for, and in-process those modules
+    would stay cached in sys.modules — shadowing the host project's own
+    for the rest of this CLI process's life (duplicate declarative
+    classes, wrong gates on every later boot). The project interpreter
+    (not this CLI's) matters when the CLI runs from a global install
+    whose env has none of the app's dependencies.
+    """
+    bootstrap = (
+        "from pathlib import Path\n"
+        "from fastplace.orm.migrations import MigrationsManager\n"
+        "rev = MigrationsManager(Path('.')).make('create_users_table')\n"
+        "print(rev if rev else '')\n"
+    )
+    try:
+        proc = subprocess.run(
+            [project_python(target), "-c", bootstrap],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=180,
+        )
+        made = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+        if proc.returncode == 0 and made:
+            return made, ""
+        return "", (proc.stderr or "").strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "", str(exc)
+
+
 @generators_app.command("new")
 def new_project(
     name: str = typer.Argument(..., help="Project name (letters, digits, spaces, _ and -)"),
@@ -2701,36 +2740,9 @@ def new_project(
         _write(target / "routes/web.py", _WEB_ROUTES_AUTH_TEMPLATE, _project_root(), force=True)
         _step_done("Authentication installed")
 
-        # The users table ships with the scaffold — `fastplace migrate` on a
-        # fresh project creates it, no make:auth follow-up needed.
-        # Autogenerate runs in a subprocess: env.py's model discovery imports
-        # every app.* module of the project it generates for, and in-process
-        # those modules would stay cached in sys.modules — shadowing the host
-        # project's own for the rest of this CLI process's life (duplicate
-        # declarative classes, wrong gates on every later boot).
-        bootstrap = (
-            "from pathlib import Path\n"
-            "from fastplace.orm.migrations import MigrationsManager\n"
-            "rev = MigrationsManager(Path('.')).make('create_users_table')\n"
-            "print(rev if rev else '')\n"
-        )
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-c", bootstrap],
-                cwd=target,
-                capture_output=True,
-                text=True,
-                errors="replace",
-                timeout=180,
-            )
-            made = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
-            if proc.returncode == 0 and made:
-                _step_done(f"Users table migration created ({Path(made).name})")
-                bootstrap_error = ""
-            else:
-                bootstrap_error = (proc.stderr or "").strip()
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            bootstrap_error = str(exc)
+        made, bootstrap_error = _bootstrap_users_migration(target)
+        if made:
+            _step_done(f"Users table migration created ({Path(made).name})")
         if bootstrap_error:
             _step_fail("Users table migration failed")
             console.print(Text(bootstrap_error, style="red"))
