@@ -183,6 +183,14 @@ export default defineConfig({
   },
   root: ".",
   publicDir: "public",
+  // The backend serves build assets under /build/ (kernel mount) and
+  // rewrites HTML tags from the manifest — but default-base CSS emits
+  // root-absolute url(/assets/…) for referenced files (self-hosted
+  // fonts), which nothing serves. Re-anchor emitted asset URLs to the
+  // served prefix.
+  experimental: {
+    renderBuiltUrl: (filename) => `/build/${filename}`,
+  },
   build: {
     outDir: "public/build",
     emptyOutDir: true,
@@ -194,6 +202,12 @@ export default defineConfig({
   server: {
     port: Number(process.env.VITE_PORT || 5173),
     strictPort: true,
+    // The dev shell HTML is served by the backend (a different origin),
+    // and Vite injects dev CSS via <style> tags — which have no base
+    // URL, so root-absolute url()s (self-hosted fonts) resolve against
+    // the backend and 404. Absolutize dev asset URLs to this origin;
+    // the dev counterpart of renderBuiltUrl above.
+    origin: `http://localhost:${Number(process.env.VITE_PORT || 5173)}`,
     // The dev shell points straight at this server (see fastplace/http/assets.py);
     // no reverse proxy is needed.
     proxy: {},
