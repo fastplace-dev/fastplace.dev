@@ -59,6 +59,10 @@ _FILES = (
     "resources/js/components/ui/button.tsx",
     "resources/css/app.css",
     "public/fastplace-logo.svg",
+    "public/favicon.ico",
+    "public/fastplace-icon.svg",
+    "public/apple-touch-icon.png",
+    "public/robots.txt",
     "tsconfig.json",
     "routes/__init__.py",
     "routes/web.py",
@@ -568,6 +572,21 @@ def test_new_vite_config_has_js_alias_and_vitest(tmp_path, monkeypatch):
     assert '"@": path.resolve(__dirname, "resources/js")' in vite
     assert 'environment: "jsdom"' in vite
     assert "resources/js/**/__tests__/**/*.{test,spec}.{ts,tsx,js,jsx}" in vite
+
+
+def test_new_vite_config_reanchors_asset_urls(tmp_path, monkeypatch):
+    """The bridge shell serves the document from the backend origin, so
+    root-absolute asset URLs Vite emits are unreachable: in dev, <style>-
+    injected CSS url()s resolve against the backend (font 404s); in build,
+    default-base /assets/... urls point where the kernel mounts nothing.
+    The config must absolutize dev URLs to the Vite origin and anchor
+    build URLs under /build/ (the kernel mount)."""
+    result, root = _invoke_with_input(tmp_path, monkeypatch, "blog", "--no-auth")
+    assert result.exit_code == 0
+    vite = (root / "blog" / "vite.config.js").read_text()
+    assert "origin:" in vite
+    assert "renderBuiltUrl" in vite
+    assert "`/build/${filename}`" in vite
 
 
 def test_new_index_html_has_prepaint(tmp_path, monkeypatch):

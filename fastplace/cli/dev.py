@@ -13,13 +13,13 @@ import os
 import shutil
 import signal
 import subprocess
-import sys
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import Any, overload
 
 import typer
 
+from fastplace.cli._interp import project_fastplace_bin, project_python
 from fastplace.console import console
 
 run_app = typer.Typer(help="Server runtimes.")
@@ -43,8 +43,12 @@ def _cfg(key: str, default: str) -> str:
     return str(config(key, default=default))
 
 
-def _uvicorn_command(*args: str) -> list[str]:
-    return [sys.executable, "-m", "uvicorn", *args]
+def _uvicorn_command(root: Path, *args: str) -> list[str]:
+    """The backend imports the project's app, so it runs on the project's
+    env — a global fastplace install must not serve an app through its own
+    (dependency-free) interpreter. Falls back to the running interpreter
+    when the project has no .venv."""
+    return [project_python(root), "-m", "uvicorn", *args]
 
 
 # ---------------------------------------------------------------------------
@@ -172,14 +176,6 @@ def _require_min(name: str, value: int, *, minimum: int = 1) -> None:
 
     if value < minimum:
         raise ConfigurationError(f"{name} must be at least {minimum}, got {value}")
-
-
-def _fastplace_bin() -> str | None:
-    """The console script next to the running interpreter, else on PATH."""
-    sibling = Path(sys.executable).with_name("fastplace")
-    if sibling.exists():
-        return str(sibling)
-    return shutil.which("fastplace")
 
 
 # ---------------------------------------------------------------------------
@@ -471,14 +467,20 @@ def run_dev(
         # self-refreshing 503) while a broken import would otherwise hang the
         # reloader's socket — see fastplace/http/dev_shell.py.
         backend = _uvicorn_command(
-            "fastplace.http.dev_shell:app", "--reload", "--host", host, "--port", str(port)
+            _project_root(),
+            "fastplace.http.dev_shell:app",
+            "--reload",
+            "--host",
+            host,
+            "--port",
+            str(port),
         )
         children.append(_spawn(backend, cwd=_project_root(), env=env))
 
         # Instant boundary feedback on save (blueprint §4): a third child
         # re-runs `lint:modules` semantics on every app/**.py edit.
         if not skip_lint:
-            fastplace = _fastplace_bin()
+            fastplace = project_fastplace_bin(_project_root())
             if fastplace:
                 console.print("  lint     → module boundaries re-checked on save")
                 children.append(_spawn([fastplace, "lint:watch"], cwd=_project_root(), env=env))
@@ -580,7 +582,7 @@ def serve(
         f"[fastplace]Fastplace[/fastplace] serving http://{host}:{port} ({workers} workers)"
     )
     command = _uvicorn_command(
-        "asgi:app", "--host", host, "--port", str(port), "--workers", str(workers)
+        _project_root(), "asgi:app", "--host", host, "--port", str(port), "--workers", str(workers)
     )
     if forwarded_allow_ips:
         command += ["--forwarded-allow-ips", forwarded_allow_ips]
