@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,9 @@ async def test_server_name_and_default_tool_set(project):
     names = {tool.name for tool in tools}
 
     assert server.name == SERVER_NAME == "fastplace-aibrain"
+    # Clients render serverInfo on connect — the running framework's own
+    # version, not the SDK's empty default.
+    assert server.version == version("fastplace")
     assert names == {
         "application-info",
         "database-connections",

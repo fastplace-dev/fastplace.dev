@@ -35,6 +35,18 @@ from fastplace.mcp.tools.tinker import build_tinker
 
 SERVER_NAME = "fastplace-aibrain"
 
+
+def _framework_version() -> str:
+    """The running fastplace distribution's version — clients render it as
+    ``serverInfo.version`` on connect (the SDK default is an empty string)."""
+    from importlib.metadata import version as dist_version
+
+    try:
+        return dist_version("fastplace")
+    except Exception:  # noqa: BLE001 — a source checkout without an installed dist
+        return ""
+
+
 INSTRUCTIONS = (
     "Tools for understanding and operating a Fastplace application: read the "
     "database (read-only), tail application and browser logs, inspect the "
@@ -66,7 +78,7 @@ def build_server(
     engine_resolver: Callable | None = None,
 ) -> MCPServer:
     """Assemble the ``fastplace-aibrain`` server for a project root."""
-    server = MCPServer(name=SERVER_NAME, instructions=INSTRUCTIONS)
+    server = MCPServer(name=SERVER_NAME, version=_framework_version(), instructions=INSTRUCTIONS)
     exclude = ctx.config.tools_exclude
 
     def register(name: str, fn: Callable, description: str, *, readonly: bool = True) -> None:
