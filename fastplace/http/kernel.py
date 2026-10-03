@@ -273,6 +273,11 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     from fastplace.http.dashboard import mount_dashboard
 
     mount_dashboard(app)
+    # MCP browser-log sink — dev-only (debug on) capture feed for the
+    # fastplace-aibrain browser-logs tool. No-op otherwise.
+    from fastplace.mcp.browser_log_mount import mount_browser_logs
+
+    mount_browser_logs(app)
     _install_static_mounts(app, root)
     _register_db_lifecycle(root)
     _register_broadcast_lifecycle()

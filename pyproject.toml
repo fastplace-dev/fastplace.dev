@@ -57,6 +57,7 @@ pwdlib = ["pwdlib[argon2]>=0.2"]
 queue = ["saq>=0.18", "redis>=5.0"]
 webauthn = ["webauthn>=2.6"]
 s3 = ["aioboto3>=13"]
+mcp = ["mcp>=2.0"]
 all = [
     "asyncpg>=0.29", "pgvector>=0.3",
     "asyncmy>=0.2.9", "cryptography>=42",
@@ -68,6 +69,7 @@ all = [
     "webauthn>=2.6",
     "freezegun>=1.5",
     "aioboto3>=13",
+    "mcp>=2.0",
 ]
 dev = [
     "asgi-lifespan>=2.1",

@@ -80,7 +80,20 @@ def project_boot_sandbox(root: Path, *, persist: bool = False) -> Iterator[None]
 
     # Tables owned by a *foreign* project's models — e.g. a host repo's own
     # app living in the process while a scaffolded project boots.
-    evicted = {cls.__table__.key: cls.__table__ for cls in all_models() if _class_is_foreign(cls)}
+    classes = all_models()
+    evicted = {cls.__table__.key: cls.__table__ for cls in classes if _class_is_foreign(cls)}
+    # A Table whose owning class is gone is unattributable: the class
+    # registry holds model subclasses weakly, so a class can be
+    # garbage-collected while the global metadata keeps its Table — and
+    # class-keyed eviction can no longer see it, so it would diff into the
+    # next boot's autogenerate revision and migrate:check compare. Every
+    # Table a live model owns is exempt; the sweep takes only the class-less
+    # remainder. (``dispose_all_models`` prevents the same state for
+    # deliberate disposal; this covers the GC path.)
+    owned = {cls.__table__.key for cls in classes if getattr(cls, "__table__", None) is not None}
+    for key in metadata.tables:
+        if key not in evicted and key not in owned:
+            evicted[key] = metadata.tables[key]
     for key in evicted:
         if key in metadata.tables:
             metadata.remove(metadata.tables[key])

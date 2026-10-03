@@ -102,3 +102,62 @@ def test_dispose_drops_the_table_with_the_class():
     dispose_all_models()
 
     assert "sandbox_dispose_notes" not in ModelBase.metadata.tables
+
+
+def test_orphan_table_is_evicted_on_entry(tmp_path):
+    """A Table with no live model class is evicted like a foreign table.
+
+    The class registry holds model subclasses weakly, so an owning class can
+    be garbage-collected while the global metadata keeps its Table — the
+    Table becomes unattributable to any project. Class-keyed entry eviction
+    can no longer see it, and the next boot would diff it into an
+    autogenerate revision and a ``migrate:check`` compare (the intermittent
+    CLI-suite leak). Everything a *live* model owns is exempt; the sweep
+    takes only the class-less remainder.
+    """
+    from sqlalchemy import Column, Integer, Table
+
+    from fastplace.orm.model import Model as ModelBase
+
+    Table(
+        "sandbox_orphan_docs",
+        ModelBase.metadata,
+        Column("id", Integer, primary_key=True),
+    )
+    try:
+        assert "sandbox_orphan_docs" in ModelBase.metadata.tables
+
+        with project_boot_sandbox(tmp_path, persist=True):
+            assert "sandbox_orphan_docs" not in ModelBase.metadata.tables
+
+        # persist=True keeps the eviction in place: the orphan is nobody's
+        # project table, so the caller's project owns the metadata without it.
+        assert "sandbox_orphan_docs" not in ModelBase.metadata.tables
+    finally:
+        if "sandbox_orphan_docs" in ModelBase.metadata.tables:
+            ModelBase.metadata.remove(ModelBase.metadata.tables["sandbox_orphan_docs"])
+
+
+def test_orphan_table_is_restored_after_non_persist_boot(tmp_path):
+    """``persist=False`` restores what it evicted — orphans included.
+
+    The sandbox never permanently destroys a Table it found at entry, even
+    one whose owning class is gone: the boot's exit re-adds the snapshot so
+    the surrounding process state (a test fixture's saved registration) is
+    exactly what it was before the block.
+    """
+    from sqlalchemy import Column, Integer, Table
+
+    from fastplace.orm.model import Model as ModelBase
+
+    Table(
+        "sandbox_orphan_posts",
+        ModelBase.metadata,
+        Column("id", Integer, primary_key=True),
+    )
+
+    with project_boot_sandbox(tmp_path):
+        assert "sandbox_orphan_posts" not in ModelBase.metadata.tables
+
+    assert "sandbox_orphan_posts" in ModelBase.metadata.tables
+    ModelBase.metadata.remove(ModelBase.metadata.tables["sandbox_orphan_posts"])
