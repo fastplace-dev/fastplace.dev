@@ -8,6 +8,10 @@ from dataclasses import dataclass, field
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 
+#: The hosted docs search API — served by the deployed fastplace.dev site
+#: itself (no separate docs subdomain exists).
+DOCS_API_URL = "https://fastplace.dev"
+
 
 def _env_bool(env: dict[str, str], key: str, default: bool) -> bool:
     raw = env.get(key)
@@ -33,7 +37,7 @@ class McpConfig:
     """Runtime switches for the MCP server and its tools."""
 
     enabled: bool = True
-    api_url: str = "https://docs.fastplace.dev"
+    api_url: str = DOCS_API_URL
     tool_timeout: int = 180
     tinker: bool = False
     rules: bool = True
@@ -46,8 +50,7 @@ class McpConfig:
 
         return cls(
             enabled=_env_bool(env, "FASTPLACE_MCP_ENABLED", True),
-            api_url=env.get("FASTPLACE_MCP_API_URL", "https://docs.fastplace.dev").strip()
-            or "https://docs.fastplace.dev",
+            api_url=env.get("FASTPLACE_MCP_API_URL", DOCS_API_URL).strip() or DOCS_API_URL,
             tool_timeout=_env_int(env, "FASTPLACE_MCP_TOOL_TIMEOUT", 180, floor=1),
             tinker=_env_bool(env, "FASTPLACE_MCP_TINKER", False),
             rules=_env_bool(env, "FASTPLACE_MCP_RULES", True),

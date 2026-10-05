@@ -11,7 +11,10 @@ def test_defaults() -> None:
     cfg = McpConfig.from_env({})
 
     assert cfg.enabled is True
-    assert cfg.api_url == "https://docs.fastplace.dev"
+    # The hosted docs API lives on the deployed site itself — a
+    # docs.fastplace.dev host never existed (no DNS record), so pointing
+    # the search-docs tool there made every digest a connection failure.
+    assert cfg.api_url == "https://fastplace.dev"
     assert cfg.tool_timeout == 180
     assert cfg.tinker is False
     assert cfg.rules is True
