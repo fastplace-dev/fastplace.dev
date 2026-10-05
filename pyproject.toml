@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastplace"
-version = "0.4.1"
+version = "0.4.2"
 description = "Fastplace — an opinionated, full-stack, AI-native web framework built on Python and React, focused on a productive developer experience."
 readme = "README.md"
 requires-python = ">=3.12"

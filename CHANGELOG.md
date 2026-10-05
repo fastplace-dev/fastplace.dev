@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-06
+
+### Added
+
+- **fastplace-aibrain MCP server** (`pip install fastplace[mcp]`, `fastplace mcp start`):
+  a Model Context Protocol stdio server that gives AI coding agents live
+  context about a Fastplace project — application info (framework, Python,
+  database, every installed package), read-only database schema and query
+  tools, application/browser log readers, hosted docs search
+  (search-docs, backed by the deployed fastplace.dev digest API), a
+  durable project-rules recorder (`.fastplace/rules/`), and an opt-in
+  isolated `tinker` REPL (`FASTPLACE_MCP_TINKER=1`). Ships with install
+  machinery for 13 agent clients (`fastplace mcp install` — Claude Code,
+  Cursor, Codex, Copilot, Zed, and more), an AGENTS.md guidelines writer,
+  and a `fastplace-code-simplifier` prompt. Every tool is gated by
+  `FASTPLACE_MCP_*` env switches; the server reports the framework
+  version in `serverInfo`.
+- The `all` extra now includes the `mcp` dependencies.
+
+### Fixed
+
+- Intermittent `migrate:check`/`make:migration` schema drift: tables whose
+  model class was garbage-collected stayed on the ORM metadata and leaked
+  into autogenerate. The boot sandbox now sweeps class-less tables on
+  entry (and restores them after a non-persisting boot).
+- `search-docs` defaults to the deployed `https://fastplace.dev` docs API —
+  the previous default host had no DNS record.
+
 ## [0.4.0] - 2026-10-01
 
 ### Added
