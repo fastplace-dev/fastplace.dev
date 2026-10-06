@@ -83,6 +83,9 @@ dev = [
     "twine>=6.1",
     "email-validator>=2.0",
     "webauthn>=2.6",
+    # tests/mcp is part of the default pytest run — the dev extra is the
+    # "everything the suite needs" set, so it carries the SDK too.
+    "mcp>=2.0",
 ]
 
 [project.scripts]

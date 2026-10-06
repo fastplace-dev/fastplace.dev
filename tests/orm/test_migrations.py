@@ -216,8 +216,9 @@ def test_migration_status_without_migrations_dir(project):
 
 
 def test_make_migration_imports_custom_column_types(project):
-    # VectorField serializes as fastplace.orm.types.VectorJSON in the
-    # generated revision — without the import the migration can never run.
+    # VectorField serializes as fastplace.orm.types.PortableVector in the
+    # generated revision — without the import the migration can never run,
+    # and dropped constructor args would silently change the column.
     (project / "app" / "modules" / "blog" / "models" / "note.py").write_text(
         "from fastplace.orm import Field, Model, VectorField\n"
         "\n"
@@ -233,7 +234,7 @@ def test_make_migration_imports_custom_column_types(project):
 
     revision = next((project / "database" / "migrations" / "versions").glob("*.py"))
     source = revision.read_text()
-    assert "fastplace.orm.types.VectorJSON()" in source
+    assert "fastplace.orm.types.PortableVector(dimensions=3)" in source
     assert "import fastplace.orm.types" in source
 
     migrated = runner.invoke(cli_app, ["migrate"])

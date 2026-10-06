@@ -183,7 +183,7 @@ def python_type_to_sa(annotation: Any, field: Field, url: str | None):
     # explicit overrides
     if field.type is not None:
         if field.type == "vector":
-            return vector_type_for(field.dimensions or 1536, url)
+            return vector_type_for(field.dimensions or 1536)
         if field.type == "text" or field.text:
             return Text()
         if field.type == "json":

@@ -600,9 +600,10 @@ class Model(AsyncAttrs, DeclarativeBase):
     @classmethod
     def _vector_column(cls) -> Any:
         for column in cls.__table__.columns:
-            # pgvector >= 0.4 renamed the class Vector -> VECTOR; duck-type on
-            # the distance operator so both register.
-            if type(column.type).__name__ in ("Vector", "VECTOR") or hasattr(
+            # pgvector >= 0.4 renamed the class Vector -> VECTOR; PortableVector
+            # is the framework's dialect-resolved wrapper. Duck-type on the
+            # distance operator so all three register.
+            if type(column.type).__name__ in ("Vector", "VECTOR", "PortableVector") or hasattr(
                 column.type, "cosine_distance"
             ):
                 return column

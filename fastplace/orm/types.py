@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.types import CHAR, JSON, DateTime, TypeDecorator
+from sqlalchemy.types import CHAR, JSON, DateTime, Float, TypeDecorator, TypeEngine
 
 
 class GUID(TypeDecorator):
@@ -113,8 +113,46 @@ def pgvector_type(dimensions: int) -> Any:
     return Vector(dimensions)
 
 
-def vector_type_for(dimensions: int, url: str | None) -> Any:
-    """Choose the vector column type for the configured backend."""
-    if url and url.startswith(("postgresql", "postgres")):
-        return pgvector_type(dimensions)
-    return VectorJSON()
+class PortableVector(TypeDecorator):
+    """Vector column — pgvector ``VECTOR(n)`` on PostgreSQL, JSON elsewhere.
+
+    The dialect is resolved at compile time, never at model-definition time:
+    ``Model.metadata`` is process-global, so a class defined under one
+    ``DATABASE_URL`` (the portable test lanes, a reconfigured process) must
+    still ``create_all`` cleanly under any other. Distance operators ride
+    this type directly so ``Model.vector_search`` sees them on PostgreSQL.
+    """
+
+    impl = JSON
+    cache_ok = True
+
+    def __init__(self, dimensions: int = 1536) -> None:
+        self.dimensions = dimensions
+        super().__init__()
+
+    def __repr__(self) -> str:
+        return f"PortableVector(dimensions={self.dimensions})"
+
+    def load_dialect_impl(self, dialect: Any) -> Any:
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(pgvector_type(self.dimensions))
+        return dialect.type_descriptor(VectorJSON())
+
+    class Comparator(TypeEngine.Comparator):
+        """The pgvector distance operators (``<->``, ``<#>``, ``<=>``)."""
+
+        def l2_distance(self, other: object, /) -> Any:
+            return self.op("<->", return_type=Float)(other)
+
+        def max_inner_product(self, other: object, /) -> Any:
+            return self.op("<#>", return_type=Float)(other)
+
+        def cosine_distance(self, other: object, /) -> Any:
+            return self.op("<=>", return_type=Float)(other)
+
+    comparator_factory = Comparator
+
+
+def vector_type_for(dimensions: int) -> Any:
+    """Portable vector column type — dialect-resolved at compile time."""
+    return PortableVector(dimensions)

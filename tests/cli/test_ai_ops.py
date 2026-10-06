@@ -597,17 +597,20 @@ def test_embed_check_unknown_class_exits_one(
     assert "Teapot" in ANSI_RE.sub("", result.output)
 
 
-def test_embed_check_sqlite_backend_notes_missing_dims(
+def test_embed_check_sqlite_backend_still_verifies_dims(
     tmp_path,
     monkeypatch,
     park_project_modules,  # noqa: F811 — fixture param
     embed_stub,
 ):
+    """PortableVector carries declared dims on every backend — sqlite is no
+    longer a silent 'cannot verify' case; a mismatch fails there exactly
+    like it would on postgresql."""
     url = f"sqlite+aiosqlite:///{tmp_path}/embed.db"
     _vector_project(tmp_path, monkeypatch, dims=512, suffix="sqlite", url=url)
 
     result = runner.invoke(cli_app, ["ai:embed", "text", "--check", "Document"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     plain = ANSI_RE.sub("", result.output)
-    assert "not declared" in plain  # VectorJSON carries no dims — stated, not guessed
+    assert "mismatch Document.body: declared 512, embedding returns 1536" in plain

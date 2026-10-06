@@ -224,11 +224,12 @@ def ai_agents() -> None:
 def _vector_columns(model_cls: Any) -> list[tuple[str, int | None]]:
     """(column name, declared dims or None) for every vector-typed column.
 
-    pgvector's Vector carries ``.dim``; the sqlite fallback VectorJSON
+    PortableVector (the VectorField column type) carries ``.dimensions``;
+    a raw pgvector Vector carries ``.dim``; the legacy VectorJSON fallback
     declares nothing — that None is the caller's 'backend does not store
     dims' case.
     """
-    from fastplace.orm.types import VectorJSON
+    from fastplace.orm.types import PortableVector, VectorJSON
 
     try:
         from pgvector.sqlalchemy import Vector
@@ -237,10 +238,11 @@ def _vector_columns(model_cls: Any) -> list[tuple[str, int | None]]:
 
     found: list[tuple[str, int | None]] = []
     for column in model_cls.__table__.columns:
-        is_vector = isinstance(column.type, VectorJSON) or (
+        if isinstance(column.type, PortableVector):
+            found.append((column.name, column.type.dimensions))
+        elif isinstance(column.type, VectorJSON) or (
             Vector is not None and isinstance(column.type, Vector)
-        )
-        if is_vector:
+        ):
             found.append((column.name, getattr(column.type, "dim", None)))
     return found
 

@@ -228,7 +228,8 @@ def test_tenancy_pyproject_declares_project_urls():
     text = (ROOT / "packages" / "tenancy" / "pyproject.toml").read_text()
     urls_block = text.split("[project.urls]", 1)[1].split("[", 1)[0]
     assert f'Homepage = "{HOMEPAGE}"' in urls_block
-    assert f'Repository = "{REPO_URL}"' in urls_block
+    # The monorepo subtree path — the package's own directory, not the root.
+    assert f'Repository = "{REPO_URL}/tree/master/packages/tenancy"' in urls_block
 
 
 def test_tenancy_pyproject_license_uses_pep639_spdx_form():

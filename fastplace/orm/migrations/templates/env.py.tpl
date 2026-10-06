@@ -66,7 +66,11 @@ def _render_item(type_, obj, autogen_context):
     module = type(obj).__module__
     if isinstance(obj, sa.types.TypeDecorator) and module.startswith("fastplace."):
         autogen_context.imports.add(f"import {module}")
-        return f"{module}.{type(obj).__name__}()"
+        # Constructor args must survive rendering — PortableVector(dimensions=3)
+        # dropped to PortableVector() would silently change the column.
+        args = repr(obj)
+        args = args[args.index("(") :] if "(" in args else "()"
+        return f"{module}.{type(obj).__name__}{args}"
     if (
         isinstance(obj, sa.types.UserDefinedType)
         and not isinstance(obj, sa.types.TypeDecorator)
