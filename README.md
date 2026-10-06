@@ -4,7 +4,12 @@
 
 Fastplace is a **modular monolith by default** — one deployable unit composed of strictly bounded internal modules — that serves every client through two presentation edges: a **Server-Driven SPA** (Inertia pattern) for the web and a **Unified API** for mobile and desktop applications, all backed by a single **Controller-Service-Repository (CSR)** core. AI is native infrastructure, not an integration: LLM tool calling, vector search, and SSE streaming are part of the framework fabric.
 
-![Fastplace banner](docs/fastpklace-banner.png)
+![Fastplace banner](docs/fastplace-banner.png)
+
+[![CI](https://github.com/fastplace-dev/fastplace.dev/actions/workflows/ci.yml/badge.svg)](https://github.com/fastplace-dev/fastplace.dev/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/fastplace)](https://pypi.org/project/fastplace/)
+[![npm](https://img.shields.io/npm/v/@fastplace/react)](https://www.npmjs.com/package/@fastplace/react)
+[![License: MIT](https://img.shields.io/badge/License-MIT-ff4d00.svg)](LICENSE)
 
 > **Status:** The framework is implemented (Phases 1–7) and exercised end-to-end by the sample application in this repo. The documentation at [fastplace.dev](https://fastplace.dev) covers the guides; this README is the project overview.
 
@@ -73,6 +78,7 @@ Swap the database by setting `DATABASE_URL` (`postgresql://…` recommended in p
 - [Stack Selection](#stack-selection)
 - [Implementation Roadmap](#implementation-roadmap)
 - [Documentation](#documentation)
+- [Community](#community)
 - [License](#license)
 
 ## Vision
@@ -374,6 +380,13 @@ Phase ordering is deliberate: the ORM precedes both presentation edges and the m
 ## Documentation
 
 - **[fastplace.dev](https://fastplace.dev)** — guides for getting started, the database layer, authentication, AI, background jobs, testing, deployment, and versioning.
+
+## Community
+
+- **[Contributing](CONTRIBUTING.md)** — development setup, the tests-first workflow, and the gates every change must pass.
+- **[Code of Conduct](CODE_OF_CONDUCT.md)** — the standard of behavior we hold everyone in this project to.
+- **[Security](SECURITY.md)** — found a vulnerability? Report it privately, never in a public issue.
+- **[Support](SUPPORT.md)** — where to ask questions and how reports are routed.
 
 ## Acknowledgements
 

@@ -6,7 +6,7 @@ hero:
   text: Full-stack, AI-native, one deployable.
   tagline: An opinionated Python + React framework with a productive developer experience — server-driven SPA, unified API, and AI as infrastructure.
   image:
-    src: /fastpklace-banner.png
+    src: /fastplace-banner.png
     alt: Fastplace banner
   actions:
     - theme: brand

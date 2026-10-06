@@ -82,17 +82,22 @@ gate locally is a red build.
   `app/modules/<name>/services/`.
 - Prefer hash-based lookups over scans, push filtering and aggregation
   into the database, and design for pagination on anything that grows.
-- `docs/framework_architectural_blueprint.md` is the source of truth —
-  when your change moves the architecture, update the blueprint.
+- All first-party packages (`fastplace`, `fastplace-tenancy`,
+  `@fastplace/react`, `@fastplace/ai-react`) live in this one repository
+  and release in lockstep; new standalone products (sites, tools) get
+  their own repository under the org.
+- The public architecture reference is the README's architecture sections and
+  the guides at [fastplace.dev](https://fastplace.dev) — when your change
+  moves the architecture, update the docs to match (or flag it in the PR so
+  the maintainers can).
 
 ## Naming guardrail
 
 Refer to other software projects only by neutral pattern names —
 "declarative", "fluent", "active-record style", "server-driven SPA
 bridge" — never by product name, in code, comments, docstrings, tests,
-docs, package metadata, or commit messages. The two permitted exceptions
-are the Acknowledgements sections of `README.md` and
-`docs/framework_architectural_blueprint.md`.
+docs, package metadata, or commit messages. The one permitted exception is
+the Acknowledgements section of `README.md`.
 
 ## Commit style
 
@@ -111,4 +116,16 @@ chore(release): fastplace 0.4.0
 - All gates green before review.
 - A short rationale in the description: what changed, why, and how it
   was verified. For bug fixes, include the reproduction the tests pin.
-- New public API deserves a docs touch: guide, blueprint, or docstring.
+- New public API deserves a docs touch: guide, docstring, or README.
+
+## Community and conduct
+
+This project follows the [Code of Conduct](CODE_OF_CONDUCT.md) — by
+participating you agree to uphold it. Conduct reports go to the maintainer
+at firozanam.bd@gmail.com. Not sure where a question belongs? See
+[Support](SUPPORT.md).
+
+## License
+
+Fastplace is [MIT-licensed](LICENSE). By opening a pull request you agree
+your contributions are licensed under it.
