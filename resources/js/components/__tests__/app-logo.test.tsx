@@ -40,7 +40,7 @@ describe("AppLogo", () => {
 
     const svg = badge?.querySelector("svg");
     expect(svg).not.toBeNull();
-    expect(svg).toHaveAttribute("viewBox", "0 0 417.27 535.81");
+    expect(svg).toHaveAttribute("viewBox", "0 0 390.77 429.6");
     expect(svg).toHaveClass("fill-current");
     expect(svg).toHaveClass("size-6");
   });

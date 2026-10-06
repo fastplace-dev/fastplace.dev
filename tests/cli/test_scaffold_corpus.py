@@ -168,3 +168,20 @@ def test_intentionally_diverged_entries_still_diverge():
         repo_file = repo_root / rel
         assert corpus_file.is_file() and repo_file.is_file(), rel
         assert corpus_file.read_bytes() != repo_file.read_bytes(), rel
+
+
+# The regenerated brand rasters (favicon ICO, apple-touch PNG) are the only
+# binary corpus files — byte-sync covers corpus↔repo, but a regeneration that
+# produced a truncated or wrong-container file would still byte-sync cleanly.
+# A container-magic + size floor catches that class of rot.
+_BINARY_BRAND_ASSETS = (
+    ("public/favicon.ico", b"\x00\x00\x01\x00"),
+    ("public/apple-touch-icon.png", b"\x89PNG\r\n\x1a\n"),
+)
+
+
+@pytest.mark.parametrize(("rel", "magic"), _BINARY_BRAND_ASSETS)
+def test_binary_brand_assets_are_well_formed(rel, magic):
+    data = (CORPUS / rel).read_bytes()
+    assert data.startswith(magic), f"{rel} is not the expected container format"
+    assert len(data) > 4096, f"{rel} looks truncated ({len(data)} bytes)"
