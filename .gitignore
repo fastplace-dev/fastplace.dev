@@ -58,8 +58,6 @@ dist/
 packages/*/dist/
 
 # Docs site build output (VitePress)
-docs/site/.vitepress/dist/
-docs/site/.vitepress/cache/
 
 # Temporary working files
 commit-message.txt

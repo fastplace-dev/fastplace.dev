@@ -210,9 +210,6 @@ jobs:
       - name: Vitest
         run: npm run test:run
 
-      - name: Docs site build
-        run: npm run docs:build
-
   supply-chain:
     name: Supply chain (wheel + deps audit)
     needs: boundary

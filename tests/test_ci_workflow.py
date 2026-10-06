@@ -115,9 +115,11 @@ def test_frontend_job_runs_the_full_gate_set(ci):
         "npm run lint:check",
         "npm run format:check",
         "npm run test:run",
-        "npm run docs:build",  # the docs site builds in CI — rot is a red build
     ):
         assert gate in script
+    # The docs site lives in the separate fastplace-docs app — a leftover
+    # docs:build step would compile an empty site and read as green.
+    assert "docs:build" not in script
 
 
 def test_e2e_job_runs_playwright_after_tests(ci):

@@ -17,8 +17,17 @@ import pytest
 
 @pytest.fixture()
 async def cross_backend():
-    """Define a vector model while PostgreSQL is configured, then yield."""
-    os.environ["DATABASE_URL"] = os.environ["TEST_POSTGRES_URL"]
+    """Define a vector model while PostgreSQL is configured, then yield.
+
+    The URL is never connected to — class definition only reads the string
+    (and with compile-time dialect resolution, not even that matters any
+    more) — so a dummy local address reproduces the scenario without
+    requiring TEST_POSTGRES_URL or a live server.
+    """
+    saved = {key: os.environ.get(key) for key in ("DATABASE_URL", "DATABASE_DRIVER")}
+    os.environ["DATABASE_URL"] = (
+        "postgresql+asyncpg://portability:portability@localhost:5432/portability"
+    )
     os.environ["DATABASE_DRIVER"] = "postgresql"
     from fastplace.db import reset_db
 
@@ -31,12 +40,20 @@ async def cross_backend():
         id: int = Field(primary_key=True)
         embedding: list[float] | None = VectorField(dimensions=3)
 
-    yield Probe
+    try:
+        yield Probe
+    finally:
+        from fastplace.db import db
 
-    from fastplace.db import db
-
-    await db.drop_all()
-    await db.dispose()
+        try:
+            await db.drop_all()
+        finally:
+            await db.dispose()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @pytest.mark.parametrize(

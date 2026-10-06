@@ -35,6 +35,29 @@ _REPO_MODEL_MODULES = {
 }
 
 
+def _module_is_live(module) -> bool:
+    """False when the module holds a mapped model class that was disposed.
+
+    The orm suite's autouse ``reset_model_registry`` unmaps every model in
+    place (``dispose_all_models`` strips ``__table__`` and the class
+    manager) and purges ``app.*`` from ``sys.modules``. Re-inserting such a
+    corpse module heals ``sys.modules`` but lists nothing — collect_models
+    filters classes without ``__table__`` — so a corpse must re-import and
+    redeclare fresh instead of cache-hitting.
+    """
+    from fastplace.orm import Model
+
+    for value in vars(module).values():
+        if (
+            isinstance(value, type)
+            and issubclass(value, Model)
+            and value.__module__.startswith("app.")
+            and getattr(value, "__table__", None) is None
+        ):
+            return False
+    return True
+
+
 @pytest.fixture
 def repo_project(monkeypatch):
     """cwd at the repo root, with its model modules importable.
@@ -49,7 +72,12 @@ def repo_project(monkeypatch):
     collide with their still-registered tables otherwise.
     """
     monkeypatch.chdir(REPO_ROOT)
-    with ensure_modules(_REPO_MODEL_MODULES):
+    # Corpses (disposed by an orm-suite test that ran after collection)
+    # stay out of the heal: left in, import_all_models cache-hits them and
+    # the listings come back empty; left out entirely, the modules
+    # re-import inside collect_models and redeclare cleanly.
+    live = {name: module for name, module in _REPO_MODEL_MODULES.items() if _module_is_live(module)}
+    with ensure_modules(live):
         yield REPO_ROOT
 
 

@@ -1,9 +1,9 @@
 """Publishing surface — the repo-side half of roadmap P7.
 
 Everything pinned here is repo-side only: link metadata, package READMEs,
-the docs-site toolchain/content, the deployment runbook, and CI wiring.
-Actual external deployment (fastplace.dev DNS, GitHub Pages enable, PyPI/npm
-publish) is the user's runbook — never attempted from the repo.
+the deployment runbook, and CI wiring. Actual external deployment
+(fastplace.dev DNS, GitHub Pages enable, PyPI/npm publish) is the user's
+runbook — never attempted from the repo.
 """
 
 from __future__ import annotations
@@ -16,32 +16,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-SITE = ROOT / "docs" / "site"
 REPO_URL = "https://github.com/fastplace-dev/fastplace.dev"
 HOMEPAGE = "https://fastplace.dev"
 
 #: Build output for the artifact-content tests — under gitignored storage/
 #: so repeated runs never pollute the checkout (a root dist/ would).
 _BUILD_DIR = ROOT / "storage" / "test-build"
-
-#: Every page the docs site commits to shipping. A missing page is a broken
-#: sidebar link, so the set is pinned exactly.
-SITE_PAGES = {
-    "index.md",
-    "getting-started.md",
-    "guides/pages-and-the-bridge.md",
-    "guides/database.md",
-    "guides/auth.md",
-    "guides/ai.md",
-    "guides/tenancy.md",
-    "guides/background-and-cache.md",
-    "guides/app-testing.md",
-    "guides/testing.md",
-    "guides/deployment.md",
-    "guides/upgrading.md",
-    "guides/versioning.md",
-    "api/overview.md",
-}
 
 #: Runbook sections — each names one external system the user alone controls.
 # Pinned as headings, not loose keywords: the words "PyPI"/"npm" appear all
@@ -318,111 +298,30 @@ def test_package_readmes_document_the_real_hook_api():
     assert "useAgent({ endpoint:" in readme
 
 
-def test_docs_site_documents_the_real_api():
-    """Docs code blocks are copy-paste contracts: config keys, method names,
-    import paths and hook shapes must match the framework exactly. Each
-    needle below was verified against the source before writing this test."""
-    pages = {p.name: p.read_text() for p in (SITE / "guides").glob("*.md")}
-    pages["api/overview.md"] = (SITE / "api" / "overview.md").read_text()
-    pages["getting-started.md"] = (SITE / "getting-started.md").read_text()
-    blob = "\n".join(pages.values())
+def test_docs_site_lives_in_the_docs_app():
+    """The fastplace.dev docs are served by the separate fastplace-docs app —
+    this repo carries no site content or VitePress toolchain. A stray
+    docs/site re-add would fork the truth (two sites, one stale) and a
+    forgotten `vitepress build docs/site` CI step compiles an EMPTY site
+    and exits 0, which reads as green while publishing nothing.
 
-    must_appear = {
-        # the cache config key the framework actually reads (fastplace/cache.py)
-        "CACHE_DRIVER",
-        # soft-delete escape is only_deleted (never only_trashed)
-        "only_deleted()",
-        # hashing surface is make/check
-        "Hash.check",
-        # CSRF middleware ships in fastplace.auth, not app.http
-        "fastplace.auth.middleware.CsrfMiddleware",
-        # TokenGuard needs its secret (APP_KEY)
-        'secret=config("APP_KEY")',
-        # useAIStream's real result shape
-        "handleSubmit, isStreaming } = useAIStream",
-        # agents stream from app factories, unawaited
-        'assistant_agent().stream_response(data["message"]',
-        # embed() takes one string and returns its vector
-        "await embed(item.body)",
-        # the passkey guard accessor the docs must name verbatim
-        "passkey_guard()",
-    }
-    for needle in must_appear:
-        assert needle in blob, needle
-
-    must_not_appear = {
-        "CACHE_STORE",
-        "only_trashed",
-        "Hash.verify",
-        "app.http.middleware.csrf",
-        # no agent(name) registry fn exists in fastplace.ai
-        "from fastplace.ai import agent",
-        'useAgent("',
-    }
-    for fiction in must_not_appear:
-        assert fiction not in blob, fiction
-
-
-def test_docs_site_ships_the_pinned_pages():
-    for page in SITE_PAGES:
-        assert (SITE / page).is_file(), page
-
-
-def test_docs_site_declares_the_sidebar_and_nav():
-    config = (SITE / ".vitepress" / "config.ts").read_text()
-    # Every pinned page must be reachable from the built sidebar, not orphaned.
-    for page in SITE_PAGES:
-        slug = page.removesuffix(".md")
-        assert slug in config, page
-    assert HOMEPAGE in config or "fastplace.dev" in config
-
-
-def test_docs_toolchain_is_wired_into_the_monorepo():
-    package = json.loads((ROOT / "package.json").read_text())
-    assert "vitepress" in package["devDependencies"]
-    assert package["scripts"]["docs:build"].startswith("vitepress build")
-    assert "docs:dev" in package["scripts"]
-    # Build output is runtime output — never committed.
-    gitignore = (ROOT / ".gitignore").read_text()
-    assert ".vitepress/dist" in gitignore
-    assert ".vitepress/cache" in gitignore
-
-
-def test_lint_ignores_docs_build_output():
-    """Anyone who builds the docs locally then runs lint:check would lint the
-    minified VitePress bundle — hundreds of errors from generated code. The
-    eslint ignores must cover it, same rule as public/build."""
-    eslint = (ROOT / "eslint.config.js").read_text()
-    assert "docs/site/.vitepress/dist" in eslint
-    assert "docs/site/.vitepress/cache" in eslint
-
-
-def test_docs_build_output_is_not_committed():
-    """The build runs locally and in CI — its output existing on disk is
-    normal. What must never happen is it landing in the tree."""
+    Asserted on TRACKED files, not filesystem presence: a leftover ignored
+    build dir (docs/site/.vitepress/dist from an old local build) is
+    runtime output, not a regression."""
     import subprocess
 
     if not (ROOT / ".git").exists():
         pytest.skip("requires a git checkout")
-
     tracked = subprocess.run(
-        ["git", "ls-files", "docs/site/.vitepress"],
+        ["git", "ls-files", "docs/site"],
         capture_output=True,
         text=True,
         cwd=ROOT,
     ).stdout.split()
-    # Subset, not equality: config.ts may be staged-but-not-yet-committed in
-    # a fresh checkout; any tracked dist/cache file is the regression.
-    assert set(tracked) <= {"docs/site/.vitepress/config.ts"}, tracked
-    # One call per path (a combined call passes if EITHER path is ignored)
-    # and with a trailing slash so dir-patterns match even before the first
-    # local build creates the directory.
-    for part in ("dist", "cache"):
-        result = subprocess.run(
-            ["git", "check-ignore", f"docs/site/.vitepress/{part}/"],
-            cwd=ROOT,
-        )
-        assert result.returncode == 0, f"docs/site/.vitepress/{part} must be gitignored"
+    assert not tracked, f"docs/site must stay out of this repo: {tracked}"
+    package = json.loads((ROOT / "package.json").read_text())
+    assert "vitepress" not in package.get("devDependencies", {}), "vestigial toolchain"
+    assert not any(s.startswith("docs:") for s in package["scripts"])
 
 
 def test_no_pages_workflow_can_clobber_the_production_domain():
@@ -430,9 +329,7 @@ def test_no_pages_workflow_can_clobber_the_production_domain():
     this repo's GitHub Pages was never enabled (verified: the Pages API
     404s under an admin token). A Pages workflow left in the tree
     self-activates the day the repo flips public, and a stray docs/site
-    push would then publish a stale site (and fight the custom domain).
-    The VitePress site still compiles in CI (the frontend job's
-    docs:build step) — only the deploy path is retired."""
+    push would then publish a stale site (and fight the custom domain)."""
     assert not (ROOT / ".github" / "workflows" / "docs.yml").exists(), (
         "docs.yml must not exist: production docs deploy from the separate "
         "fastplace-docs app, never from this repo's Pages"
@@ -491,24 +388,3 @@ def test_deployment_runbook_names_every_external_step():
     # No secret ever lands in the runbook itself.
     assert "pypi-AgEIcH" not in runbook
     assert "npm_" not in runbook
-
-
-@pytest.mark.parametrize(
-    "page",
-    sorted(SITE_PAGES),
-)
-def test_site_pages_are_real_content(page):
-    """A page under ~15 lines is a placeholder, not a guide."""
-    body = (SITE / page).read_text()
-    assert len([line for line in body.splitlines() if line.strip()]) >= 15, page
-
-
-def test_home_hero_banner_is_a_served_asset():
-    """The home hero must reference a banner VitePress actually serves —
-    hero images live under docs/site/public/ (the site's static dir), not
-    in repo-only locations the site build cannot resolve."""
-    home = (SITE / "index.md").read_text()
-    m = re.search(r"image:\s*\n(?:\s+\w+:.*\n)*?\s+src:\s*(\S+)", home)
-    assert m, "index.md hero must declare an image.src"
-    asset = SITE / "public" / m.group(1).lstrip("/")
-    assert asset.is_file(), f"hero image missing from site public dir: {asset}"

@@ -15,8 +15,6 @@ export default tseslint.config(
       // Local-only reference material (gitignored) — never linted.
       "docs/**",
       "packages/*/dist/**",
-      "docs/site/.vitepress/dist/**",
-      "docs/site/.vitepress/cache/**",
       "playwright-report/**",
       "test-results/**",
       "storage/**",
