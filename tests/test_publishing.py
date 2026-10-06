@@ -166,10 +166,23 @@ def built_artifacts():
         check=True,
         capture_output=True,
     )
-    wheel = next(_BUILD_DIR.glob("fastplace-*.whl"))
+    # The dir keeps artifacts from every past release, so "first glob match"
+    # once selected a stale 0.3.1 wheel over the just-built one and failed
+    # these tests against content that was never built. Pin the selection to
+    # the version pyproject actually declares.
+    declared = re.search(
+        r'^version\s*=\s*"(.+?)"',
+        (ROOT / "pyproject.toml").read_text(),
+        re.MULTILINE,
+    )
+    assert declared, "pyproject.toml carries no version"
+    version = declared.group(1)
+    wheel = _BUILD_DIR / f"fastplace-{version}-py3-none-any.whl"
+    sdist = _BUILD_DIR / f"fastplace-{version}.tar.gz"
+    assert wheel.is_file(), f"build produced no wheel for {version}: {wheel.name}"
+    assert sdist.is_file(), f"build produced no sdist for {version}: {sdist.name}"
     with zipfile.ZipFile(wheel) as archive:
         wheel_names = set(archive.namelist())
-    sdist = next(_BUILD_DIR.glob("fastplace-*.tar.gz"))
     with tarfile.open(sdist) as archive:
         sdist_names = {member.name.split("/", 1)[-1] for member in archive.getmembers()}
     return wheel, sdist, wheel_names, sdist_names
