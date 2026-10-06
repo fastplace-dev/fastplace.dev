@@ -127,6 +127,7 @@ STARTER_ONLY = {
     # The repo dashboard is sample-domain Index.jsx; the starter ships a
     # blank canvas instead.
     "resources/js/pages/Dashboard/Index.tsx",
+    "resources/js/pages/__tests__/Dashboard.test.tsx",
     "public/robots.txt",
     "public/apple-touch-icon.png",
 }
