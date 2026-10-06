@@ -75,6 +75,7 @@ Swap the database by setting `DATABASE_URL` (`postgresql://…` recommended in p
   - [Native AI Infrastructure](#native-ai-infrastructure)
   - [The `fastplace` CLI](#the-fastplace-cli)
 - [Project Directory Structure](#project-directory-structure)
+- [The Sample App](#the-sample-app)
 - [Stack Selection](#stack-selection)
 - [Implementation Roadmap](#implementation-roadmap)
 - [Documentation](#documentation)
@@ -339,6 +340,12 @@ my-fastplace-app/
 ```
 
 Every `fastplace make:*` generator writes into this canonical layout, so a Fastplace codebase is predictable from the first commit. The shared kernel (`app/models/`) holds only base classes and mixins — never entities — preventing the gradual accumulation of a "god folder" of models.
+
+## The Sample App
+
+This repo includes a working sample app (`app/`) that exercises the full framework — it powers our E2E suite and doubles as a live reference.
+
+It is a real Fastplace application, not a toy: bounded modules (`projects`, `accounts`, `knowledge`, `dashboard`), thin controllers with Pydantic request schemas, app-owned middleware, an SSE-streamed AI assistant with registered tools, queue jobs, seeders, and the full React bridge frontend under `resources/js/`. The E2E suite (`e2e/`) boots it through the real dev server and drives auth, passkeys, broadcasting, and accessibility journeys against it. The published wheel ships only the `fastplace/` package — the sample app is repo-only and never installed with the framework.
 
 ## Stack Selection
 
