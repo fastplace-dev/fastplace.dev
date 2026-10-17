@@ -253,8 +253,12 @@ jobs:
           # Drop the project's own entry: the audit weighs the shipped
           # dependency tree, and an unpublished local version (the release
           # train between bump and publish) has no PyPI advisory feed —
-          # --strict would fail on "dependency not found" instead.
-          /tmp/audit/bin/pip freeze | grep -v '^fastplace==' > /tmp/wheel-freeze.txt
+          # --strict would fail on "dependency not found" instead. A
+          # locally-installed wheel freezes as `fastplace @ file://…`, a
+          # published one as `fastplace==x.y.z`; both forms go, while any
+          # future fastplace-prefixed dependency stays in the audit.
+          /tmp/audit/bin/pip freeze \
+            | grep -v -e '^fastplace==' -e '^fastplace @' > /tmp/wheel-freeze.txt
           pip-audit --strict --no-deps --requirement /tmp/wheel-freeze.txt
 
   e2e:
