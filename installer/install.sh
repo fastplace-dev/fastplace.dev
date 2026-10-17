@@ -60,6 +60,33 @@ esac
 
 export PATH="$UV_TOOL_BIN_DIR:$PATH"
 
+# --- options ----------------------------------------------------------------
+
+# The package spec grows here: --mcp swaps in the AI-agent extra, and a
+# valid FASTPLACE_VERSION pins a release. Validation happens before any
+# network call so a typo can never leave a half-configured machine.
+install_spec="fastplace"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mcp)
+      install_spec="fastplace[mcp]"
+      ;;
+    *)
+      err "Unknown option: $1"
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ -n "${FASTPLACE_VERSION:-}" ]; then
+  if ! [[ "$FASTPLACE_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    err "FASTPLACE_VERSION must be a release like 0.4.3, got: $FASTPLACE_VERSION"
+    exit 2
+  fi
+  install_spec+="==$FASTPLACE_VERSION"
+fi
+
 # --- 1. uv ----------------------------------------------------------------
 
 say "${DIM}fastplace installer $INSTALLER_VERSION${RESET}"
@@ -82,8 +109,8 @@ fi
 
 # --- 2. fastplace CLI -----------------------------------------------------
 
-say "${DIM}Installing fastplace (managed Python 3.12, isolated environment)…${RESET}"
-uv tool install --upgrade --python 3.12 fastplace
+say "${DIM}Installing $install_spec (managed Python 3.12, isolated environment)…${RESET}"
+uv tool install --upgrade --python 3.12 "$install_spec"
 
 # --- 3. persistent PATH ---------------------------------------------------
 
