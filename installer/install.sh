@@ -21,8 +21,19 @@
 #
 # Source: https://github.com/fastplace-dev/fastplace.dev/blob/master/installer/install.sh
 
-# Re-exec under bash when piped to `sh` (the docs say `| bash`; be kind
-# to people who type `| sh` anyway).
+# Piped-to-a-shell protection. When this script arrives on stdin
+# (`curl … | sh`), $0 is the *shell's own name*, never a script path —
+# re-exec'ing "$0" would try to run a file named "sh" from the caller's
+# cwd. Stage stdin in a temp file and re-exec that instead.
+case "$0" in
+  sh | dash | bash | zsh | ksh)
+  _stdin_stage=$(mktemp "${TMPDIR:-/tmp}/fastplace-install.XXXXXX") || exit 1
+    cat >"$_stdin_stage"
+    exec bash "$_stdin_stage" "$@"
+    ;;
+esac
+
+# Re-exec under bash when invoked as a file through a non-bash shell.
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
 fi
@@ -66,10 +77,14 @@ export PATH="$UV_TOOL_BIN_DIR:$PATH"
 # valid FASTPLACE_VERSION pins a release. Validation happens before any
 # network call so a typo can never leave a half-configured machine.
 install_spec="fastplace"
+modify_path=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --mcp)
       install_spec="fastplace[mcp]"
+      ;;
+    --no-modify-path)
+      modify_path=0
       ;;
     *)
       err "Unknown option: $1"
@@ -120,24 +135,23 @@ case "${SHELL:-}" in
 esac
 
 path_modified=0
-case ":$PATH:" in
-  *":$UV_TOOL_BIN_DIR:"*) ;;
-  *) ;;
-esac
-# PATH exported above covers this session; persist for future shells.
-needs_persist=1
-if [ -f "$rc_file" ] && grep -qF "$PATH_MARKER" "$rc_file" 2>/dev/null; then
-  needs_persist=0
-fi
-if [ "$needs_persist" = 1 ]; then
-  {
-    printf '\n%s\n' "$PATH_MARKER"
-    # shellcheck disable=SC2016  # $HOME must land literally in the rc file
-    printf 'export PATH="$HOME/.local/bin:$PATH"\n'
-  } >>"$rc_file" 2>/dev/null || true
-  if grep -qF "$PATH_MARKER" "$rc_file" 2>/dev/null; then
+print_manual_path=0
+if [ "$modify_path" = 1 ] && ! grep -qF "$PATH_MARKER" "$rc_file" 2>/dev/null; then
+  # shellcheck disable=SC2016  # $HOME must land literally in the rc file
+  path_line='export PATH="$HOME/.local/bin:$PATH"'
+  if printf '\n%s\n%s\n' "$PATH_MARKER" "$path_line" >>"$rc_file" 2>/dev/null; then
     path_modified=1
+  else
+    print_manual_path=1  # read-only rc, full disk, …
   fi
+elif [ "$modify_path" = 0 ]; then
+  print_manual_path=1  # the user asked us not to touch their rc file
+fi
+if [ "$print_manual_path" = 1 ]; then
+  say ""
+  say "${DIM}Make sure ~/.local/bin is on your PATH (add to $rc_file):"
+  # shellcheck disable=SC2016  # literal $HOME is the point
+  say '  export PATH="$HOME/.local/bin:$PATH'"${RESET}"
 fi
 
 # --- 4. verify ------------------------------------------------------------

@@ -108,24 +108,47 @@ def failing_curl(sandbox: Sandbox) -> Sandbox:
     return sandbox
 
 
+def _sandbox_env(home: Path) -> dict[str, str]:
+    stub_bin = home.parent / "stub-bin"
+    return {
+        "HOME": str(home),
+        "SANDBOX_HOME": str(home),
+        "PATH": f"{stub_bin}:{home}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "SHELL": "/bin/zsh",
+    }
+
+
 def run_installer(
     home: Path,
     args: tuple[str, ...] = (),
     env: dict[str, str] | None = None,
     shell: str = "bash",
 ) -> subprocess.CompletedProcess[str]:
-    """Run install.sh in the sandbox HOME with stubs first on PATH."""
-    stub_bin = home.parent / "stub-bin"
-    run_env = {
-        "HOME": str(home),
-        "SANDBOX_HOME": str(home),
-        "PATH": f"{stub_bin}:{home}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        "SHELL": "/bin/zsh",
-    }
+    """Run install.sh as a file argument in the sandbox HOME."""
+    run_env = _sandbox_env(home)
     if env:
         run_env.update(env)
     return subprocess.run(
         [shell, str(INSTALLER_SH), *args],
+        capture_output=True,
+        text=True,
+        env=run_env,
+        timeout=120,
+    )
+
+
+def run_installer_stdin(
+    home: Path,
+    env: dict[str, str] | None = None,
+    shell: str = "sh",
+) -> subprocess.CompletedProcess[str]:
+    """Run install.sh the way `curl … | sh` does: script on stdin."""
+    run_env = _sandbox_env(home)
+    if env:
+        run_env.update(env)
+    return subprocess.run(
+        [shell],
+        input=INSTALLER_SH.read_text(),
         capture_output=True,
         text=True,
         env=run_env,
