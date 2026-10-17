@@ -32,6 +32,9 @@ $INSTALLER_VERSION = '1.0.0'
 $UvInstallUrl = 'https://astral.sh/uv/install.ps1'
 $UvToolBinDir = Join-Path $env:USERPROFILE '.local\bin'
 
+# Session PATH refresh (the registry change only reaches NEW terminals).
+$env:Path = "$UvToolBinDir;$env:Path"
+
 function Write-Step($message) { Write-Host $message -ForegroundColor DarkGray }
 function Write-Info($message) { Write-Host $message -ForegroundColor Cyan }
 
