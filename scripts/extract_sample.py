@@ -175,6 +175,14 @@ import tailwindcss from "@tailwindcss/vite";
 // - build: hashed assets + manifest.json into public/build/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Dev-only shaping: exclude the bridge from esbuild pre-bundling so Vite
+  // serves it itself and its dynamic react-dom/client import keeps the CJS
+  // interop rewrite; pre-bundle react-dom/client from boot instead of
+  // mid-session discovery.
+  optimizeDeps: {
+    include: ["react-dom/client"],
+    exclude: ["@fastplace/react"],
+  },
   // App-tree alias: dev, build, and vitest share this config.
   resolve: {
     alias: {
