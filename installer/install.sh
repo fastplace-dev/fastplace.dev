@@ -40,8 +40,18 @@ sh | dash | zsh | ksh)
 esac
 
 # Re-exec under bash when invoked as a file through a non-bash shell.
+# The -f guard is exhaustive: a stdin-shell invocation leaves $0 as a
+# bare name with no such file, and any unknown stdin shell must be
+# refused here rather than re-exec'd as a cwd file.
 if [ -z "${BASH_VERSION:-}" ]; then
-	exec bash "$0" "$@"
+	if [ -f "$0" ]; then
+		exec bash "$0" "$@"
+	else
+		# shellcheck disable=SC2016
+		echo 'error: this installer runs under bash. Use:' >&2
+		echo '  curl -fsSL https://fastplace.dev/install.sh | bash' >&2
+		exit 2
+	fi
 fi
 
 set -euo pipefail

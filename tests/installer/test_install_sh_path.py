@@ -110,3 +110,13 @@ def test_home_with_spaces(sandbox, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert (spaced / ".local/bin/fastplace").exists()
     assert "# fastplace-installer" in (spaced / ".zshrc").read_text()
+
+
+@pytest.mark.skipif(not __import__("shutil").which("zsh"), reason="zsh absent")
+def test_zsh_file_invocation_still_reexecs(sandbox):
+    """zsh running the script as a file (not stdin) must keep working —
+    the -f guard must refuse only name-like $0, never real paths."""
+    _with_uv(sandbox)
+    r = run_installer(sandbox.home, shell="zsh")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "fastplace new" in r.stdout

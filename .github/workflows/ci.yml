@@ -366,7 +366,18 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
-          Invoke-ScriptAnalyzer -Path installer/install.ps1 -Severity Error -EnableExit
+          # Full-severity gate. Three rules are disabled for the whole
+          # file because an installer legitimately writes straight to the
+          # console, bootstraps uv with its documented irm|iex pattern,
+          # and uses exit codes as its contract — every other rule fires.
+          $settings = @{
+            Rules = @{
+              PSAvoidUsingWriteHost = @{ Enable = $false }
+              PSAvoidUsingInvokeExpression = @{ Enable = $false }
+              PSAvoidUsingExit = @{ Enable = $false }
+            }
+          }
+          Invoke-ScriptAnalyzer -Path installer/install.ps1 -Settings $settings -EnableExit
 
   # Fresh-container E2E: the documented prerequisite set (bash, curl,
   # ca-certificates) plus the real script against real PyPI. Alpine is
