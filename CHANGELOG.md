@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-17
+
+### Added
+
+- One-line installers for macOS/Linux (`curl -fsSL https://fastplace.dev/install.sh | bash`)
+  and Windows PowerShell, with hardening throughout: refuse non-bash stdin
+  cleanly, an exhaustive stdin-shell guard, `uv` bootstrap via the documented
+  pattern, Windows session-PATH refresh after bootstrap, BOM-safe encoding,
+  an aarch64 guard, fresh-profile Windows paths, paste-safe uninstall, help
+  rendered before the platform guard, slash-guarded re-exec, and a readable
+  unset-home error. CI smokes alpine and arm entries, hash-verifies shfmt,
+  and pins PSScriptAnalyzer.
+
+### Fixed
+
+- Auth: `pwdlib` `needs_update` verified against the real API, with
+  `pwdlib<0.3` pinned until compatibility is confirmed upstream.
+- React bridge: interop-safe `createRoot` resolution so Vite's dev
+  pre-bundling cannot shadow the client copy.
+- Mail: config provenance surfaced and mail environment handling hardened
+  (S1-S7 review wave).
+- CLI: `run dev`, `serve`, and `shell` now default
+  `PYTHONPYCACHEPREFIX` to `storage/cache/pycache` under the project root,
+  keeping `__pycache__` directories out of the source tree while preserving
+  bytecode caching; an explicit user export always wins.
+- CI: the supply-chain wheel audit no longer fails on the project's own
+  `pip freeze` entry while a release train is unpublished.
+
+## [0.4.3] - 2026-10-16
+
+### Changed
+
+- Logo-ship release: package logo and wheel branding refresh. No behavior
+  changes.
+
 ## [0.4.2] - 2026-10-06
 
 ### Added
