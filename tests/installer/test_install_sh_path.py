@@ -7,7 +7,7 @@ import stat
 
 import pytest
 
-from tests.installer.conftest import _STUB_UV, INSTALLER_SH, run_installer, run_installer_stdin
+from tests.installer.conftest import _STUB_UV, run_installer, run_installer_stdin
 
 
 def _with_uv(sandbox):

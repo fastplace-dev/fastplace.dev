@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from tests.installer.conftest import INSTALLER_SH, _STUB_UV, run_installer
+from tests.installer.conftest import _STUB_UV, INSTALLER_SH, run_installer
 
 
 def _with_uv(sandbox):
