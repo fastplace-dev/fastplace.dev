@@ -355,17 +355,17 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck installer/install.sh
 
-      - name: shfmt (pinned v3.14.1)
+      - name: shfmt (pinned v3.14.1, hash-verified)
         run: |
           curl -fsSLo shfmt https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
+          echo "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf  shfmt" | sha256sum -c
           chmod +x shfmt
           ./shfmt -d installer/install.sh
 
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
           Invoke-ScriptAnalyzer -Path installer/install.ps1 -EnableExit
 
   # Fresh-container E2E: the documented prerequisite set (bash, curl,
