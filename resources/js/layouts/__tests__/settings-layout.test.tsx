@@ -84,4 +84,11 @@ describe("SettingsLayout", () => {
 
     expect(document.querySelector("[data-slot='separator-root']")).not.toBeNull();
   });
+
+  it("brings its own page padding on the content wrapper", () => {
+    const { container } = renderSettingsAt("/settings/profile");
+
+    // The layout root owns the page padding so child pages never re-add it.
+    expect(container.firstElementChild).toHaveClass("px-4", "py-6");
+  });
 });

@@ -93,6 +93,14 @@ describe("AppSidebarLayout", () => {
     expect(main?.className).toContain("overflow-x-clip");
   });
 
+  it("ships no page padding of its own — pages bring their own", () => {
+    renderLayout({ breadcrumbs });
+
+    const main = document.querySelector("main[data-slot='sidebar-inset']");
+    expect(main).not.toHaveClass("px-4");
+    expect(main).not.toHaveClass("py-6");
+  });
+
   it("exposes the inset main as the skip-link target (a11y1-G2)", () => {
     renderLayout({ breadcrumbs });
 
