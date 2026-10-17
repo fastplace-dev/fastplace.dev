@@ -250,7 +250,11 @@ jobs:
 
       - name: Audit the wheel's resolved dependencies
         run: |
-          /tmp/audit/bin/pip freeze > /tmp/wheel-freeze.txt
+          # Drop the project's own entry: the audit weighs the shipped
+          # dependency tree, and an unpublished local version (the release
+          # train between bump and publish) has no PyPI advisory feed —
+          # --strict would fail on "dependency not found" instead.
+          /tmp/audit/bin/pip freeze | grep -v '^fastplace==' > /tmp/wheel-freeze.txt
           pip-audit --strict --no-deps --requirement /tmp/wheel-freeze.txt
 
   e2e:
