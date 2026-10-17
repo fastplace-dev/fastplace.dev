@@ -342,3 +342,83 @@ jobs:
         run: |
           cd /tmp/appdir/demo
           /tmp/smoke/bin/python -m pytest -q
+
+  installer-lint:
+    name: Installer lint
+    needs: boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck installer/install.sh
+
+      - name: shfmt (pinned v3.14.1)
+        run: |
+          curl -fsSLo shfmt https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
+          chmod +x shfmt
+          ./shfmt -d installer/install.sh
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          Invoke-ScriptAnalyzer -Path installer/install.ps1 -EnableExit
+
+  # Fresh-container E2E: the documented prerequisite set (bash, curl,
+  # ca-certificates) plus the real script against real PyPI. Alpine is
+  # deliberately absent — musl containers cannot run GitHub's glibc node
+  # for checkout, and its prerequisites stay documented instead.
+  installer-smoke-linux:
+    name: Installer smoke (${{ matrix.image }})
+    needs: boundary
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:bookworm-slim
+            setup: apt-get update -qq && apt-get install -y -qq bash curl ca-certificates
+          - image: ubuntu:24.04
+            setup: apt-get update -qq && apt-get install -y -qq bash curl ca-certificates
+          - image: fedora:41
+            setup: dnf install -y -q bash curl ca-certificates
+          - image: archlinux:base
+            setup: pacman -Sy --noconfirm --needed bash curl ca-certificates >/dev/null
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fresh-container install and verify
+        run: |
+          docker run --rm -v "$PWD/installer:/installer:ro" "${{ matrix.image }}" /bin/bash -c '
+            set -euo pipefail
+            ${{ matrix.setup }}
+            bash /installer/install.sh
+            "$HOME/.local/bin/fastplace" --version
+          '
+
+  installer-smoke-desktop:
+    name: Installer smoke (${{ matrix.runs-on }})
+    needs: boundary
+    strategy:
+      fail-fast: false
+      matrix:
+        runs-on: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run installer (bash) and verify
+        if: runner.os == 'macOS'
+        run: |
+          bash installer/install.sh
+          "$HOME/.local/bin/fastplace" --version
+
+      - name: Run installer (powershell) and verify
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./installer/install.ps1
+          & "$env:USERPROFILE\.local\bin\fastplace.exe" --version
