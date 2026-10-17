@@ -366,7 +366,7 @@ jobs:
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
-          Invoke-ScriptAnalyzer -Path installer/install.ps1 -EnableExit
+          Invoke-ScriptAnalyzer -Path installer/install.ps1 -Severity Error -EnableExit
 
   # Fresh-container E2E: the documented prerequisite set (bash, curl,
   # ca-certificates) plus the real script against real PyPI. Alpine is

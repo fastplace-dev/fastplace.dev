@@ -14,6 +14,52 @@ def _with_uv(sandbox):
     sandbox.write_stub("uv", _STUB_UV.replace("$SANDBOX_HOME", str(sandbox.home)))
 
 
+def test_piped_stdin_to_bash_installs(sandbox):
+    """The documented `curl … | bash` shape: script on stdin, $0="bash"."""
+    _with_uv(sandbox)
+    r = run_installer_stdin(sandbox.home, shell="bash")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "fastplace new" in r.stdout
+    assert (sandbox.home / ".local/bin/fastplace").exists()
+
+
+def _sh_is_bash() -> bool:
+    """macOS /bin/sh IS bash (sh-mode); Linux /bin/sh is dash."""
+    import shutil
+    import subprocess
+
+    probe = subprocess.run(
+        ["/bin/sh", "-c", 'echo "${BASH_VERSION:-nobash}"'],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return probe.stdout.strip() != "nobash"
+
+
+def test_piped_stdin_to_sh(sandbox):
+    """`curl … | sh`: works where sh is bash, refuses with guidance on dash."""
+    _with_uv(sandbox)
+    r = run_installer_stdin(sandbox.home, shell="sh")
+    if _sh_is_bash():
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "fastplace new" in r.stdout
+    else:
+        # dash cannot hand its stdin to bash (it has already buffered it);
+        # the script must refuse with the pipe-to-bash guidance instead.
+        assert r.returncode == 2
+        assert "bash" in r.stdout + r.stderr
+
+
+@pytest.mark.skipif(not __import__("shutil").which("zsh"), reason="zsh absent")
+def test_piped_stdin_to_zsh_refuses_with_guidance(sandbox):
+    """Non-bash stdin shells get the same refusal — no guessing."""
+    _with_uv(sandbox)
+    r = run_installer_stdin(sandbox.home, shell="zsh")
+    assert r.returncode == 2
+    assert "bash" in r.stdout + r.stderr
+
+
 def test_no_rc_file_creates_one(sandbox, tmp_path):
     (sandbox.home / ".zshrc").unlink()  # sandbox pre-seeds one; fresh box has none
     _with_uv(sandbox)
@@ -22,17 +68,6 @@ def test_no_rc_file_creates_one(sandbox, tmp_path):
     # zsh user without a .zshrc: the installer creates it (zsh reads it).
     rc = sandbox.home / ".zshrc"
     assert "# fastplace-installer" in rc.read_text()
-
-
-@pytest.mark.parametrize("shell", ["sh", "zsh"])
-def test_piped_stdin_to_shell_installs(sandbox, shell):
-    """The real `curl … | sh` shape: script arrives on stdin, $0 is the
-    shell's own name. zsh (non-bash) reproduces the dash failure mode."""
-    _with_uv(sandbox)
-    r = run_installer_stdin(sandbox.home, shell=shell)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "fastplace new" in r.stdout
-    assert (sandbox.home / ".local/bin/fastplace").exists()
 
 
 def test_no_modify_path_flag_writes_nothing(sandbox):

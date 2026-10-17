@@ -24,12 +24,18 @@
 # Piped-to-a-shell protection. When this script arrives on stdin
 # (`curl … | sh`), $0 is the *shell's own name*, never a script path —
 # re-exec'ing "$0" would try to run a file named "sh" from the caller's
-# cwd. Stage stdin in a temp file and re-exec that instead.
+# cwd. Re-staging stdin is not portable either (dash has already
+# buffered it by the time a case-statement runs), so: bash keeps
+# executing its stdin directly; every other stdin shell is refused
+# with the pipe-to-bash guidance instead of guessing.
 case "$0" in
-sh | dash | bash | zsh | ksh)
-	_stdin_stage=$(mktemp "${TMPDIR:-/tmp}/fastplace-install.XXXXXX") || exit 1
-	cat >"$_stdin_stage"
-	exec bash "$_stdin_stage" "$@"
+sh | dash | zsh | ksh)
+	if [ -z "${BASH_VERSION:-}" ]; then
+		# shellcheck disable=SC2016
+		echo 'error: this installer runs under bash. Use:' >&2
+		echo '  curl -fsSL https://fastplace.dev/install.sh | bash' >&2
+		exit 2
+	fi
 	;;
 esac
 

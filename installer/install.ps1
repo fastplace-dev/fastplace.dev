@@ -60,9 +60,12 @@ if ($existing -and $existing.Source -notlike "$UvToolBinDir*") {
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Step 'Installing uv (https://astral.sh)...'
-    & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing $UvInstallUrl).Content))
-    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-        Write-Error 'Failed to install uv. Check your connection and retry, or install uv from https://docs.astral.sh/uv/.'
+    try {
+        # The uv project's documented Windows bootstrap shape.
+        Invoke-RestMethod $UvInstallUrl | Invoke-Expression
+    }
+    catch {
+        Write-Error "Failed to install uv: $_. Check your connection and retry, or install uv from https://docs.astral.sh/uv/."
         exit 1
     }
 }
