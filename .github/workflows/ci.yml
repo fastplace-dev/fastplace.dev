@@ -403,6 +403,7 @@ jobs:
   installer-smoke-desktop:
     name: Installer smoke (${{ matrix.runs-on }})
     needs: boundary
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
