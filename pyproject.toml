@@ -53,7 +53,7 @@ mysql = ["asyncmy>=0.2.9", "cryptography>=42"]
 mongodb = ["pymongo>=4.9"]
 mail = ["aiosmtplib>=3.0"]
 ai = ["litellm>=1.50", "instructor>=1.6"]
-pwdlib = ["pwdlib[argon2]>=0.2"]
+pwdlib = ["pwdlib[argon2]>=0.2,<0.3"]
 queue = ["saq>=0.18", "redis>=5.0"]
 webauthn = ["webauthn>=2.6"]
 s3 = ["aioboto3>=13"]
@@ -64,7 +64,7 @@ all = [
     "pymongo>=4.9",
     "aiosmtplib>=3.0",
     "litellm>=1.50", "instructor>=1.6",
-    "pwdlib[argon2]>=0.2",
+    "pwdlib[argon2]>=0.2,<0.3",
     "saq>=0.18", "redis>=5.0",
     "webauthn>=2.6",
     "freezegun>=1.5",

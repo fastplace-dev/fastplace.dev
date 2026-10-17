@@ -127,7 +127,14 @@ def _build_extra_hasher() -> PasswordHasher | None:
             return inner.verify(password, hashed)
 
         def needs_update(self, hashed: str) -> bool:
-            return inner.needs_update(hashed)
+            # pwdlib's PasswordHash has no needs_update; mirror its own
+            # verify_and_update logic instead — the digest needs an
+            # update when it belongs to a non-current hasher or the
+            # current hasher flags a rehash (parameter drift).
+            for hasher in inner.hashers:
+                if hasher.identify(hashed):
+                    return hasher != inner.current_hasher or hasher.check_needs_rehash(hashed)
+            return False
 
         def claims(self, hashed: str) -> bool:
             return hashed.startswith(("$argon2", "$bcrypt"))
