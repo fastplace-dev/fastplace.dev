@@ -25,7 +25,6 @@ def test_piped_stdin_to_bash_installs(sandbox):
 
 def _sh_is_bash() -> bool:
     """macOS /bin/sh IS bash (sh-mode); Linux /bin/sh is dash."""
-    import shutil
     import subprocess
 
     probe = subprocess.run(

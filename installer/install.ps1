@@ -1,4 +1,4 @@
-# Fastplace one-line installer — Windows (PowerShell 5.1+ / pwsh).
+﻿# Fastplace one-line installer — Windows (PowerShell 5.1+ / pwsh).
 #
 #   irm https://fastplace.dev/install.ps1 | iex
 #
@@ -18,8 +18,12 @@
 # Source: https://github.com/fastplace-dev/fastplace.dev/blob/master/installer/install.ps1
 
 param(
-    [switch]$Mcp,
-    [switch]$NoModifyPath
+    # -NoModifyPath stays the public name (docs, parity with install.sh's
+    # --no-modify-path); the internal variable is renamed because uv's
+    # installer script sets a same-named variable in this scope.
+    [Alias('NoModifyPath')]
+    [switch]$SkipModifyPath,
+    [switch]$Mcp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,7 +93,7 @@ if ($LASTEXITCODE -ne 0) {
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $pathModified = $false
 if ($userPath -notlike "*$UvToolBinDir*") {
-    if ($NoModifyPath) {
+    if ($SkipModifyPath) {
         Write-Info "Make sure $UvToolBinDir is on your PATH (user environment variables)."
     }
     else {

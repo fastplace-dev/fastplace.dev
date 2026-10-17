@@ -18,26 +18,29 @@ def test_script_exists():
 
 
 def test_param_block():
-    text = INSTALLER_PS1.read_text()
+    text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
+    # -NoModifyPath is the public name (an alias); the bound variable is
+    # renamed to avoid colliding with a variable uv's installer sets.
+    assert "[Alias('NoModifyPath')]" in text
+    assert "[switch]$SkipModifyPath" in text
     assert "[switch]$Mcp" in text
-    assert "[switch]$NoModifyPath" in text
 
 
 def test_strict_error_preference_and_version():
-    text = INSTALLER_PS1.read_text()
+    text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
     assert "$ErrorActionPreference = 'Stop'" in text
     assert "INSTALLER_VERSION" in text
     assert '"1.0.0"' in text or "'1.0.0'" in text
 
 
 def test_exact_urls():
-    text = INSTALLER_PS1.read_text()
+    text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
     assert "https://astral.sh/uv/install.ps1" in text
     assert "https://fastplace.dev" in text
 
 
 def test_install_command_shape():
-    text = INSTALLER_PS1.read_text()
+    text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
     assert "uv tool install --upgrade --python 3.12" in text
     # spec building mirrors install.sh: extras + pin
     assert "fastplace[mcp]" in text
@@ -46,14 +49,14 @@ def test_install_command_shape():
 
 
 def test_user_path_branch():
-    text = INSTALLER_PS1.read_text()
+    text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
     assert "[Environment]::SetEnvironmentVariable(" in text
     assert "'User'" in text
     assert ".local" in text  # uv tool bin dir under the user profile
 
 
 def test_verification_by_full_path():
-    text = INSTALLER_PS1.read_text()
+    text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
     assert re.search(r"\$env:USERPROFILE.*\.local.*fastplace", text) or (
         ".local" in text and "--version" in text
     )
@@ -61,4 +64,4 @@ def test_verification_by_full_path():
 
 def test_no_forbidden_words():
     forbidden = re.compile(r"laravel|eloquent", re.IGNORECASE)
-    assert not forbidden.search(INSTALLER_PS1.read_text())
+    assert not forbidden.search(INSTALLER_PS1.read_text(encoding="utf-8-sig"))
