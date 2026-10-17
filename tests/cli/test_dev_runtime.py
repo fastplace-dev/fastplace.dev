@@ -46,6 +46,17 @@ def test_run_dev_reads_ports_from_env_file(spawned):
     assert "--port" in backend and backend[backend.index("--port") + 1] == "8123"
 
 
+def test_run_dev_reloader_watches_env_file(spawned):
+    """uvicorn's default reload watch set is *.py only — a corrected .env
+    never reached the running worker until a full restart. The reloader must
+    include .env (uvicorn>=0.30 supports --reload-include)."""
+    result = runner.invoke(cli_app, ["run", "dev", "--skip-vite", "--skip-lint"])
+    assert result.exit_code == 0, result.output
+    backend = [cmd for cmd in spawned.commands if "uvicorn" in cmd][0]
+    assert "--reload-include" in backend
+    assert backend[backend.index("--reload-include") + 1] == ".env"
+
+
 def test_serve_reads_ports_from_env_file(spawned):
     _write_env(spawned, "APP_HOST=127.0.0.2\nAPP_PORT=8124\nAPP_WORKERS=1\n")
     result = runner.invoke(cli_app, ["serve", "--skip-build"])

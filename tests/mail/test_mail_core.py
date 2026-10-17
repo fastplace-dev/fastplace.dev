@@ -115,6 +115,80 @@ async def test_smtp_delivery_via_stub(monkeypatch):
     assert kwargs["use_tls"] is False
 
 
+@pytest.mark.parametrize("blank", ["null", "NULL", "None", "none", ""])
+async def test_smtp_blankish_credentials_send_as_none(monkeypatch, blank):
+    """Unquoted `null` in .env used to reach the wire as a literal SMTP
+    username — literal null/none/empty (any case) must mean unset."""
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")
+    monkeypatch.setenv("MAIL_HOST", "smtp.example.test")
+    monkeypatch.setenv("MAIL_ENCRYPTION", "none")
+    monkeypatch.setenv("MAIL_USERNAME", blank)
+    monkeypatch.setenv("MAIL_PASSWORD", blank)
+    monkeypatch.setitem(sys.modules, "aiosmtplib", StubAiosmtplib)
+    await Mail.to("someone@example.test").send(
+        MailMessage(subject="Hello", text="Body", to="x@example.test")
+    )
+    kwargs = StubAiosmtplib.sent[-1]
+    assert kwargs["username"] is None
+    assert kwargs["password"] is None
+
+
+async def test_smtp_real_credentials_survive_normalization(monkeypatch):
+    """Non-blankish values pass through verbatim — no accidental masking."""
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")
+    monkeypatch.setenv("MAIL_HOST", "smtp.example.test")
+    monkeypatch.setenv("MAIL_ENCRYPTION", "none")
+    monkeypatch.setenv("MAIL_USERNAME", "null-safe-user")
+    monkeypatch.setenv("MAIL_PASSWORD", "n0ne-the-password")
+    monkeypatch.setitem(sys.modules, "aiosmtplib", StubAiosmtplib)
+    await Mail.to("someone@example.test").send(
+        MailMessage(subject="Hello", text="Body", to="x@example.test")
+    )
+    kwargs = StubAiosmtplib.sent[-1]
+    assert kwargs["username"] == "null-safe-user"
+    assert kwargs["password"] == "n0ne-the-password"
+
+
+async def test_smtp_unrecognized_encryption_warns_and_stays_plaintext(monkeypatch, caplog):
+    """A typo like `start-tls` must not fail the send: one warning, then
+    plaintext — the runtime fallback is unchanged, just surfaced."""
+    import logging
+
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")
+    monkeypatch.setenv("MAIL_HOST", "smtp.example.test")
+    monkeypatch.setenv("MAIL_ENCRYPTION", "start-tls")
+    monkeypatch.setitem(sys.modules, "aiosmtplib", StubAiosmtplib)
+    with caplog.at_level(logging.WARNING, logger="fastplace.mail"):
+        await Mail.to("someone@example.test").send(
+            MailMessage(subject="Hello", text="Body", to="x@example.test")
+        )
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "MAIL_ENCRYPTION" in warnings[0].getMessage()
+    assert "start-tls" in warnings[0].getMessage()
+    kwargs = StubAiosmtplib.sent[-1]
+    assert kwargs["use_tls"] is False
+    assert kwargs["start_tls"] is False
+
+
+async def test_smtp_valid_encryption_does_not_warn(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("MAIL_DRIVER", "smtp")
+    monkeypatch.setenv("QUEUE_DRIVER", "memory")
+    monkeypatch.setenv("MAIL_HOST", "smtp.example.test")
+    monkeypatch.setenv("MAIL_ENCRYPTION", "starttls")
+    monkeypatch.setitem(sys.modules, "aiosmtplib", StubAiosmtplib)
+    with caplog.at_level(logging.WARNING, logger="fastplace.mail"):
+        await Mail.to("someone@example.test").send(
+            MailMessage(subject="Hello", text="Body", to="x@example.test")
+        )
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
 async def test_deliver_runs_transport_now(monkeypatch):
     delivered: list[MailMessage] = []
 

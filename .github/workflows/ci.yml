@@ -154,6 +154,13 @@ jobs:
       - name: Build @fastplace/react (scaffold file wiring needs dist/)
         run: npm run build -w packages/react
 
+      - name: Guard dist/ against the dev-only CJS destructure of react-dom/client
+        run: |
+          if grep -nE 'const \{[^}]*\} *= *await import\("react-dom/client"\)' packages/react/dist/fastplace-react.js; then
+            echo "::error::dist destructures react-dom/client by name — esbuild pre-bundles surface CJS modules default-only in Vite dev, so the named export is undefined. Keep the named-first fallback."
+            exit 1
+          fi
+
       - name: Enable pgvector extension
         run: |
           python - <<'PY'

@@ -677,7 +677,15 @@ export async function createFastplaceApp(options: FastplaceAppOptions) {
   };
 
   const render = async () => {
-    const { createRoot } = await import("react-dom/client");
+    // In Vite dev the dependency optimizer pre-bundles the CommonJS
+    // react-dom/client with esbuild, whose artifact surfaces it only as
+    // `default` — the named export is absent inside that pre-bundle.
+    // Prefer the named export, fall back to default, so bootstrap works
+    // under either shape.
+    const domClient = await import("react-dom/client");
+    const createRoot =
+      domClient.createRoot ??
+      (domClient as { default?: { createRoot: typeof domClient.createRoot } }).default?.createRoot;
     const app = (
       <BridgeErrorBoundary>
         <BridgeApp />

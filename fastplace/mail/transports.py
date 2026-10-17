@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import logging
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -20,8 +21,14 @@ from fastplace.config import config
 from fastplace.errors import ConfigurationError
 from fastplace.mail.message import Attachment, MailMessage
 
+logger = logging.getLogger("fastplace.mail")
+
 #: Log-driver destination (cwd-relative — `fastplace run dev` writes repo-root).
 MAIL_LOG_PATH = Path("storage/logs/mail.log")
+
+#: MAIL_ENCRYPTION values the smtp driver understands; anything else reads
+#: as plaintext (with one warning) rather than failing the send.
+MAIL_ENCRYPTION_VALUES = frozenset({"", "none", "tls", "starttls"})
 
 # memory driver state — tests read this between requests.
 _outbox: list[MailMessage] = []
@@ -82,6 +89,20 @@ async def send_via_memory(message: MailMessage) -> None:
     _outbox.append(message)
 
 
+def _blankish(value: Any) -> Any:
+    """Treat literal ``null``/``none``/``""`` (any case) as unset.
+
+    Unquoted ``null`` in a .env arrives as the string ``"null"`` — truthy,
+    so it used to ride the wire as a real SMTP username. Normalized to
+    ``None`` here; any other value passes through verbatim.
+    """
+    if value is None:
+        return None
+    if str(value).strip().lower() in ("", "null", "none"):
+        return None
+    return value
+
+
 def _add_attachment(letter: EmailMessage, attachment: Attachment) -> None:
     """Append one MIME part — text/* needs str data (the email API requires it).
 
@@ -140,12 +161,20 @@ async def send_via_smtp(message: MailMessage) -> None:
         _add_attachment(letter, attachment)
 
     encryption = str(config("MAIL_ENCRYPTION", default="none") or "none")
+    if encryption.strip().lower() not in MAIL_ENCRYPTION_VALUES:
+        # Unrecognized value (a typo like "start-tls", or an unquoted null):
+        # never raise — warn once and send plaintext, the historical fallback.
+        logger.warning(
+            "MAIL_ENCRYPTION=%r is unrecognized — sending plaintext "
+            "(valid values: none, tls, starttls)",
+            encryption,
+        )
     await aiosmtplib.send(
         letter,
         hostname=str(config("MAIL_HOST", default="127.0.0.1")),
         port=int(config("MAIL_PORT", default=25) or 25),
-        username=config("MAIL_USERNAME") or None,
-        password=config("MAIL_PASSWORD") or None,
+        username=_blankish(config("MAIL_USERNAME")),
+        password=_blankish(config("MAIL_PASSWORD")),
         use_tls=encryption == "tls",
         start_tls=encryption == "starttls",
     )

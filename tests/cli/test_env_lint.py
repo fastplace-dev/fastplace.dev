@@ -157,3 +157,27 @@ def test_fix_syncs_example_without_touching_env(tmp_path, monkeypatch):
     assert (root / ".env").read_text() == env_before  # .env values NEVER touched
     example = (root / ".env.example").read_text()
     assert "CUSTOM_FLAG" in example
+
+
+# --- unknown MAIL_* keys (mail-config trap: the app reads MAIL_DRIVER) --------
+
+
+def test_unknown_mail_key_warns_naming_driver(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch, CLEAN_ENV + "MAIL_MAILER=smtp\n", "# APP_ENV=\n")
+    result = runner.invoke(cli_app, ["env:lint"])
+    assert result.exit_code == 0  # WARN only, never FAIL
+    out = _out(result)
+    assert "MAIL_MAILER" in out
+    assert "MAIL_DRIVER" in out
+
+
+def test_known_mail_keys_do_not_warn(tmp_path, monkeypatch):
+    _make_project(
+        tmp_path,
+        monkeypatch,
+        CLEAN_ENV + "MAIL_DRIVER=smtp\nMAIL_HOST=127.0.0.1\nMAIL_PORT=1025\nMAIL_ENCRYPTION=none\n",
+        "# APP_ENV=\n",
+    )
+    result = runner.invoke(cli_app, ["env:lint"])
+    assert result.exit_code == 0
+    assert "unrecognized" not in _out(result)

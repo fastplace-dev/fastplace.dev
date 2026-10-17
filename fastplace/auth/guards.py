@@ -113,7 +113,12 @@ class SessionGuard:
         endpoints shed locked-out keys exactly like the bare path.
         """
         email = str(credentials.get("email") or "")
-        await dispatch(DomainEvent("Attempting", {"email": email.lower(), "remember": remember}))
+        # The auth lifecycle fires per attempt with nothing registered by
+        # design — no-consumer warnings there are noise, not mis-wiring.
+        await dispatch(
+            DomainEvent("Attempting", {"email": email.lower(), "remember": remember}),
+            warn_unconsumed=False,
+        )
         limiter = self._rate_limiter()
         key = self._login_key(request, email)
         if await limiter.too_many_attempts(key, self._max_attempts):
@@ -126,7 +131,8 @@ class SessionGuard:
                         "ip": getattr(request, "ip", None),
                         "retry_after": retry_after,
                     },
-                )
+                ),
+                warn_unconsumed=False,
             )
             raise ThrottleRequestsError(retry_after=retry_after)
         await limiter.hit(key, self._decay)
@@ -144,7 +150,7 @@ class SessionGuard:
                 # bare path's accounting.
                 return False
         if user is None or not await self._validate_and_rehash(user, credentials):
-            await dispatch(DomainEvent("Failed", {"email": email.lower()}))
+            await dispatch(DomainEvent("Failed", {"email": email.lower()}), warn_unconsumed=False)
             return False
 
         # Valid credentials — but a CONFIRMED two-factor user stops short of
@@ -222,7 +228,8 @@ class SessionGuard:
             DomainEvent(
                 "Login",
                 {"user_id": identifier, "guard": "session", "remember": remember},
-            )
+            ),
+            warn_unconsumed=False,
         )
 
     def _authenticate_session(self, request: Any, identifier: Any) -> None:
@@ -262,7 +269,7 @@ class SessionGuard:
             invalidate()
         else:
             request.session.clear()
-        await dispatch(DomainEvent("Logout", {"user_id": identifier}))
+        await dispatch(DomainEvent("Logout", {"user_id": identifier}), warn_unconsumed=False)
 
     async def user(self, request: Any) -> Any | None:
         identifier = request.session.get(self.SESSION_KEY)

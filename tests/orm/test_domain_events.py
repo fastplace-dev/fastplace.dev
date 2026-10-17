@@ -314,3 +314,42 @@ async def test_dispatch_without_consumer_logs_a_warning(caplog):
         await dispatch(DomainEvent("nobody_listens", {"x": 1}))
 
     assert any("nobody_listens" in r.message for r in caplog.records)
+
+
+async def test_dispatch_quiet_path_skips_only_its_own_warning(caplog):
+    """Auth lifecycle events (Login/Logout/...) fire per request with no
+    consumer by design — the opt-out silences their warning while an
+    arbitrary unconsumed name on the default path still warns."""
+    import logging
+
+    from fastplace.events import DomainEvent, dispatch
+
+    with caplog.at_level(logging.WARNING, logger="fastplace.events"):
+        await dispatch(DomainEvent("Login", {"user_id": 1}), warn_unconsumed=False)
+        await dispatch(DomainEvent("still_loud", {"x": 1}))
+
+    assert not any("Login" in r.message for r in caplog.records)
+    assert any("still_loud" in r.message for r in caplog.records)
+
+
+async def test_dispatch_quiet_path_keeps_listeners_jobs_and_queue_leg(caplog):
+    """warn_unconsumed=False must not mute anything but the warning: a
+    registered listener still runs and the auto queue leg still enqueues."""
+    import logging
+
+    from fastplace.events import DomainEvent, dispatch, listen
+    from fastplace.queue import Job, MemoryQueue, queue
+
+    seen: list[DomainEvent] = []
+    listen("quiet_with_listener", seen.append)
+
+    @Job()
+    async def quiet_with_listener(model: str, id: int):  # pragma: no cover — test double
+        pass
+
+    with caplog.at_level(logging.WARNING, logger="fastplace.events"):
+        await dispatch(DomainEvent("quiet_with_listener", {"id": 2}), warn_unconsumed=False)
+
+    assert [e.name for e in seen] == ["quiet_with_listener"]
+    assert isinstance(queue(), MemoryQueue) and len(queue().pending) == 1
+    assert not caplog.records

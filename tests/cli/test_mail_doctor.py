@@ -175,6 +175,58 @@ def test_queued_smtp_warns_about_worker(tmp_path, monkeypatch):
     assert "queue:work" in out
 
 
+def test_unrecognized_encryption_warns_naming_valid_values(tmp_path, monkeypatch):
+    """MAIL_ENCRYPTION=start-tls is a plaintext send in disguise — WARN names
+    the values the driver actually understands."""
+    _fake_aiosmtplib_present(monkeypatch)
+    _make_project(tmp_path, monkeypatch, env_text=_SMTP_ENV + "MAIL_ENCRYPTION=start-tls\n")
+
+    result = runner.invoke(cli_app, ["mail:doctor"])
+
+    assert result.exit_code == 0, _out(result)  # warn never fails CI
+    out = _out(result)
+    assert "start-tls" in out
+    assert "none | tls | starttls" in out
+
+
+def test_valid_encryption_does_not_warn(tmp_path, monkeypatch):
+    _fake_aiosmtplib_present(monkeypatch)
+    _make_project(tmp_path, monkeypatch, env_text=_SMTP_ENV + "MAIL_ENCRYPTION=starttls\n")
+
+    result = runner.invoke(cli_app, ["mail:doctor"])
+
+    assert result.exit_code == 0, _out(result)
+    assert "unrecognized" not in _out(result)
+
+
+def test_shell_exported_driver_reports_source_and_shadows_env(tmp_path, monkeypatch):
+    """The headline trap: a shell-exported MAIL_DRIVER=log silently shadows
+    .env MAIL_DRIVER=smtp (load_dotenv never overrides real env). The doctor
+    must name both: the winning source and the value it is shadowing."""
+    _make_project(tmp_path, monkeypatch, env_text="MAIL_DRIVER=smtp\n")
+    monkeypatch.setenv("MAIL_DRIVER", "log")
+
+    result = runner.invoke(cli_app, ["mail:doctor"])
+
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "source: shell" in out
+    assert 'shadows .env "smtp"' in out
+
+
+def test_env_file_sourced_driver_reports_env_file(tmp_path, monkeypatch):
+    """No shell export: the .env value wins and reads as env-file — no
+    shadow clause, no false alarm."""
+    _make_project(tmp_path, monkeypatch, env_text="MAIL_DRIVER=memory\n")
+
+    result = runner.invoke(cli_app, ["mail:doctor"])
+
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "source: env-file" in out
+    assert "shadows" not in out
+
+
 def test_unregistered_mail_send_handler_warns(
     tmp_path,
     monkeypatch,
