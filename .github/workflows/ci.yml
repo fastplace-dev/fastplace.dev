@@ -342,3 +342,104 @@ jobs:
         run: |
           cd /tmp/appdir/demo
           /tmp/smoke/bin/python -m pytest -q
+
+  installer-lint:
+    name: Installer lint
+    needs: boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck installer/install.sh
+
+      - name: shfmt (pinned v3.14.1, hash-verified)
+        run: |
+          curl -fsSLo shfmt https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
+          echo "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf  shfmt" | sha256sum -c
+          chmod +x shfmt
+          ./shfmt -d installer/install.sh
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+          # Full-severity gate. Three rules are excluded for the whole
+          # file because an installer legitimately writes straight to the
+          # console, bootstraps uv with its documented irm|iex pattern,
+          # and uses exit codes as its contract — every other rule fires.
+          $settings = @{
+            ExcludeRules = @(
+              'PSAvoidUsingWriteHost',
+              'PSAvoidUsingInvokeExpression',
+              'PSAvoidUsingExit'
+            )
+          }
+          Invoke-ScriptAnalyzer -Path installer/install.ps1 -Settings $settings -EnableExit
+
+  # Fresh-container E2E: the documented prerequisite set (bash, curl,
+  # ca-certificates) plus the real script against real PyPI. Checkout
+  # happens host-side, so musl containers work here (unlike `container:`
+  # jobs); the arm entry runs a native aarch64 runner.
+  installer-smoke-linux:
+    name: Installer smoke (${{ matrix.image }}${{ matrix.runner && ' arm' || '' }})
+    needs: boundary
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:bookworm-slim
+            setup: apt-get update -qq && apt-get install -y -qq bash curl ca-certificates
+          - image: ubuntu:24.04
+            setup: apt-get update -qq && apt-get install -y -qq bash curl ca-certificates
+          - image: fedora:41
+            setup: dnf install -y -q bash curl ca-certificates
+          - image: archlinux:base
+            setup: pacman -Sy --noconfirm --needed bash curl ca-certificates >/dev/null
+          - image: alpine:3.20
+            setup: apk add --no-cache bash curl ca-certificates
+          # aarch64 end-to-end on a native arm runner — guards the
+          # Linux/aarch64 platform-guard branch uname actually reports.
+          - image: debian:bookworm-slim
+            runner: ubuntu-24.04-arm
+            setup: apt-get update -qq && apt-get install -y -qq bash curl ca-certificates
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fresh-container install and verify
+        run: |
+          # /bin/sh exists everywhere (alpine included, before bash is
+          # installed); the script itself re-execs under bash after setup.
+          docker run --rm -v "$PWD/installer:/installer:ro" "${{ matrix.image }}" /bin/sh -c '
+            set -eu
+            ${{ matrix.setup }}
+            bash /installer/install.sh
+            "$HOME/.local/bin/fastplace" --version
+          '
+
+  installer-smoke-desktop:
+    name: Installer smoke (${{ matrix.runs-on }})
+    needs: boundary
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runs-on: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run installer (bash) and verify
+        if: runner.os == 'macOS'
+        run: |
+          bash installer/install.sh
+          "$HOME/.local/bin/fastplace" --version
+
+      - name: Run installer (powershell) and verify
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./installer/install.ps1
+          & "$env:USERPROFILE\.local\bin\fastplace.exe" --version
