@@ -19,7 +19,7 @@ from typing import Any, overload
 
 import typer
 
-from fastplace.cli._interp import project_fastplace_bin, project_python
+from fastplace.cli._interp import project_fastplace_bin, project_python, with_pycache_prefix
 from fastplace.console import console
 
 run_app = typer.Typer(help="Server runtimes.")
@@ -456,7 +456,10 @@ def run_dev(
     # happened to export — the Vite dev server owns asset URLs here, and
     # declaring "dev" also keeps PrerenderStaticFiles out of the stack so a
     # stray prerender output can't shadow live pages during development.
-    env = {**os.environ, "VITE_DEV_URL": vite_url, "FASTPLACE_RUNTIME": "dev"}
+    env = with_pycache_prefix(
+        _project_root(),
+        {**os.environ, "VITE_DEV_URL": vite_url, "FASTPLACE_RUNTIME": "dev"},
+    )
 
     # Handlers go in BEFORE the first spawn: a TERM landing between spawn
     # and install would kill the wrapper without the cleanup finally-block,
@@ -595,7 +598,7 @@ def serve(
 
     # The serve runtime marker: asset resolution keys on this, not APP_ENV,
     # so a local-env serve never emits dead localhost:5173 dev tags.
-    env = {**os.environ, "FASTPLACE_RUNTIME": "serve"}
+    env = with_pycache_prefix(_project_root(), {**os.environ, "FASTPLACE_RUNTIME": "serve"})
 
     # Handlers go in BEFORE the spawn — same orphaning window as run dev.
     saved_signals = _install_signal_handlers()

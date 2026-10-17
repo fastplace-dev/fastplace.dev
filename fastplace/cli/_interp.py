@@ -42,3 +42,26 @@ def project_fastplace_bin(root: Path) -> str | None:
     if sibling.exists():
         return str(sibling)
     return shutil.which("fastplace")
+
+
+def central_pycache_prefix(root: Path) -> Path:
+    """Central bytecode-cache location for a project.
+
+    ``storage/`` is the framework's designated runtime-output home (logs,
+    cache, uploads) and is gitignored by the scaffold, so the mirrored
+    ``.pyc`` tree lands outside version control without a new ignore rule.
+    """
+    return root / "storage" / "cache" / "pycache"
+
+
+def with_pycache_prefix(root: Path, env: dict[str, str]) -> dict[str, str]:
+    """Child env with ``PYTHONPYCACHEPREFIX`` defaulted to the central cache.
+
+    Keeps the source tree free of ``__pycache__`` dirs while preserving
+    bytecode caching (no cold-import recompilation penalty). An explicit
+    user export always wins — the default must never veto a deliberate
+    setting. Returns a copy; the caller's dict stays untouched.
+    """
+    if env.get("PYTHONPYCACHEPREFIX"):
+        return env
+    return {**env, "PYTHONPYCACHEPREFIX": str(central_pycache_prefix(root))}
