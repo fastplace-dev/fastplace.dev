@@ -73,6 +73,24 @@ export PATH="$UV_TOOL_BIN_DIR:$PATH"
 
 # --- options ----------------------------------------------------------------
 
+usage() {
+  cat <<'EOF'
+fastplace installer — https://fastplace.dev
+
+Usage:
+  curl -fsSL https://fastplace.dev/install.sh | bash
+
+Options:
+  --mcp              install fastplace[mcp] (the AI-agent extra)
+  --no-modify-path   do not edit your shell rc file; print the PATH line instead
+  --help             show this help
+  --version          print the installer version
+
+Environment:
+  FASTPLACE_VERSION=<x>   pin a specific release, e.g. 0.4.3
+EOF
+}
+
 # The package spec grows here: --mcp swaps in the AI-agent extra, and a
 # valid FASTPLACE_VERSION pins a release. Validation happens before any
 # network call so a typo can never leave a half-configured machine.
@@ -85,6 +103,14 @@ while [ $# -gt 0 ]; do
       ;;
     --no-modify-path)
       modify_path=0
+      ;;
+    --help)
+      usage
+      exit 0
+      ;;
+    --version)
+      say "$INSTALLER_VERSION"
+      exit 0
       ;;
     *)
       err "Unknown option: $1"
@@ -105,6 +131,20 @@ fi
 # --- 1. uv ----------------------------------------------------------------
 
 say "${DIM}fastplace installer $INSTALLER_VERSION${RESET}"
+
+# --- pre-existing install check (warn, never touch) -------------------------
+
+if command -v fastplace >/dev/null 2>&1; then
+  existing=$(command -v fastplace)
+  if [ "$existing" != "$UV_TOOL_BIN_DIR/fastplace" ]; then
+    say ""
+    say "note: fastplace is already installed at $existing (not managed by this"
+    say "installer — pip, pipx, or a package manager put it there). This install"
+    say "lands in $UV_TOOL_BIN_DIR; whichever directory comes first on your PATH"
+    say "wins when both exist. Uninstall the old one if commands behave oddly."
+    say ""
+  fi
+fi
 
 if ! command -v uv >/dev/null 2>&1; then
   say "${DIM}Installing uv (https://astral.sh)…${RESET}"
