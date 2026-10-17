@@ -65,8 +65,7 @@ def test_linux_aarch64_is_supported(sandbox):
 
     fake_uname = sandbox.stub_bin / "uname"
     fake_uname.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [ "$1" = "-s" ]; then echo Linux; else echo aarch64; fi\n'
+        '#!/usr/bin/env bash\nif [ "$1" = "-s" ]; then echo Linux; else echo aarch64; fi\n'
     )
     fake_uname.chmod(0o755)
     env = _sandbox_env(sandbox.home)

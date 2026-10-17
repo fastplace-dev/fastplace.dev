@@ -411,8 +411,10 @@ jobs:
 
       - name: Fresh-container install and verify
         run: |
-          docker run --rm -v "$PWD/installer:/installer:ro" "${{ matrix.image }}" /bin/bash -c '
-            set -euo pipefail
+          # /bin/sh exists everywhere (alpine included, before bash is
+          # installed); the script itself re-execs under bash after setup.
+          docker run --rm -v "$PWD/installer:/installer:ro" "${{ matrix.image }}" /bin/sh -c '
+            set -eu
             ${{ matrix.setup }}
             bash /installer/install.sh
             "$HOME/.local/bin/fastplace" --version
