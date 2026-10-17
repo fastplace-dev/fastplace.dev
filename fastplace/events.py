@@ -151,13 +151,20 @@ def subscribe(subscriber: Subscriber) -> None:
         listen(name, handler)
 
 
-async def dispatch(event: DomainEvent, *, to_queue: bool | None = None) -> None:
+async def dispatch(
+    event: DomainEvent, *, to_queue: bool | None = None, warn_unconsumed: bool = True
+) -> None:
     """Deliver ``event`` to listeners and (optionally) the queue.
 
     Exact-name listeners run first in registration order, then wildcard
     listeners in registration order. Listener exceptions propagate — a
     listener is part of the operation, the same contract lifecycle handlers
     already follow.
+
+    ``warn_unconsumed=False`` opts out of the no-consumer warning for event
+    families that legitimately fire per-occurrence with nothing registered
+    (the auth lifecycle's Login/Logout/...) — every other behavior, queue
+    and broadcast legs included, is unchanged.
     """
     ran_listener = False
     for handler in _listeners.get(event.name, []):
@@ -188,7 +195,13 @@ async def dispatch(event: DomainEvent, *, to_queue: bool | None = None) -> None:
         from fastplace.queue import jobs
 
         has_job = event.name in jobs()
-        if not ran_listener and not has_job and channel is None and to_queue is None:
+        if (
+            warn_unconsumed
+            and not ran_listener
+            and not has_job
+            and channel is None
+            and to_queue is None
+        ):
             logger.warning(
                 "domain event %r dispatched with no listener and no registered job — "
                 "cross-module work may be silently skipped (did this process import app/jobs?)",

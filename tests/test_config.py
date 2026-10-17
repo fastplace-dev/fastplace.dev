@@ -7,6 +7,16 @@ import pytest
 from fastplace.config import Config, _coerce, load_env
 
 
+@pytest.fixture(autouse=True)
+def _clean_config_state():
+    """Reset the default registry and the .env provenance snapshot per test."""
+    from fastplace.config import reset_config
+
+    reset_config()
+    yield
+    reset_config()
+
+
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "config").mkdir()
@@ -72,3 +82,78 @@ def test_coerce_bool_forms():
     assert _coerce("42", 10) == 42
     assert _coerce("nope", 10) == "nope"
     assert _coerce("1.5", 1.0) == 1.5
+
+
+# --- provenance: where the effective value came from -------------------------
+
+
+def test_source_reports_env_file_when_env_matches_the_snapshot(project, monkeypatch, tmp_path):
+    monkeypatch.setenv("APP_NAME", "Fastplace")
+    (tmp_path / ".env").write_text("APP_NAME=Fastplace\n")
+    load_env(tmp_path / ".env")
+    cfg = Config(project)
+    assert cfg.get("APP_NAME") == "Fastplace"
+    assert cfg.source("APP_NAME") == "env-file"
+    assert cfg.shadowed_env_value("APP_NAME") is None
+
+
+def test_source_reports_shell_when_env_differs_from_env_file(project, monkeypatch, tmp_path):
+    """A live value that differs from the .env snapshot cannot be file-provided:
+    it is a shell export shadowing the file."""
+    monkeypatch.setenv("APP_NAME", "FromShell")
+    (tmp_path / ".env").write_text("APP_NAME=FromFile\n")
+    load_env(tmp_path / ".env")
+    cfg = Config(project)
+    assert cfg.get("APP_NAME") == "FromShell"
+    assert cfg.source("APP_NAME") == "shell"
+    assert cfg.shadowed_env_value("APP_NAME") == "FromFile"
+
+
+def test_source_reports_shell_without_any_env_file_entry(project, monkeypatch):
+    monkeypatch.setenv("APP_NAME", "FromShell")
+    cfg = Config(project)
+    assert cfg.source("APP_NAME") == "shell"
+    assert cfg.shadowed_env_value("APP_NAME") is None  # nothing in .env to shadow
+
+
+def test_source_reports_default_when_unset(project):
+    cfg = Config(project)
+    assert cfg.source("APP_NAME") == "default"
+    assert cfg.shadowed_env_value("APP_NAME") is None
+
+
+def test_source_returns_none_for_a_fully_unset_key(project):
+    cfg = Config(project)
+    assert cfg.source("NEVER_CONFIGURED") is None
+
+
+def test_module_level_helpers_mirrored_on_the_default_config(project, monkeypatch, tmp_path):
+    monkeypatch.setenv("APP_NAME", "FromShell")
+    (tmp_path / ".env").write_text("APP_NAME=FromFile\n")
+    from fastplace.config import reset_config, shadowed_env_value, source
+
+    # Rebind first, load second — reset drops the snapshot it did not create.
+    reset_config(project)
+    load_env(tmp_path / ".env")
+    assert source("APP_NAME") == "shell"
+    assert shadowed_env_value("APP_NAME") == "FromFile"
+
+
+def test_reset_config_clears_the_env_snapshot(project, monkeypatch, tmp_path):
+    """Stale provenance must not leak across configs: a fresh registry reads
+    a .env-free world even if a previous load_env recorded one."""
+    monkeypatch.setenv("APP_NAME", "FromShell")
+    (tmp_path / ".env").write_text("APP_NAME=FromFile\n")
+    load_env(tmp_path / ".env")
+    cfg = Config(project)
+    assert cfg.source("APP_NAME") == "shell"
+    assert cfg.shadowed_env_value("APP_NAME") == "FromFile"
+
+    from fastplace.config import reset_config
+
+    monkeypatch.delenv("APP_NAME")
+    fresh = reset_config(project)
+    # The snapshot died with the reset: no shadowing .env value is reported
+    # for a world whose .env was never loaded into THIS registry's lifetime.
+    assert fresh.source("APP_NAME") == "default"
+    assert fresh.shadowed_env_value("APP_NAME") is None

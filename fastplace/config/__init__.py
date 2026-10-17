@@ -17,16 +17,26 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 _MISSING = object()
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 
+#: Provenance snapshot of the last-loaded .env — key -> raw file value.
+#: ``load_dotenv(override=False)`` writes file values into ``os.environ``
+#: only when absent, so the environment alone cannot answer "did this value
+#: come from the file or a shell export?" — load_env records the file's own
+#: view here and ``Config.source`` reasons over the pair. reset_config
+#: clears it so provenance never leaks across configs (or tests).
+_env_snapshot: dict[str, str | None] = {}
+
 
 def load_env(path: str | Path = ".env") -> None:
     """Load ``.env`` into the process environment (never overriding real env)."""
+    _env_snapshot.clear()
+    _env_snapshot.update(dotenv_values(Path(path)))
     load_dotenv(Path(path), override=False)
 
 
@@ -104,6 +114,46 @@ class Config:
         self._defaults.clear()
         self._loaded = False
 
+    def source(self, key: str) -> str | None:
+        """Where the effective value of ``key`` comes from.
+
+        ``"env-file"`` — present in the environment and matching the loaded
+        .env snapshot. ``"shell"`` — present in the environment with a value
+        that differs from the snapshot, or with no .env entry at all: the
+        live value came from a shell export and shadows the file (see
+        :meth:`shadowed_env_value`). ``"default"`` — absent from the
+        environment, resolved from config-module defaults. ``None`` — unset
+        everywhere.
+
+        Documented limitation: a shell export whose value happens to equal
+        the .env value is indistinguishable from a file-provided value, so
+        source reports ``"env-file"`` for it. ``load_dotenv`` never reveals
+        which writes it performed, and an equal value behaves identically
+        either way.
+        """
+        if not self._loaded:
+            self.load()
+        if key in os.environ:
+            if key in _env_snapshot and _env_snapshot[key] == os.environ[key]:
+                return "env-file"
+            return "shell"
+        if key in self._defaults:
+            return "default"
+        return None
+
+    def shadowed_env_value(self, key: str) -> str | None:
+        """The .env value a shell export is shadowing — ``None`` when nothing is.
+
+        Only meaningful when :meth:`source` reports ``"shell"``: the
+        environment carries a value the file disagrees with (or the file is
+        silent), and this names the losing file value. ``None`` when the key
+        is absent from the loaded .env or nothing shadows anything.
+        """
+        if self.source(key) != "shell":
+            return None
+        shadowed = _env_snapshot.get(key)
+        return shadowed if shadowed is not None else None
+
     @property
     def loaded(self) -> bool:
         return self._loaded
@@ -117,8 +167,24 @@ def config(key: str, default: Any = _MISSING) -> Any:
     return _default_config.get(key, default)
 
 
+def source(key: str) -> str | None:
+    """Module-level provenance accessor bound to the default registry."""
+    return _default_config.source(key)
+
+
+def shadowed_env_value(key: str) -> str | None:
+    """Module-level shadow accessor bound to the default registry."""
+    return _default_config.shadowed_env_value(key)
+
+
 def reset_config(project_root: str | Path | None = None) -> Config:
-    """Rebind the default config — used by tests and the CLI."""
+    """Rebind the default config — used by tests and the CLI.
+
+    Also drops the .env provenance snapshot: it described the previous
+    registry's world, and a fresh binding must not inherit stale shadowing
+    reports. Callers that want provenance load their .env AFTER rebinding.
+    """
     global _default_config
+    _env_snapshot.clear()
     _default_config = Config(project_root)
     return _default_config

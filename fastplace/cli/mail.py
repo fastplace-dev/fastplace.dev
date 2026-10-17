@@ -195,6 +195,24 @@ def _mail_driver() -> str:
     return str(config("MAIL_DRIVER", default="log") or "log").lower()
 
 
+def _mail_driver_source_detail() -> str:
+    """The ``(source: …)`` suffix naming where MAIL_DRIVER came from.
+
+    Shared by mail:doctor and the umbrella doctor's mail row: a shell
+    export shadowing .env is the silent-failure trap the provenance exists
+    to expose. Masked through inspect.mask in case a secret-looking key
+    ever routes through here.
+    """
+    from fastplace.cli.inspect import mask
+    from fastplace.config import shadowed_env_value, source
+
+    detail = f"(source: {source('MAIL_DRIVER') or 'default'})"
+    shadowed = shadowed_env_value("MAIL_DRIVER")
+    if shadowed is not None:
+        detail += f' — shadows .env "{mask("MAIL_DRIVER", shadowed)}"'
+    return detail
+
+
 def _check_mail_driver() -> Check:
     from fastplace.cli._doctor import Check
     from fastplace.errors import ConfigurationError
@@ -204,7 +222,7 @@ def _check_mail_driver() -> Check:
         transport_for()
     except ConfigurationError as exc:
         return Check("driver", "fail", str(exc), "set MAIL_DRIVER to log, memory, or smtp in .env")
-    return Check("driver", "pass", _mail_driver())
+    return Check("driver", "pass", f"{_mail_driver()} {_mail_driver_source_detail()}")
 
 
 def _check_smtp_extra() -> Check:
@@ -248,6 +266,24 @@ def _check_smtp_config() -> Check:
     port = str(config("MAIL_PORT", default="25") or "25")
     user = str(config("MAIL_USERNAME", default=""))
     return Check("smtp_config", "pass", f"{host}:{port} {user} (password hidden)")
+
+
+def _check_encryption() -> Check:
+    from fastplace.cli._doctor import Check
+    from fastplace.config import config
+    from fastplace.mail.transports import MAIL_ENCRYPTION_VALUES
+
+    if _mail_driver() != "smtp":
+        return Check("encryption", "pass", f"not needed (driver={_mail_driver()})")
+    value = str(config("MAIL_ENCRYPTION", default="none") or "")
+    if value.strip().lower() in MAIL_ENCRYPTION_VALUES:
+        return Check("encryption", "pass", value.strip().lower() or "none")
+    return Check(
+        "encryption",
+        "warn",
+        f"{value!r} unrecognized — sending plaintext",
+        "use none | tls | starttls",
+    )
 
 
 def _check_queued_worker() -> Check:
@@ -333,9 +369,11 @@ def mail_doctor(
     from fastplace.config import config, load_env, reset_config
 
     root = _project_root()
-    load_env(root / ".env")
-    # Bind the config registry to the invoked project (doctor umbrella pattern).
+    # Bind first, load second: reset_config drops the .env provenance
+    # snapshot, so the load must follow it or source() would report a
+    # world with no .env at all (doctor umbrella pattern).
     reset_config(root)
+    load_env(root / ".env")
 
     host = str(config("MAIL_HOST", default="127.0.0.1"))
     port = str(config("MAIL_PORT", default="25") or "25")
@@ -354,6 +392,7 @@ def mail_doctor(
             _check_mail_driver,
             _check_smtp_extra,
             _check_smtp_config,
+            _check_encryption,
             _check_queued_worker,
             _mail_send_check,
             _connect_check,

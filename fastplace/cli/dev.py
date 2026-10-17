@@ -470,6 +470,10 @@ def run_dev(
             _project_root(),
             "fastplace.http.dev_shell:app",
             "--reload",
+            # uvicorn's default watch set is *.py only; .env is read once at
+            # boot, so a corrected .env must restart the worker to land.
+            "--reload-include",
+            ".env",
             "--host",
             host,
             "--port",

@@ -124,3 +124,74 @@ def test_healthy_project_exits_zero(tmp_path, monkeypatch):
     assert result.exit_code == 0
     out = _out(result)
     assert "app-key" in out and "env-file" in out and "config-import" in out
+
+
+# --- mail rows: smtp extra, unknown keys, provenance --------------------------
+
+
+def _fake_aiosmtplib_absent(monkeypatch):
+    """Pin the env-independent contract: smtp without the extra must FAIL."""
+    import importlib.util
+
+    real = importlib.util.find_spec
+
+    def fake(name: str, *args, **kwargs):
+        if name == "aiosmtplib":
+            return None
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake)
+
+
+def test_smtp_driver_without_extra_fails_with_install_hint(tmp_path, monkeypatch):
+    """MAIL_DRIVER=smtp without aiosmtplib only fails at send time today —
+    the umbrella doctor must surface it at pre-flight with the extra hint."""
+    _fake_aiosmtplib_absent(monkeypatch)
+    _make_project(
+        tmp_path,
+        monkeypatch,
+        env_text="APP_ENV=local\nMAIL_DRIVER=smtp\nMAIL_HOST=smtp.example.test\n",
+    )
+
+    result = runner.invoke(cli_app, ["doctor"])
+
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "fastplace[mail]" in out
+
+
+def test_smtp_extra_row_absent_for_log_driver(tmp_path, monkeypatch):
+    _fake_aiosmtplib_absent(monkeypatch)
+    _make_project(tmp_path, monkeypatch, env_text="APP_ENV=local\nMAIL_DRIVER=log\n")
+
+    result = runner.invoke(cli_app, ["doctor"])
+
+    assert result.exit_code == 0, _out(result)
+    assert "fastplace[mail]" not in _out(result)
+
+
+def test_unknown_mail_key_warns_naming_driver(tmp_path, monkeypatch):
+    """MAIL_MAILER sat unnoticed for a whole debugging session — WARN names
+    the key and says which env var the app actually reads."""
+    _make_project(tmp_path, monkeypatch, env_text="APP_ENV=local\nMAIL_MAILER=smtp\n")
+
+    result = runner.invoke(cli_app, ["doctor"])
+
+    assert result.exit_code == 0, _out(result)  # warn never fails
+    out = _out(result)
+    assert "MAIL_MAILER" in out
+    assert "MAIL_DRIVER" in out
+
+
+def test_doctor_reports_shell_shadowed_mail_driver(tmp_path, monkeypatch):
+    """Same provenance contract as mail:doctor: a shell export shadowing .env
+    is named with both the winning source and the shadowed value."""
+    _make_project(tmp_path, monkeypatch, env_text="APP_ENV=local\nMAIL_DRIVER=memory\n")
+    monkeypatch.setenv("MAIL_DRIVER", "log")
+
+    result = runner.invoke(cli_app, ["doctor"])
+
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "source: shell" in out
+    assert 'shadows .env "memory"' in out

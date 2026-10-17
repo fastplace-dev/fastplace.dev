@@ -217,37 +217,89 @@ def _redis_check() -> CheckFunc:
 
 
 def _mail_check() -> CheckFunc:
-    from fastplace.config import config
+    from fastplace.cli.mail import _check_smtp_extra, _mail_driver_source_detail
 
     def _mail() -> Check | list[Check]:
+        from fastplace.config import config
+
         driver = str(config("MAIL_DRIVER", default="log")).lower()
+        provenance = _mail_driver_source_detail()
         if driver != "smtp":
-            return Check("mail", "pass", detail=f"driver={driver} (no smtp credentials needed)")
+            return Check("mail", "pass", detail=f"driver={driver} {provenance}")
+        # Share mail:doctor's extra check — one wording, one install hint.
+        rows: list[Check] = [_check_smtp_extra()]
         missing = [
             name
             for name in ("MAIL_HOST", "MAIL_USERNAME", "MAIL_PASSWORD")
             if not str(config(name, default="") or "")
         ]
         if missing:
-            return Check(
-                "mail",
-                "fail",
-                detail=f"missing: {', '.join(missing)}",
-                fix="set MAIL_HOST / MAIL_USERNAME / MAIL_PASSWORD in .env",
-            )
-        if str(config("QUEUE_DRIVER", default="memory")).lower() == "saq":
-            return [
-                Check("mail", "pass", detail="smtp credentials present"),
+            rows.append(
                 Check(
-                    "mail-queue",
-                    "warn",
-                    detail="smtp mail is queued — it needs a running worker",
-                    fix="fastplace queue:work",
-                ),
-            ]
-        return Check("mail", "pass", detail="smtp credentials present")
+                    "mail",
+                    "fail",
+                    detail=f"missing: {', '.join(missing)}",
+                    fix="set MAIL_HOST / MAIL_USERNAME / MAIL_PASSWORD in .env",
+                )
+            )
+            return rows
+        if str(config("QUEUE_DRIVER", default="memory")).lower() == "saq":
+            rows.extend(
+                [
+                    Check("mail", "pass", detail=f"smtp credentials present {provenance}"),
+                    Check(
+                        "mail-queue",
+                        "warn",
+                        detail="smtp mail is queued — it needs a running worker",
+                        fix="fastplace queue:work",
+                    ),
+                ]
+            )
+            return rows
+        rows.append(Check("mail", "pass", detail=f"smtp credentials present {provenance}"))
+        return rows
 
     return _mail
+
+
+#: The MAIL_* keys the framework actually reads; anything else active in
+#: .env is flagged as a probable key-name mix-up (e.g. MAIL_MAILER).
+_KNOWN_MAIL_KEYS = frozenset(
+    {
+        "MAIL_DRIVER",
+        "MAIL_FROM_ADDRESS",
+        "MAIL_FROM_NAME",
+        "MAIL_HOST",
+        "MAIL_PORT",
+        "MAIL_USERNAME",
+        "MAIL_PASSWORD",
+        "MAIL_ENCRYPTION",
+    }
+)
+
+
+def _mail_keys_check(env_keys: list[str]) -> CheckFunc:
+    """WARN on active MAIL_* keys outside the known set — never FAIL.
+
+    Applications legitimately define their own MAIL_-prefixed variables, so
+    an unknown key is a smell to review, not a verdict.
+    """
+
+    def _mail_keys() -> Check:
+        unknown = sorted(k for k in env_keys if k.startswith("MAIL_") and k not in _KNOWN_MAIL_KEYS)
+        if not unknown:
+            return Check("mail-keys", "pass")
+        if unknown == ["MAIL_MAILER"]:
+            fix = "the app reads MAIL_DRIVER — rename the key in .env"
+        else:
+            fix = (
+                "verify the key name — framework mail keys are MAIL_DRIVER, MAIL_HOST, "
+                "MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_ENCRYPTION, "
+                "MAIL_FROM_ADDRESS, MAIL_FROM_NAME"
+            )
+        return Check("mail-keys", "warn", detail=f"unrecognized: {', '.join(unknown)}", fix=fix)
+
+    return _mail_keys
 
 
 def _ai_keys_check() -> CheckFunc:
@@ -481,6 +533,7 @@ def env_lint(
             _example_secrets_check(example_text, _env_values(env_text)),
             _env_types_check(root),
             _production_placeholder_check(),
+            _mail_keys_check(env_keys),
         ],
     )
     raise typer.Exit(code=code)
@@ -556,8 +609,14 @@ def doctor() -> None:
     from fastplace.config import load_env, reset_config
 
     root = _project_root()
-    load_env(root / ".env")
+    # Bind first, load second: reset_config drops the .env provenance
+    # snapshot, so the load must follow it or source() would report a
+    # world with no .env at all (mirrors fastplace/cli/mail.py).
     reset_config(root)
+    load_env(root / ".env")
+
+    env_path = root / ".env"
+    mail_keys = _active_env_keys(env_path.read_text(encoding="utf-8")) if env_path.is_file() else []
 
     code = run_checks(
         "Fastplace doctor",
@@ -569,6 +628,7 @@ def doctor() -> None:
             _database_check(),
             _redis_check(),
             _mail_check(),
+            _mail_keys_check(mail_keys),
             _ai_keys_check(),
             _storage_check(root),
             _serve_check(root),
