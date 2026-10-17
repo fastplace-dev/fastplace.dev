@@ -95,9 +95,14 @@ if ($LASTEXITCODE -ne 0) {
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $pathModified = $false
-if ($userPath -notlike "*$UvToolBinDir*") {
+if ($null -eq $userPath -or $userPath.Split(';') -notcontains $UvToolBinDir) {
     if ($SkipModifyPath) {
         Write-Info "Make sure $UvToolBinDir is on your PATH (user environment variables)."
+    }
+    elseif ($null -eq $userPath) {
+        # Clean profiles have no user Path variable at all — create it.
+        [Environment]::SetEnvironmentVariable('Path', $UvToolBinDir, 'User')
+        $pathModified = $true
     }
     else {
         # Append user-scope; no admin needed. Same rule as the bash side's

@@ -380,13 +380,13 @@ jobs:
           Invoke-ScriptAnalyzer -Path installer/install.ps1 -Settings $settings -EnableExit
 
   # Fresh-container E2E: the documented prerequisite set (bash, curl,
-  # ca-certificates) plus the real script against real PyPI. Alpine is
-  # deliberately absent — musl containers cannot run GitHub's glibc node
-  # for checkout, and its prerequisites stay documented instead.
+  # ca-certificates) plus the real script against real PyPI. Checkout
+  # happens host-side, so musl containers work here (unlike `container:`
+  # jobs); the arm entry runs a native aarch64 runner.
   installer-smoke-linux:
-    name: Installer smoke (${{ matrix.image }})
+    name: Installer smoke (${{ matrix.image }}${{ matrix.runner && ' arm' || '' }})
     needs: boundary
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -399,6 +399,13 @@ jobs:
             setup: dnf install -y -q bash curl ca-certificates
           - image: archlinux:base
             setup: pacman -Sy --noconfirm --needed bash curl ca-certificates >/dev/null
+          - image: alpine:3.20
+            setup: apk add --no-cache bash curl ca-certificates
+          # aarch64 end-to-end on a native arm runner — guards the
+          # Linux/aarch64 platform-guard branch uname actually reports.
+          - image: debian:bookworm-slim
+            runner: ubuntu-24.04-arm
+            setup: apt-get update -qq && apt-get install -y -qq bash curl ca-certificates
     steps:
       - uses: actions/checkout@v5
 

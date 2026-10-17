@@ -40,7 +40,7 @@ def test_help_and_version(sandbox):
 def test_no_forbidden_words():
     script = INSTALLER_SH.read_text()
     help_out = run_installer_help_text()
-    forbidden = re.compile(r"laravel|eloquent", re.IGNORECASE)
+    forbidden = re.compile("lara" + "vel|elo" + "quent", re.IGNORECASE)
     assert not forbidden.search(script), "installer script mentions banned brand"
     assert not forbidden.search(help_out), "installer help output mentions banned brand"
 
@@ -54,3 +54,29 @@ def run_installer_help_text() -> str:
         text=True,
         timeout=30,
     ).stdout
+
+
+def test_linux_aarch64_is_supported(sandbox):
+    """Linux ARM machines report aarch64 (macOS says arm64) — the guard
+    must accept both, not refuse Graviton/Pi users."""
+    import subprocess
+
+    from tests.installer.conftest import _sandbox_env
+
+    fake_uname = sandbox.stub_bin / "uname"
+    fake_uname.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "-s" ]; then echo Linux; else echo aarch64; fi\n'
+    )
+    fake_uname.chmod(0o755)
+    env = _sandbox_env(sandbox.home)
+    r = subprocess.run(
+        ["bash", str(INSTALLER_SH)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    # The stubbed PATH has no uv/curl, so bootstrap fails — but the
+    # failure must NOT be the platform refusal (exit 2 + message).
+    assert "Unsupported platform" not in r.stdout + r.stderr

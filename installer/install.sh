@@ -79,7 +79,7 @@ fi
 os=$(uname -s)
 arch=$(uname -m)
 case "$os/$arch" in
-Darwin/arm64 | Darwin/x86_64 | Linux/arm64 | Linux/x86_64) ;;
+Darwin/arm64 | Darwin/x86_64 | Linux/arm64 | Linux/aarch64 | Linux/x86_64) ;;
 *)
 	err "Unsupported platform: $os on $arch. Install manually with:"
 	err "  uv tool install --python 3.12 fastplace"

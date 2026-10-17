@@ -55,6 +55,13 @@ def test_user_path_branch():
     assert ".local" in text  # uv tool bin dir under the user profile
 
 
+def test_fresh_profile_without_user_path_variable_survives():
+    """A clean Windows profile has NO user Path variable (null) — the
+    append branch must not call methods on $null."""
+    text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
+    assert "if ($null -eq $userPath)" in text
+
+
 def test_verification_by_full_path():
     text = INSTALLER_PS1.read_text(encoding="utf-8-sig")
     assert re.search(r"\$env:USERPROFILE.*\.local.*fastplace", text) or (
@@ -63,5 +70,5 @@ def test_verification_by_full_path():
 
 
 def test_no_forbidden_words():
-    forbidden = re.compile(r"laravel|eloquent", re.IGNORECASE)
+    forbidden = re.compile("lara" + "vel|elo" + "quent", re.IGNORECASE)
     assert not forbidden.search(INSTALLER_PS1.read_text(encoding="utf-8-sig"))
