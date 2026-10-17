@@ -40,29 +40,37 @@ sh | dash | zsh | ksh)
 esac
 
 # Re-exec under bash when invoked as a file through a non-bash shell.
-# The -f guard is exhaustive: a stdin-shell invocation leaves $0 as a
-# bare name with no such file, and any unknown stdin shell must be
-# refused here rather than re-exec'd as a cwd file.
+# A script path always contains "/"; a bare $0 (any stdin shell, listed
+# or not) is refused here rather than re-exec'd as a cwd file.
 if [ -z "${BASH_VERSION:-}" ]; then
-	if [ -f "$0" ]; then
+	case "$0" in
+	*/*)
 		exec bash "$0" "$@"
-	else
+		;;
+	*)
 		# shellcheck disable=SC2016
 		echo 'error: this installer runs under bash. Use:' >&2
 		echo '  curl -fsSL https://fastplace.dev/install.sh | bash' >&2
 		exit 2
-	fi
+		;;
+	esac
 fi
 
 set -euo pipefail
 
 INSTALLER_VERSION="1.0.0"
 UV_INSTALL_URL="https://astral.sh/uv/install.sh"
-UV_TOOL_BIN_DIR="$HOME/.local/bin"
-PATH_MARKER="# fastplace-installer"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'error: %s\n' "$*" >&2; }
+
+if [ -z "${HOME:-}" ]; then
+	err "HOME is not set. The installer installs under \$HOME — set it and re-run."
+	exit 2
+fi
+
+UV_TOOL_BIN_DIR="$HOME/.local/bin"
+PATH_MARKER="# fastplace-installer"
 
 if [ -t 1 ]; then
 	BOLD=$'\033[1m'
@@ -74,24 +82,7 @@ else
 	RESET=""
 fi
 
-# --- platform guard -------------------------------------------------------
-
-os=$(uname -s)
-arch=$(uname -m)
-case "$os/$arch" in
-Darwin/arm64 | Darwin/x86_64 | Linux/arm64 | Linux/aarch64 | Linux/x86_64) ;;
-*)
-	err "Unsupported platform: $os on $arch. Install manually with:"
-	err "  uv tool install --python 3.12 fastplace"
-	exit 2
-	;;
-esac
-
-# --- session PATH: make ~/.local/bin visible right now --------------------
-
-export PATH="$UV_TOOL_BIN_DIR:$PATH"
-
-# --- options ----------------------------------------------------------------
+# --- options (parsed before the platform guard so --help answers anywhere) ---
 
 usage() {
 	cat <<'EOF'
@@ -147,6 +138,23 @@ if [ -n "${FASTPLACE_VERSION:-}" ]; then
 	fi
 	install_spec+="==$FASTPLACE_VERSION"
 fi
+
+# --- platform guard -------------------------------------------------------
+
+os=$(uname -s)
+arch=$(uname -m)
+case "$os/$arch" in
+Darwin/arm64 | Darwin/x86_64 | Linux/arm64 | Linux/aarch64 | Linux/x86_64) ;;
+*)
+	err "Unsupported platform: $os on $arch. Install manually with:"
+	err "  uv tool install --python 3.12 fastplace"
+	exit 2
+	;;
+esac
+
+# --- session PATH: make ~/.local/bin visible right now --------------------
+
+export PATH="$UV_TOOL_BIN_DIR:$PATH"
 
 # --- 1. uv ----------------------------------------------------------------
 
@@ -238,5 +246,4 @@ if [ "$path_modified" = 1 ]; then
 	say "take effect.${RESET}"
 fi
 say ""
-say "${DIM}Docs: https://fastplace.dev — uninstall: rm -f ~/.local/bin/fastplace"
-say "&& uv tool uninstall fastplace${RESET}"
+say "${DIM}Docs: https://fastplace.dev — uninstall: uv tool uninstall fastplace${RESET}"
